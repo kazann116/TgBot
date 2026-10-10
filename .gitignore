@@ -1,0 +1,41 @@
+# Результаты сборки Delphi
+*.dcu
+*.dcp
+*.bpl
+*.exe
+*.dll
+*.o
+*.so
+*.a
+*.map
+*.drc
+*.rsm
+*.tds
+Bin/
+Dcu/
+Win32/
+Win64/
+Linux64/
+Android/
+Android64/
+
+# Служебные файлы IDE
+__history/
+__recovery/
+*.identcache
+*.local
+*.dsk
+*.stat
+*.tvsconfig
+*.~*
+*.bak
+*.tmp
+*.log
+
+# Готовые выпуски собираются скриптом Tools\Dist\MakeDist.ps1 и выкладываются в Releases
+/Dist/
+
+# Личные рабочие файлы
+.*-memory.md
+pfull_*.txt
+.uploads/

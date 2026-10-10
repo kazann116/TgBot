@@ -1,0 +1,25 @@
+﻿package TgBotDT;
+
+{
+  Пакет времени разработки: регистрация TTelegramBot и TTgWebhookServer
+  в палитре IDE (вкладка Telegram). Требует TgBotIndyRT и пакеты Indy
+  (они входят в любую поставку IDE). Только Win32 — IDE 32-битная, designide.dcp есть
+  лишь в lib\win32. Устанавливается в IDE: Component > Install Packages
+  или правый щелчок по TgBotDT в TgBot.groupproj > Install.
+}
+
+{$DESIGNONLY}
+{$IMPLICITBUILD OFF}
+{$LIBSUFFIX AUTO}
+{$DESCRIPTION 'Telegram Bot API для Delphi (design-time)'}
+
+requires
+  rtl,
+  designide,
+  TgBotRT,
+  TgBotIndyRT;
+
+contains
+  TgBot.Reg in '..\Source\Design\TgBot.Reg.pas';
+
+end.

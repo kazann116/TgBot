@@ -1,0 +1,27 @@
+﻿package TgBotIndyRT;
+
+{
+  Пакет времени выполнения: встроенный webhook-сервер TTgWebhookServer на
+  Indy (TgBot.Webhook). Отдельно от TgBotRT, чтобы приложения без webhook
+  не зависели от Indy. Платформы: Win32, Win64, Linux64.
+  Имя файла пакета получает суффикс версии Delphi (LIBSUFFIX AUTO):
+  TgBotIndyRT270.bpl (10.4), TgBotIndyRT280.bpl (11), TgBotIndyRT290.bpl (12);
+  .dcp — без суффикса (TgBotIndyRT.dcp).
+}
+
+{$RUNONLY}
+{$IMPLICITBUILD OFF}
+{$LIBSUFFIX AUTO}
+{$DESCRIPTION 'Telegram Bot API для Delphi (runtime, Indy webhook)'}
+
+requires
+  rtl,
+  TgBotRT,
+  IndySystem,
+  IndyCore,
+  IndyProtocols;
+
+contains
+  TgBot.Webhook in '..\Source\TgBot.Webhook.pas';
+
+end.

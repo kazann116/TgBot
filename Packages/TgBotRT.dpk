@@ -1,0 +1,30 @@
+﻿package TgBotRT;
+
+{
+  Пакет времени выполнения библиотеки Telegram Bot API.
+  Имя файла пакета получает суффикс версии Delphi (LIBSUFFIX AUTO):
+  TgBotRT270.bpl (10.4), TgBotRT280.bpl (11), TgBotRT290.bpl (12);
+  .dcp — без суффикса (TgBotRT.dcp).
+  TgBot.pas подключает Generated\*.inc относительно своей папки (Source).
+}
+
+{$RUNONLY}
+{$IMPLICITBUILD OFF}
+{$LIBSUFFIX AUTO}
+{$DESCRIPTION 'Telegram Bot API для Delphi (runtime)'}
+
+requires
+  rtl;
+
+contains
+  TgBot.Base in '..\Source\TgBot.Base.pas',
+  TgBot.Json in '..\Source\TgBot.Json.pas',
+  TgBot.Http in '..\Source\TgBot.Http.pas',
+  TgBot.Dto in '..\Source\TgBot.Dto.pas',
+  TgBot.Core in '..\Source\TgBot.Core.pas',
+  TgBot.Updates in '..\Source\TgBot.Updates.pas',
+  TgBot.State in '..\Source\TgBot.State.pas',
+  TgBot in '..\Source\TgBot.pas',
+  TgBot.Component in '..\Source\TgBot.Component.pas';
+
+end.

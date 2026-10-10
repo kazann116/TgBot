@@ -1,0 +1,188 @@
+{
+  "$comment": "Переопределения TgBotGen (фаза 3). types: fields {json: PasName} (переименование полей — только здесь), dispatch {field, rules [{value, type}], default}, direction (in|out|both — добавляет направление), int64/int32 [поля], fileField [поля], primaryParent, kindName, variantNames {String, Array}. unions: {Алиас: {variants [...], description}} — точный набор вариантов безымянного объединения; приоритетнее более широкого union спецификации (о таком анализатор предупреждает). methods: rename {json: PasName} (переименование параметров — только здесь), positional [необязательные параметры, передаваемые позиционно], int64/int32 [параметры], variants [{params [json-имена позиционных параметров варианта: все обязательные + вынесенные из опций скаляры], name (другое имя в стиле Bot API, напр. editInlineMessageText), result (\"Boolean\" — для «Объект or True»: True при успехе), description}] — дополнительные перегрузки Sync/Async/Try через тот же Build/Exec. constants: {Имя: {description, values {Имя: значение}}}. Неверная структура или тип значения — ошибка анализа с путём ключа.",
+  "types": {
+    "MaybeInaccessibleMessage": {
+      "$comment": "Различаются по date: у InaccessibleMessage всегда 0.",
+      "dispatch": {
+        "field": "date",
+        "rules": [
+          {"value": "0", "type": "InaccessibleMessage"}
+        ],
+        "default": "Message"
+      }
+    },
+    "RichText": {
+      "variantNames": {"String": "Plain", "Array": "List"}
+    }
+  },
+  "unions": {
+    "ReplyMarkup": {
+      "description": "Разметка ответа: инлайн-клавиатура, обычная клавиатура, удаление клавиатуры или принудительный ответ.",
+      "variants": ["InlineKeyboardMarkup", "ReplyKeyboardMarkup", "ReplyKeyboardRemove", "ForceReply"]
+    },
+    "MediaGroupItem": {
+      "description": "Элемент медиагруппы (sendMediaGroup): аудио, документ, live-фото, фото или видео.",
+      "variants": ["InputMediaAudio", "InputMediaDocument", "InputMediaLivePhoto", "InputMediaPhoto",
+        "InputMediaVideo"]
+    },
+    "InputRichMedia": {
+      "description": "Медиа rich-сообщения: анимация, аудио, документ, фото, видео или голосовое сообщение.",
+      "variants": ["InputMediaAnimation", "InputMediaAudio", "InputMediaDocument", "InputMediaPhoto",
+        "InputMediaVideo", "InputMediaVoiceNote"]
+    }
+  },
+  "methods": {
+    "getUpdates": {
+      "int64": ["offset"]
+    },
+    "sendPoll": {
+      "rename": {"type": "PollType"}
+    },
+    "sendMessage": {
+      "variants": [
+        {"params": ["chat_id", "text", "reply_markup"], "description": "Сообщение с клавиатурой."}
+      ]
+    },
+    "sendPhoto": {
+      "variants": [
+        {"params": ["chat_id", "photo", "caption"], "description": "Фото с подписью."}
+      ]
+    },
+    "sendDocument": {
+      "variants": [
+        {"params": ["chat_id", "document", "caption"], "description": "Документ с подписью."}
+      ]
+    },
+    "answerCallbackQuery": {
+      "variants": [
+        {"params": ["callback_query_id", "text"], "description": "Уведомление с текстом."},
+        {"params": ["callback_query_id", "text", "show_alert"],
+          "description": "Текст уведомлением или окном (AShowAlert = True)."}
+      ]
+    },
+    "editMessageText": {
+      "variants": [
+        {"params": ["chat_id", "message_id", "text"],
+          "description": "Сообщение, отправленное от имени бота (не inline)."},
+        {"name": "editInlineMessageText", "params": ["inline_message_id", "text"], "result": "Boolean",
+          "description": "Inline-сообщение (отправленное через inline-режим)."}
+      ]
+    },
+    "editMessageCaption": {
+      "variants": [
+        {"params": ["chat_id", "message_id", "caption"],
+          "description": "Сообщение, отправленное от имени бота (не inline)."},
+        {"name": "editInlineMessageCaption", "params": ["inline_message_id", "caption"], "result": "Boolean",
+          "description": "Inline-сообщение (отправленное через inline-режим)."}
+      ]
+    },
+    "editMessageMedia": {
+      "variants": [
+        {"params": ["chat_id", "message_id", "media"],
+          "description": "Сообщение, отправленное от имени бота (не inline)."},
+        {"name": "editInlineMessageMedia", "params": ["inline_message_id", "media"], "result": "Boolean",
+          "description": "Inline-сообщение (отправленное через inline-режим)."}
+      ]
+    },
+    "editMessageLiveLocation": {
+      "variants": [
+        {"params": ["chat_id", "message_id", "latitude", "longitude"],
+          "description": "Сообщение, отправленное от имени бота (не inline)."},
+        {"name": "editInlineMessageLiveLocation", "params": ["inline_message_id", "latitude", "longitude"],
+          "result": "Boolean", "description": "Inline-сообщение (отправленное через inline-режим)."}
+      ]
+    },
+    "stopMessageLiveLocation": {
+      "variants": [
+        {"params": ["chat_id", "message_id"],
+          "description": "Сообщение, отправленное от имени бота (не inline)."},
+        {"name": "stopInlineMessageLiveLocation", "params": ["inline_message_id"], "result": "Boolean",
+          "description": "Inline-сообщение (отправленное через inline-режим)."}
+      ]
+    },
+    "editMessageReplyMarkup": {
+      "variants": [
+        {"params": ["chat_id", "message_id", "reply_markup"],
+          "description": "Сообщение, отправленное от имени бота (не inline); AReplyMarkup = nil убирает клавиатуру."},
+        {"name": "editInlineMessageReplyMarkup", "params": ["inline_message_id", "reply_markup"],
+          "result": "Boolean",
+          "description": "Inline-сообщение (отправленное через inline-режим); AReplyMarkup = nil убирает клавиатуру."}
+      ]
+    },
+    "setGameScore": {
+      "variants": [
+        {"params": ["user_id", "score", "chat_id", "message_id"],
+          "description": "Игра в сообщении, отправленном от имени бота (не inline)."},
+        {"name": "setInlineGameScore", "params": ["user_id", "score", "inline_message_id"], "result": "Boolean",
+          "description": "Игра в inline-сообщении."}
+      ]
+    },
+    "getGameHighScores": {
+      "variants": [
+        {"params": ["user_id", "chat_id", "message_id"],
+          "description": "Игра в сообщении, отправленном от имени бота (не inline)."},
+        {"name": "getInlineGameHighScores", "params": ["user_id", "inline_message_id"],
+          "description": "Игра в inline-сообщении."}
+      ]
+    }
+  },
+  "constants": {
+    "ParseMode": {
+      "description": "Режимы разметки текста (parse_mode).",
+      "values": {"Html": "HTML", "MarkdownV2": "MarkdownV2", "Markdown": "Markdown"}
+    },
+    "ChatType": {
+      "description": "Типы чатов (Chat.type).",
+      "values": {"Private": "private", "Group": "group", "Supergroup": "supergroup", "Channel": "channel"}
+    },
+    "ChatAction": {
+      "description": "Действия для sendChatAction.",
+      "values": {
+        "Typing": "typing",
+        "UploadPhoto": "upload_photo",
+        "RecordVideo": "record_video",
+        "UploadVideo": "upload_video",
+        "RecordVoice": "record_voice",
+        "UploadVoice": "upload_voice",
+        "UploadDocument": "upload_document",
+        "ChooseSticker": "choose_sticker",
+        "FindLocation": "find_location",
+        "RecordVideoNote": "record_video_note",
+        "UploadVideoNote": "upload_video_note"
+      }
+    },
+    "MessageEntityType": {
+      "description": "Типы сущностей сообщения (MessageEntity.type).",
+      "values": {
+        "Mention": "mention",
+        "Hashtag": "hashtag",
+        "Cashtag": "cashtag",
+        "BotCommand": "bot_command",
+        "Url": "url",
+        "Email": "email",
+        "PhoneNumber": "phone_number",
+        "Bold": "bold",
+        "Italic": "italic",
+        "Underline": "underline",
+        "Strikethrough": "strikethrough",
+        "Spoiler": "spoiler",
+        "Blockquote": "blockquote",
+        "ExpandableBlockquote": "expandable_blockquote",
+        "Code": "code",
+        "Pre": "pre",
+        "TextLink": "text_link",
+        "TextMention": "text_mention",
+        "CustomEmoji": "custom_emoji",
+        "DateTime": "date_time"
+      }
+    },
+    "PollType": {
+      "description": "Типы опросов (sendPoll.type, Poll.type).",
+      "values": {"Regular": "regular", "Quiz": "quiz"}
+    },
+    "StickerType": {
+      "description": "Типы стикеров (Sticker.type).",
+      "values": {"Regular": "regular", "Mask": "mask", "CustomEmoji": "custom_emoji"}
+    }
+  }
+}

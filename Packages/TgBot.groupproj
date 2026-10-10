@@ -1,0 +1,60 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{76C691DF-6D21-4DA2-A377-2F10B4AF3108}</ProjectGuid>
+    </PropertyGroup>
+    <ItemGroup>
+        <Projects Include="TgBotRT.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="TgBotIndyRT.dproj">
+            <Dependencies>TgBotRT.dproj</Dependencies>
+        </Projects>
+        <Projects Include="TgBotDT.dproj">
+            <Dependencies>TgBotRT.dproj;TgBotIndyRT.dproj</Dependencies>
+        </Projects>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Default.Personality.12</Borland.Personality>
+        <Borland.ProjectType/>
+        <BorlandProject>
+            <Default.Personality/>
+        </BorlandProject>
+    </ProjectExtensions>
+    <Target Name="TgBotRT">
+        <MSBuild Projects="TgBotRT.dproj"/>
+    </Target>
+    <Target Name="TgBotRT:Clean">
+        <MSBuild Projects="TgBotRT.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="TgBotRT:Make">
+        <MSBuild Projects="TgBotRT.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="TgBotIndyRT" DependsOnTargets="TgBotRT">
+        <MSBuild Projects="TgBotIndyRT.dproj"/>
+    </Target>
+    <Target Name="TgBotIndyRT:Clean" DependsOnTargets="TgBotRT:Clean">
+        <MSBuild Projects="TgBotIndyRT.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="TgBotIndyRT:Make" DependsOnTargets="TgBotRT:Make">
+        <MSBuild Projects="TgBotIndyRT.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="TgBotDT" DependsOnTargets="TgBotRT;TgBotIndyRT">
+        <MSBuild Projects="TgBotDT.dproj"/>
+    </Target>
+    <Target Name="TgBotDT:Clean" DependsOnTargets="TgBotRT:Clean;TgBotIndyRT:Clean">
+        <MSBuild Projects="TgBotDT.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="TgBotDT:Make" DependsOnTargets="TgBotRT:Make;TgBotIndyRT:Make">
+        <MSBuild Projects="TgBotDT.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Build">
+        <CallTarget Targets="TgBotRT;TgBotIndyRT;TgBotDT"/>
+    </Target>
+    <Target Name="Clean">
+        <CallTarget Targets="TgBotRT:Clean;TgBotIndyRT:Clean;TgBotDT:Clean"/>
+    </Target>
+    <Target Name="Make">
+        <CallTarget Targets="TgBotRT:Make;TgBotIndyRT:Make;TgBotDT:Make"/>
+    </Target>
+    <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+</Project>

@@ -1,0 +1,60 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{31AEFE92-7AF2-49A5-A0E2-DC0034BB3D72}</ProjectGuid>
+    </PropertyGroup>
+    <ItemGroup>
+        <Projects Include="02_EchoBot\EchoBot.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="03_VclBot\VclBot.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="04_WebhookBot\WebhookBot.dproj">
+            <Dependencies/>
+        </Projects>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Default.Personality.12</Borland.Personality>
+        <Borland.ProjectType/>
+        <BorlandProject>
+            <Default.Personality/>
+        </BorlandProject>
+    </ProjectExtensions>
+    <Target Name="EchoBot">
+        <MSBuild Projects="02_EchoBot\EchoBot.dproj"/>
+    </Target>
+    <Target Name="EchoBot:Clean">
+        <MSBuild Projects="02_EchoBot\EchoBot.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="EchoBot:Make">
+        <MSBuild Projects="02_EchoBot\EchoBot.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="VclBot">
+        <MSBuild Projects="03_VclBot\VclBot.dproj"/>
+    </Target>
+    <Target Name="VclBot:Clean">
+        <MSBuild Projects="03_VclBot\VclBot.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="VclBot:Make">
+        <MSBuild Projects="03_VclBot\VclBot.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="WebhookBot">
+        <MSBuild Projects="04_WebhookBot\WebhookBot.dproj"/>
+    </Target>
+    <Target Name="WebhookBot:Clean">
+        <MSBuild Projects="04_WebhookBot\WebhookBot.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="WebhookBot:Make">
+        <MSBuild Projects="04_WebhookBot\WebhookBot.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Build">
+        <CallTarget Targets="EchoBot;VclBot;WebhookBot"/>
+    </Target>
+    <Target Name="Clean">
+        <CallTarget Targets="EchoBot:Clean;VclBot:Clean;WebhookBot:Clean"/>
+    </Target>
+    <Target Name="Make">
+        <CallTarget Targets="EchoBot:Make;VclBot:Make;WebhookBot:Make"/>
+    </Target>
+    <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+</Project>

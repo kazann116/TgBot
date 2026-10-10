@@ -1,0 +1,7 @@
+# Файлы хранятся как есть: Delphi и скрипты установки ожидают свои переводы строк и кодировки
+* -text
+*.pas linguist-language=Pascal
+*.inc linguist-language=Pascal
+*.dpr linguist-language=Pascal
+*.dpk linguist-language=Pascal
+Tools/TgBotGen/Spec/* linguist-vendored

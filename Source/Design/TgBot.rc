@@ -1,0 +1,17 @@
+// Ресурсы палитры компонентов для TTelegramBot и TTgWebhookServer (TgBot.dcr).
+// IDE ищет BITMAP с именем класса в верхнем регистре: TTELEGRAMBOT (24x24),
+// TTELEGRAMBOT16 (16x16), TTELEGRAMBOT32 (32x32); левый нижний пиксель —
+// цвет прозрачности. TTELEGRAMBOT128_PNG (RCDATA, PNG 128x128) — как у
+// стандартных пакетов IDE (dclstd: TTIMER128_PNG).
+// Пересборка: brcc32 -foTgBot.dcr TgBot.rc (из этой папки);
+// картинки: Icons\MakeIcons.ps1 -OutDir Icons.
+
+TTELEGRAMBOT        BITMAP "Icons\TTELEGRAMBOT.bmp"
+TTELEGRAMBOT16      BITMAP "Icons\TTELEGRAMBOT16.bmp"
+TTELEGRAMBOT32      BITMAP "Icons\TTELEGRAMBOT32.bmp"
+TTELEGRAMBOT128_PNG RCDATA "Icons\TTELEGRAMBOT128.png"
+
+TTGWEBHOOKSERVER        BITMAP "Icons\TTGWEBHOOKSERVER.bmp"
+TTGWEBHOOKSERVER16      BITMAP "Icons\TTGWEBHOOKSERVER16.bmp"
+TTGWEBHOOKSERVER32      BITMAP "Icons\TTGWEBHOOKSERVER32.bmp"
+TTGWEBHOOKSERVER128_PNG RCDATA "Icons\TTGWEBHOOKSERVER128.png"
