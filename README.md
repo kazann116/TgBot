@@ -27,7 +27,7 @@
 ## Требования
 
 - Delphi 10.4 Sydney и новее (проверено на 10.4 и 12).
-- Win32, Win64, Linux64, Android (32 и 64 бит). iOS не поддерживается.
+- Win32, Win64, Linux64, Android (32 и 64 бит). webhook только для Win32, Win64 и Linux64 iOS не поддерживается.
 
 ## Установка
 
