@@ -199,14 +199,10 @@ uses
 {$ENDIF}
   System.Classes,
   System.Math,
+  TgBot.Consts,
   TgBot.Json;
 
-resourcestring
-  SRuNoRandom = 'Криптостойкий генератор случайных чисел ОС недоступен';
-  SEnNoRandom = 'The OS cryptographic random number generator is not available';
-
 const
-  CNoRandomTexts: array[TTgLanguage] of PResStringRec = (@SRuNoRandom, @SEnNoRandom);
   // Алфавит секрета webhook: 64 символа — байт mod 64 распределён равномерно.
   CSecretAlphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-';
 
@@ -228,7 +224,7 @@ begin
     Exit;
 {$IFDEF MSWINDOWS}
   if not TgRtlGenRandom(@Result[0], ACount) then
-    raise ETgError.Create(LoadResString(CNoRandomTexts[TgGetLanguage]));
+    raise ETgError.Create(TgLangText(@SRuUpdNoRandom, @SEnUpdNoRandom));
 {$ELSE}
   // Linux, Android, macOS, iOS: /dev/urandom (CreateGUID на POSIX — по времени).
   try
@@ -239,7 +235,7 @@ begin
       LStream.Free;
     end;
   except
-    raise ETgError.Create(LoadResString(CNoRandomTexts[TgGetLanguage]));
+    raise ETgError.Create(TgLangText(@SRuUpdNoRandom, @SEnUpdNoRandom));
   end;
 {$ENDIF}
 end;
@@ -665,7 +661,7 @@ var
   LThread: TTgWebhookThread;
 begin
   if not Assigned(ASink) then
-    raise EArgumentNilException.Create('ASink');
+    raise EArgumentNilException.Create(TgLangTextFmt(@SRuArgNil, @SEnArgNil, ['ASink']));
   // Пустой url в setWebhook означал бы удаление webhook.
   if FRegisterOnStart and (Trim(FUrl) = '') then
     raise ETgError.Create(TgUpdatesText(TTgUpdatesText.WebhookUrlRequired));
