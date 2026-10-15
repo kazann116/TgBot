@@ -3,7 +3,7 @@
 {
   TgBot — приём обновлений: фасад нижнего слоя (работает с сырым JSON и
   не зависит от сгенерированных типов TgBot.Types). Собственных
-  объявлений нет, только реэкспорт:
+  типов нет: только реэкспорт и функции-обёртки:
 
   - общие типы (ITgRawUpdate, ITgUpdateSink, ITgUpdateSource, перечисления,
     константы, тексты, TTgShutdownSignal) — TgBot.Updates.Types;
@@ -79,7 +79,7 @@ type
   TTgDelivery = TgBot.Updates.Types.TTgDelivery;
   /// <summary>Итог приёма webhook-запроса (Accepted, Forbidden, BadRequest, Unavailable).</summary>
   TTgWebhookResult = TgBot.Updates.Types.TTgWebhookResult;
-  /// <summary>Тексты сообщений (служебное, для TgBot.Bot).</summary>
+  /// <summary>Тексты сообщений (служебное, для TgBot.Bot и TgBot.Context).</summary>
   TTgUpdatesText = TgBot.Updates.Types.TTgUpdatesText;
   /// <summary>Обновление Bot API в сыром виде (update_id, вид, ключ чата, JSON).</summary>
   ITgRawUpdate = TgBot.Updates.Types.ITgRawUpdate;
@@ -124,7 +124,7 @@ type
 { Обёртки функций TgBot.Updates.Types (не inline: inline-обёртка дала бы
   пользователю подсказку H2443 о модуле, не указанном в uses). }
 
-/// <summary>Локализованный текст (служебное, для TgBot.Bot).</summary>
+/// <summary>Локализованный текст (служебное, для TgBot.Bot и TgBot.Context).</summary>
 function TgUpdatesText(AText: TTgUpdatesText): string;
 
 /// <summary>
