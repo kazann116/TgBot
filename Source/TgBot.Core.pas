@@ -15,9 +15,8 @@
     отменяет токен клиента; деструктор вызывает его и ждёт завершения уже
     начатых вызовов не дольше ShutdownTimeoutMs.
 
-  Create/Call/CallJson/DownloadFile/RunAsync — основная реализация; их
-  упрощённая копия без токенов отмены в устаревшем модуле TgBot.Api
-  библиотекой и пакетами не используется.
+  Create/Call/CallJson/DownloadFile/RunAsync — единственная реализация
+  транспорта вызовов Bot API в библиотеке.
 }
 
 {$SCOPEDENUMS ON}
