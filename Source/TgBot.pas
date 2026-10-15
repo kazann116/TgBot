@@ -720,36 +720,22 @@ implementation
 uses
   System.Diagnostics,
   System.Math,
-  System.RegularExpressions;
+  TgBot.Router;
 
 resourcestring
-  SRuRouteEmptyKey = 'Пустой ключ правила маршрутизатора (%s)';
-  SEnRouteEmptyKey = 'Empty router rule key (%s)';
-  SRuRouteBadCommand = 'Недопустимое имя команды "%s": пробелы и "@" не допускаются';
-  SEnRouteBadCommand = 'Invalid command name "%s": spaces and "@" are not allowed';
   SRuWebhookNotHttps = 'Режим Webhook: WebhookUrl должен начинаться с https:// ' +
     '(Telegram принимает только HTTPS; http:// — только с Local Bot API server)';
   SEnWebhookNotHttps = 'Webhook mode: WebhookUrl must start with https:// ' +
     '(Telegram accepts HTTPS only; http:// is allowed only with a Local Bot API server)';
 
 type
-  TTgRouterText = (EmptyKey, BadCommand);
-  /// <summary>Прочие тексты модуля.</summary>
+  /// <summary>Тексты модуля.</summary>
   TTgBotText = (WebhookNotHttps);
 
 const
-  CRouterTexts: array[TTgRouterText, TTgLanguage] of PResStringRec = (
-    (@SRuRouteEmptyKey, @SEnRouteEmptyKey),
-    (@SRuRouteBadCommand, @SEnRouteBadCommand)
-  );
   CBotTexts: array[TTgBotText, TTgLanguage] of PResStringRec = (
     (@SRuWebhookNotHttps, @SEnWebhookNotHttps)
   );
-
-function TgRouterText(AText: TTgRouterText): string;
-begin
-  Result := LoadResString(CRouterTexts[AText, TgBot.Base.TgGetLanguage]);
-end;
 
 function TgBotText(AText: TTgBotText): string;
 begin
@@ -843,68 +829,9 @@ begin
   Result := TgBot.Keyboards.TgRow(AButtons);
 end;
 
-{ Маршрутизатор и ядро бота }
+{ Ядро бота }
 
 type
-  /// <summary>Вид правила маршрутизатора с ключом.</summary>
-  TTgRouteKind = (Command, Callback, CallbackPrefix, Text);
-
-  /// <summary>
-  ///   Правило: ключ (имя команды в нижнем регистре, callback data, префикс,
-  ///   текст в нижнем регистре), описание (только команды, для меню) и
-  ///   обработчик.
-  /// </summary>
-  TTgRoute = record
-    Key: string;
-    Description: string;
-    Handler: TProc<ITgContext>;
-  end;
-
-  /// <summary>Регулярное выражение правила TextMatch (потокобезопасный поиск).</summary>
-  ITgTextMatcher = interface
-    ['{0E5C1B7A-8F42-4D6B-9C3E-7A1D2B4F6E58}']
-    function GetPattern: string;
-    /// <summary>Найдено совпадение; AArgs — первая группа или всё совпадение.</summary>
-    function TryMatch(const AText: string; out AArgs: string): Boolean;
-    property Pattern: string read GetPattern;
-  end;
-
-  /// <summary>
-  ///   TRegEx не потокобезопасен (Match меняет Subject общего TPerlRegEx,
-  ///   группы TMatch читаются лениво из него же): поиск — под блокировкой.
-  ///   Шаблон компилируется один раз, в конструкторе (ошибка — исключение).
-  /// </summary>
-  TTgTextMatcher = class(TInterfacedObject, ITgTextMatcher)
-  private
-    FLock: TCriticalSection;
-    FPattern: string;
-    FRegEx: TRegEx;
-    function DoMatch(const AText: string; out AArgs: string): Boolean;
-  public
-    constructor Create(const APattern: string);
-    destructor Destroy; override;
-    function GetPattern: string;
-    function TryMatch(const AText: string; out AArgs: string): Boolean;
-  end;
-
-  /// <summary>Правило TextMatch.</summary>
-  TTgMatchRoute = record
-    Matcher: ITgTextMatcher;
-    Handler: TProc<ITgContext>;
-  end;
-
-  /// <summary>
-  ///   Таблица правил — снимок: массивы не меняются на месте (изменение
-  ///   создаёт копию под блокировкой ядра), поэтому копия записи, сделанная
-  ///   под блокировкой, безопасна для чтения в любом потоке.
-  /// </summary>
-  TTgRoutes = record
-    Lists: array[TTgRouteKind] of TArray<TTgRoute>;
-    Matches: TArray<TTgMatchRoute>;
-    AnyText: TProc<ITgContext>;
-    UnknownCommand: TProc<ITgContext>;
-  end;
-
   /// <summary>
   ///   Фоновая подготовка запуска (getMe и setMyCommands в TgBotThreadPool):
   ///   Start не ждёт сеть. Done выставляется по завершении задачи; CancelSource
@@ -1022,16 +949,6 @@ type
     ///   сообщает ошибки.
     /// </summary>
     function StartJobActive(AJob: TTgStartJob): Boolean;
-    /// <summary>
-    ///   Разбор команды сообщения в Command/Args контекста (SetCommand/
-    ///   SetArgs; только команда этому боту: без '@' или '@' + BotUserName);
-    ///   результат — сообщение является такой командой.
-    /// </summary>
-    function ParseCommand(AContext: TTgContext): Boolean;
-    /// <summary>Правила message (итог — AContext.Handled).</summary>
-    procedure RouteMessage(AContext: TTgContext; const ARoutes: TTgRoutes; AIsCommand: Boolean);
-    /// <summary>Правила callback_query.</summary>
-    procedure RouteCallback(AContext: TTgContext; const ARoutes: TTgRoutes);
   public
     /// <summary>AApi переходит во владение ядра (в т.ч. при исключении).</summary>
     constructor Create(AApi: TTgApi);
@@ -1110,56 +1027,6 @@ threadvar
   // Поток выполняет OnError/OnFault отказа источника: Stop/Start отсюда
   // ждали бы завершения этого же потока.
   GTgInFaultNotify: Boolean;
-
-{ TTgTextMatcher }
-
-constructor TTgTextMatcher.Create(const APattern: string);
-begin
-  inherited Create;
-  // Сначала шаблон: при ошибке компиляции блокировка ещё не создана.
-  // roCompiled — компиляция здесь (без него TRegEx компилирует при первом
-  // поиске, и неверный шаблон проявился бы только в обработчике).
-  FRegEx := TRegEx.Create(APattern, [roNotEmpty, roCompiled]);
-  FPattern := APattern;
-  FLock := TCriticalSection.Create;
-end;
-
-destructor TTgTextMatcher.Destroy;
-begin
-  FreeAndNil(FLock);
-  inherited Destroy;
-end;
-
-function TTgTextMatcher.GetPattern: string;
-begin
-  Result := FPattern;
-end;
-
-function TTgTextMatcher.DoMatch(const AText: string; out AArgs: string): Boolean;
-var
-  LMatch: TMatch;
-begin
-  // Отдельный метод: TMatch (ссылается на общий TPerlRegEx) финализируется
-  // до выхода из блокировки TryMatch.
-  LMatch := FRegEx.Match(AText);
-  Result := LMatch.Success;
-  if not Result then
-    AArgs := ''
-  else if LMatch.Groups.Count > 1 then
-    AArgs := LMatch.Groups[1].Value
-  else
-    AArgs := LMatch.Value;
-end;
-
-function TTgTextMatcher.TryMatch(const AText: string; out AArgs: string): Boolean;
-begin
-  FLock.Enter;
-  try
-    Result := DoMatch(AText, AArgs);
-  finally
-    FLock.Leave;
-  end;
-end;
 
 { TTgWebhookNotifyTransport }
 
@@ -1601,29 +1468,6 @@ end;
 function TTgBot.GetBotUserName: string;
 begin
   Result := TTgBotCore(FCore).GetBotUserName;
-end;
-
-/// <summary>Имя команды: без ведущего '/', в нижнем регистре; пустое или с пробелом/'@' — ETgError.</summary>
-function NormalizeCommandName(const AName: string): string;
-var
-  C: Char;
-begin
-  Result := AName;
-  if Copy(Result, 1, 1) = '/' then
-    Delete(Result, 1, 1);
-  if Result = '' then
-    raise ETgError.Create(Format(TgRouterText(TTgRouterText.EmptyKey), ['Command']));
-  for C in Result do
-    if (C <= ' ') or (C = '@') then
-      raise ETgError.Create(Format(TgRouterText(TTgRouterText.BadCommand), [AName]));
-  Result := AnsiLowerCase(Result);
-end;
-
-/// <summary>Пустой ключ правила — ETgError (ARule — имя метода регистрации).</summary>
-procedure CheckRouteKey(const AKey, ARule: string);
-begin
-  if AKey = '' then
-    raise ETgError.Create(Format(TgRouterText(TTgRouterText.EmptyKey), [ARule]));
 end;
 
 function TTgBot.Command(const AName: string; const AHandler: TProc<ITgContext>): TTgBot;
@@ -2510,127 +2354,6 @@ begin
   end;
 end;
 
-function TTgBotCore.ParseCommand(AContext: TTgContext): Boolean;
-var
-  LText, LToken, LName, LBot: string;
-  LEnd, LAt: Integer;
-begin
-  Result := False;
-  LText := AContext.MessageText;
-  if (Length(LText) < 2) or (LText[1] <> '/') then
-    Exit;
-  // Команда — до первого пробельного символа: '/name[@bot] аргументы'.
-  LEnd := 2;
-  while (LEnd <= Length(LText)) and (LText[LEnd] > ' ') do
-    Inc(LEnd);
-  LToken := Copy(LText, 2, LEnd - 2);
-  LAt := Pos('@', LToken);
-  if LAt > 0 then
-  begin
-    LName := Copy(LToken, 1, LAt - 1);
-    LBot := Copy(LToken, LAt + 1, MaxInt);
-  end
-  else
-  begin
-    LName := LToken;
-    LBot := '';
-  end;
-  if LName = '' then
-    Exit;
-  // username в Telegram без учёта регистра (латиница, цифры, '_').
-  if (LBot <> '') and not SameText(LBot, ResolveBotUserName(AContext.GetCancel)) then
-    Exit;
-  AContext.SetCommand(AnsiLowerCase(LName));
-  AContext.SetArgs(Trim(Copy(LText, LEnd, MaxInt)));
-  Result := True;
-end;
-
-procedure TTgBotCore.RouteMessage(AContext: TTgContext; const ARoutes: TTgRoutes;
-  AIsCommand: Boolean);
-var
-  LRef: ITgContext;
-  LText, LLower, LCommandArgs, LArgs: string;
-  LRoute: TTgRoute;
-  LMatch: TTgMatchRoute;
-  LFound: Boolean;
-
-  // Вызов обработчика правила; True — обработано (обработчик не сбросил Handled).
-  function Fire(const AHandler: TProc<ITgContext>; const AArgs: string): Boolean;
-  begin
-    AContext.SetArgs(AArgs);
-    AContext.SetHandled(True);
-    AHandler(LRef);
-    Result := AContext.GetHandled;
-  end;
-
-begin
-  LRef := AContext;
-  LCommandArgs := AContext.GetArgs;
-  if AIsCommand then
-  begin
-    LFound := False;
-    for LRoute in ARoutes.Lists[TTgRouteKind.Command] do
-      if LRoute.Key = AContext.GetCommand then
-      begin
-        LFound := True;
-        if Fire(LRoute.Handler, LCommandArgs) then
-          Exit;
-        Break;
-      end;
-    if not LFound and Assigned(ARoutes.UnknownCommand) and
-      Fire(ARoutes.UnknownCommand, LCommandArgs) then
-      Exit;
-  end;
-  LText := AContext.MessageText;
-  if LText = '' then
-    Exit;
-  LLower := AnsiLowerCase(LText);
-  for LRoute in ARoutes.Lists[TTgRouteKind.Text] do
-    if LRoute.Key = LLower then
-    begin
-      if Fire(LRoute.Handler, LCommandArgs) then
-        Exit;
-      Break;
-    end;
-  for LMatch in ARoutes.Matches do
-    if LMatch.Matcher.TryMatch(LText, LArgs) and Fire(LMatch.Handler, LArgs) then
-      Exit;
-  if Assigned(ARoutes.AnyText) then
-    Fire(ARoutes.AnyText, LCommandArgs);
-end;
-
-procedure TTgBotCore.RouteCallback(AContext: TTgContext; const ARoutes: TTgRoutes);
-var
-  LRef: ITgContext;
-  LData: string;
-  LRoute: TTgRoute;
-
-  function Fire(const AHandler: TProc<ITgContext>; const AArgs: string): Boolean;
-  begin
-    AContext.SetArgs(AArgs);
-    AContext.SetHandled(True);
-    AHandler(LRef);
-    Result := AContext.GetHandled;
-  end;
-
-begin
-  LRef := AContext;
-  LData := AContext.GetData;
-  if LData = '' then
-    Exit;
-  for LRoute in ARoutes.Lists[TTgRouteKind.Callback] do
-    if LRoute.Key = LData then
-    begin
-      if Fire(LRoute.Handler, '') then
-        Exit;
-      Break;
-    end;
-  for LRoute in ARoutes.Lists[TTgRouteKind.CallbackPrefix] do
-    if (Copy(LData, 1, Length(LRoute.Key)) = LRoute.Key) and
-      Fire(LRoute.Handler, Copy(LData, Length(LRoute.Key) + 1, MaxInt)) then
-      Exit;
-end;
-
 procedure TTgBotCore.HandleRaw(const AUpdate: ITgRawUpdate);
 var
   LContext: TTgContext;
@@ -2661,7 +2384,8 @@ begin
   LRef := LContext;
   try
     // Команда разбирается до OnUpdate: ACtx.Command доступен и в нём.
-    LIsCommand := (AUpdate.Kind = TTgUpdateType.Message) and ParseCommand(LContext);
+    LIsCommand := (AUpdate.Kind = TTgUpdateType.Message) and
+      TTgRouter.ParseCommand(LContext, ResolveBotUserName);
     if Assigned(LOnUpdate) then
       LOnUpdate(LRef);
     // OnUpdate может перехватить обновление (ACtx.Handled := True).
@@ -2669,14 +2393,14 @@ begin
     begin
       if AUpdate.Kind = TTgUpdateType.Message then
       begin
-        RouteMessage(LContext, LRoutes, LIsCommand);
+        TTgRouter.RouteMessage(LContext, LRoutes, LIsCommand);
         // OnMessage — только если ни одно правило не обработало сообщение.
         if not LContext.GetHandled and Assigned(LOnMessage) then
           LOnMessage(LRef);
       end
       else if AUpdate.Kind = TTgUpdateType.CallbackQuery then
       begin
-        RouteCallback(LContext, LRoutes);
+        TTgRouter.RouteCallback(LContext, LRoutes);
         if not LContext.GetHandled and Assigned(LOnCallbackQuery) then
           LOnCallbackQuery(LRef);
       end;
