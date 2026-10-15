@@ -3,7 +3,7 @@
 ![Bot API](https://img.shields.io/badge/Telegram%20Bot%20API-10.3-26A5E4?logo=telegram&logoColor=white)
 ![Delphi](https://img.shields.io/badge/Delphi-10.4%2B-EE1F35?logo=delphi&logoColor=white)
 ![Платформы](https://img.shields.io/badge/платформы-Win32%20%7C%20Win64%20%7C%20Linux64%20%7C%20Android-7A2E0E)
-![Версия](https://img.shields.io/badge/версия-0.2.0-c2500f)
+![Версия](https://img.shields.io/badge/версия-0.2.1-c2500f)
 ![Лицензия](https://img.shields.io/badge/лицензия-MIT-2ea44f)
 
 Библиотека и невизуальный компонент для создания Telegram-ботов на Delphi. Весь Bot API, ничего лишнего в
@@ -104,7 +104,7 @@ end.
 | `Packages` | пакеты `TgBotRT`, `TgBotIndyRT`, `TgBotDT` |
 | `Install` | установка и удаление в IDE |
 | `Demos` | примеры |
-| `Tests` | 77 тестов, работают без сети и без токена |
+| `Tests` | 79 тестов, работают без сети и без токена |
 | `Tools` | генератор API по спецификации и сборка дистрибутива |
 
 ## Известные ограничения
