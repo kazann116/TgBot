@@ -207,27 +207,9 @@ uses
   IdGlobal,
   IdException,
   IdExceptionCore,
-  IdSocketHandle;
-
-resourcestring
-  SRuServerActive = 'Нельзя менять Port, BindAddress и MaxConnections, пока сервер работает';
-  SEnServerActive = 'Cannot change Port, BindAddress and MaxConnections while the server is running';
-  SRuBadPort = 'Недопустимый порт %d (0–65535)';
-  SEnBadPort = 'Invalid port %d (0-65535)';
-  SRuBadBodySize = 'Недопустимый MaxBodySize %d (нужно больше 0)';
-  SEnBadBodySize = 'Invalid MaxBodySize %d (must be greater than 0)';
-  SRuBadConnections = 'Недопустимый MaxConnections %d (нужно 0 и больше)';
-  SEnBadConnections = 'Invalid MaxConnections %d (must be 0 or greater)';
-  SRuStartFailed = 'Не удалось запустить webhook-сервер на %s:%d: %s';
-  SEnStartFailed = 'Failed to start the webhook server on %s:%d: %s';
-  SRuPathTaken = 'Путь webhook "%s" уже занят другим ботом (%s)';
-  SEnPathTaken = 'Webhook path "%s" is already used by another bot (%s)';
-  SRuBadPath = 'Недопустимый путь webhook "%s": пробелы, "?" и "#" не допускаются';
-  SEnBadPath = 'Invalid webhook path "%s": spaces, "?" and "#" are not allowed';
-  SRuPublicUrlNotHttps = 'PublicUrl webhook-сервера должен начинаться с https:// ' +
-    '(Telegram принимает только HTTPS): %s';
-  SEnPublicUrlNotHttps = 'The webhook server PublicUrl must start with https:// ' +
-    '(Telegram accepts HTTPS only): %s';
+  IdSocketHandle,
+  TgBot.Base,
+  TgBot.Consts;
 
 const
   CSecretHeader = 'X-Telegram-Bot-Api-Secret-Token';
@@ -256,15 +238,6 @@ type
     constructor Create(AContext: TIdContext; ALimit: Int64);
     function Write(const Buffer; Count: Longint): Longint; override;
   end;
-
-/// <summary>Текст на языке библиотеки (TgSetLanguage).</summary>
-function LangText(const ARu, AEn: string): string;
-begin
-  if TgGetLanguage = TTgLanguage.En then
-    Result := AEn
-  else
-    Result := ARu;
-end;
 
 /// <summary>Путь с ведущим '/' (пустой — '/').</summary>
 function NormalizePath(const APath: string): string;
@@ -400,11 +373,12 @@ begin
     Exit;
   LPath := NormalizePath(APath);
   if not IsValidPath(LPath) then
-    raise ETgError.CreateFmt(LangText(SRuBadPath, SEnBadPath), [LPath]);
+    raise ETgError.Create(TgLangTextFmt(@SRuWhsBadPath, @SEnWhsBadPath, [LPath]));
   FLock.BeginWrite;
   try
     if FBots.TryGetValue(LPath, LOther) and (LOther <> ABot) then
-      raise ETgError.CreateFmt(LangText(SRuPathTaken, SEnPathTaken), [LPath, LOther.Name]);
+      raise ETgError.Create(TgLangTextFmt(@SRuWhsPathTaken, @SEnWhsPathTaken,
+        [LPath, LOther.Name]));
     FBots.AddOrSetValue(LPath, ABot);
   finally
     FLock.EndWrite;
@@ -464,13 +438,13 @@ end;
 procedure TTgWebhookServer.CheckInactive;
 begin
   if (ComponentState * [csDesigning, csLoading] = []) and Assigned(FHttp) then
-    raise ETgError.Create(LangText(SRuServerActive, SEnServerActive));
+    raise ETgError.Create(TgLangText(@SRuWhsServerActive, @SEnWhsServerActive));
 end;
 
 procedure TTgWebhookServer.SetPort(AValue: Integer);
 begin
   if (AValue < 0) or (AValue > 65535) then
-    raise ETgError.CreateFmt(LangText(SRuBadPort, SEnBadPort), [AValue]);
+    raise ETgError.Create(TgLangTextFmt(@SRuWhsBadPort, @SEnWhsBadPort, [AValue]));
   CheckInactive;
   FPort := AValue;
 end;
@@ -484,7 +458,7 @@ end;
 procedure TTgWebhookServer.SetMaxBodySize(AValue: Integer);
 begin
   if AValue <= 0 then
-    raise ETgError.CreateFmt(LangText(SRuBadBodySize, SEnBadBodySize), [AValue]);
+    raise ETgError.Create(TgLangTextFmt(@SRuWhsBadBodySize, @SEnWhsBadBodySize, [AValue]));
   // Читается потоками запросов (выровненное Integer — атомарно); действует сразу.
   FMaxBodySize := AValue;
 end;
@@ -492,7 +466,7 @@ end;
 procedure TTgWebhookServer.SetMaxConnections(AValue: Integer);
 begin
   if AValue < 0 then
-    raise ETgError.CreateFmt(LangText(SRuBadConnections, SEnBadConnections), [AValue]);
+    raise ETgError.Create(TgLangTextFmt(@SRuWhsBadConnections, @SEnWhsBadConnections, [AValue]));
   CheckInactive;
   FMaxConnections := AValue;
 end;
@@ -594,7 +568,8 @@ begin
     Exit;
   // До открытия порта: URL бота строится из PublicUrl (setWebhook отклонил бы http).
   if (Trim(FPublicUrl) <> '') and not SameText(Copy(Trim(FPublicUrl), 1, 8), 'https://') then
-    raise ETgError.CreateFmt(LangText(SRuPublicUrlNotHttps, SEnPublicUrlNotHttps), [Trim(FPublicUrl)]);
+    raise ETgError.Create(TgLangTextFmt(@SRuWhsPublicUrlNotHttps, @SEnWhsPublicUrlNotHttps,
+      [Trim(FPublicUrl)]));
   LHttp := TIdHTTPServer.Create(nil);
   try
     LHttp.DefaultPort := FPort;
@@ -621,8 +596,8 @@ begin
       LHttp.Active := True;
     except
       on E: Exception do
-        raise ETgError.CreateFmt(LangText(SRuStartFailed, SEnStartFailed),
-          [FBindAddress, FPort, E.Message]);
+        raise ETgError.Create(TgLangTextFmt(@SRuWhsStartFailed, @SEnWhsStartFailed,
+          [FBindAddress, FPort, E.Message]));
     end;
   except
     LHttp.Free;

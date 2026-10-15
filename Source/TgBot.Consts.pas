@@ -177,6 +177,30 @@ resourcestring
   SRuCompRunUnsupported = 'TTelegramBot.Run недоступен на этой платформе: используйте Active';
   SEnCompRunUnsupported = 'TTelegramBot.Run is not available on this platform: use Active';
 
+  { Webhook-сервер TTgWebhookServer (TgBot.Webhook, пакет TgBotIndyRT).
+    Подстановки: путь webhook и имя бота-владельца (PathTaken); адрес,
+    порт и текст ошибки Indy (StartFailed). Стандартные фразы HTTP
+    (Bad Request, Not Found…) — не тексты библиотеки и не переводятся. }
+
+  SRuWhsServerActive = 'Нельзя менять Port, BindAddress и MaxConnections, пока сервер работает';
+  SEnWhsServerActive = 'Cannot change Port, BindAddress and MaxConnections while the server is running';
+  SRuWhsBadPort = 'Недопустимый порт %d (0–65535)';
+  SEnWhsBadPort = 'Invalid port %d (0-65535)';
+  SRuWhsBadBodySize = 'Недопустимый MaxBodySize %d (нужно больше 0)';
+  SEnWhsBadBodySize = 'Invalid MaxBodySize %d (must be greater than 0)';
+  SRuWhsBadConnections = 'Недопустимый MaxConnections %d (нужно 0 и больше)';
+  SEnWhsBadConnections = 'Invalid MaxConnections %d (must be 0 or greater)';
+  SRuWhsStartFailed = 'Не удалось запустить webhook-сервер на %s:%d: %s';
+  SEnWhsStartFailed = 'Failed to start the webhook server on %s:%d: %s';
+  SRuWhsPathTaken = 'Путь webhook "%s" уже занят другим ботом (%s)';
+  SEnWhsPathTaken = 'Webhook path "%s" is already used by another bot (%s)';
+  SRuWhsBadPath = 'Недопустимый путь webhook "%s": пробелы, "?" и "#" не допускаются';
+  SEnWhsBadPath = 'Invalid webhook path "%s": spaces, "?" and "#" are not allowed';
+  SRuWhsPublicUrlNotHttps = 'PublicUrl webhook-сервера должен начинаться с https:// ' +
+    '(Telegram принимает только HTTPS): %s';
+  SEnWhsPublicUrlNotHttps = 'The webhook server PublicUrl must start with https:// ' +
+    '(Telegram accepts HTTPS only): %s';
+
 implementation
 
 end.
