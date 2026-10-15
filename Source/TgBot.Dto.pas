@@ -67,17 +67,38 @@ type
   end;
 
   /// <summary>
+  ///   Служебный интерфейс держателя JSON (TTgJsonHolder): через него DTO
+  ///   хранит держателя и узнаёт его среди владельцев (Supports). В
+  ///   прикладном коде не нужен.
+  /// </summary>
+  ITgJsonHolder = interface
+    ['{F668E69E-3ECF-4BCF-8640-8D01C3E3B8AA}']
+    function GetValue: TJSONValue;
+    /// <summary>На часть JSON ссылается вложенный DTO: вытесненные значения сохраняются.</summary>
+    procedure MarkShared;
+    /// <summary>
+    ///   Принимает значение, удалённое из JSON (владение переходит к держателю):
+    ///   освобождает сразу или, если есть вложенные DTO, хранит до уничтожения.
+    /// </summary>
+    procedure Retire(AValue: TJSONAncestor);
+    /// <summary>Корневое значение (nil для держателя чужого JSON).</summary>
+    property Value: TJSONValue read GetValue;
+  end;
+
+  /// <summary>
   ///   Владелец JSON-значения, разделяемого несколькими DTO (корень и вложенные).
   ///   Значения, вытесненные из JSON при замене полей (Set*/With*), не
   ///   освобождаются сразу, если на часть JSON уже ссылаются вложенные DTO:
   ///   они хранятся до уничтожения держателя (защита от use-after-free).
+  ///   Живёт по счётчику ссылок: храните как ITgJsonHolder (или IInterface).
   /// </summary>
-  TTgJsonHolder = class(TInterfacedObject)
+  TTgJsonHolder = class(TInterfacedObject, ITgJsonHolder)
   private
     FValue: TJSONValue;
     FParent: IInterface;
     FRetired: TObjectList<TJSONAncestor>;
     FShared: Boolean;
+    function GetValue: TJSONValue;
   public
     /// <summary>Держатель, владеющий AValue (nil допустим).</summary>
     constructor Create(AValue: TJSONValue);
@@ -95,7 +116,7 @@ type
     /// </summary>
     procedure Retire(AValue: TJSONAncestor);
     /// <summary>Корневое значение (nil для держателя чужого JSON).</summary>
-    property Value: TJSONValue read FValue;
+    property Value: TJSONValue read GetValue;
   end;
 
   TTgJsonDto = class;
@@ -105,14 +126,14 @@ type
   /// <summary>
   ///   База DTO поверх JSON. Методы Set* изменяют JSON (fluent With* у
   ///   двунаправленных типов); для вложенного DTO меняется JSON корня.
-  ///   JSON всегда принадлежит держателю (TTgJsonHolder), общему для корня и
+  ///   JSON всегда принадлежит держателю (ITgJsonHolder), общему для корня и
   ///   вложенных DTO.
   /// </summary>
   TTgJsonDto = class(TInterfacedObject, ITgJsonObject)
   private
     FValue: TJSONValue;
-    FOwner: IInterface;
-    FHolder: TTgJsonHolder;
+    // Единственная (счётная) ссылка на держателя: удерживает JSON.
+    FHolder: ITgJsonHolder;
     /// <summary>JSON-объект DTO; значение — не объект: ETgError с именем поля AName.</summary>
     function RequireJson(const AName: string): TJSONObject;
   protected
@@ -338,6 +359,11 @@ begin
   inherited Destroy;
 end;
 
+function TTgJsonHolder.GetValue: TJSONValue;
+begin
+  Result := FValue;
+end;
+
 procedure TTgJsonHolder.MarkShared;
 begin
   FShared := True;
@@ -371,11 +397,9 @@ begin
   FValue := AValue;
   if not Assigned(AOwner) then
     FHolder := TTgJsonHolder.Create(AValue)
-  else if (AOwner as TObject) is TTgJsonHolder then
-    FHolder := TTgJsonHolder(AOwner as TObject)
-  else
+  // Владелец — держатель (корня или ответа): тот же держатель, общий JSON.
+  else if not Supports(AOwner, ITgJsonHolder, FHolder) then
     FHolder := TTgJsonHolder.CreateFor(AOwner);
-  FOwner := FHolder;
   // DTO над частью JSON держателя: вытесненные значения больше нельзя освобождать сразу.
   if FValue <> FHolder.Value then
     FHolder.MarkShared;
@@ -397,15 +421,14 @@ destructor TTgJsonDto.Destroy;
 begin
   FJson := nil;
   FValue := nil;
-  FHolder := nil;
   // Последняя ссылка на держателя освобождает JSON.
-  FOwner := nil;
+  FHolder := nil;
   inherited Destroy;
 end;
 
 function TTgJsonDto.JsonOwner: IInterface;
 begin
-  Result := FOwner;
+  Result := FHolder;
 end;
 
 function TTgJsonDto.Clone: ITgJsonObject;

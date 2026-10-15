@@ -54,6 +54,7 @@ uses
   IdCustomHTTPServer,
   IdHTTPServer,
   TgBot,
+  TgBot.Base,
   TgBot.Component;
 
 const
@@ -92,20 +93,14 @@ type
   /// </summary>
   [ComponentPlatformsAttribute(pidWin32 or pidWin64 or pidLinux64)]
   TTgWebhookServer = class(TTgCustomWebhookServer)
-  private type
-    /// <summary>Связь отложенного запуска с компонентом (nil — уничтожен).</summary>
-    TLink = class(TInterfacedObject)
-    private
-      FOwner: TTgWebhookServer;
-    end;
   private
     FHttp: TIdHTTPServer;
     // Путь → бот; запись — под FLock.BeginWrite, запросы держат BeginRead
     // на время HandleWebhook (бот не освобождается посреди вызова).
     FLock: TLightweightMREW;
     FBots: TDictionary<string, TTelegramBot>;
-    FLink: TLink;
-    FLinkRef: IInterface;
+    // Связь отложенного запуска с компонентом (Owner = nil — уничтожен).
+    FLink: ITgOwnerLink;
     FPort: Integer;
     FBindAddress: string;
     FPublicUrl: string;
@@ -208,7 +203,6 @@ uses
   IdException,
   IdExceptionCore,
   IdSocketHandle,
-  TgBot.Base,
   TgBot.Consts;
 
 const
@@ -305,9 +299,7 @@ end;
 constructor TTgWebhookServer.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
-  FLink := TLink.Create;
-  FLinkRef := FLink;
-  FLink.FOwner := Self;
+  FLink := TgNewOwnerLink(Self);
   FBots := TDictionary<string, TTelegramBot>.Create;
   FPort := TgWebhookDefaultPort;
   FBindAddress := TgWebhookDefaultBindAddress;
@@ -317,7 +309,7 @@ end;
 destructor TTgWebhookServer.Destroy;
 begin
   if Assigned(FLink) then
-    FLink.FOwner := nil;
+    FLink.Clear;
   FStartPending := False;
   // Сначала остановить приём: потоки запросов завершены, HandleWebhook не идёт.
   StopServer;
@@ -331,7 +323,6 @@ begin
     end;
   end;
   FLink := nil;
-  FLinkRef := nil;
   // inherited Destroy рассылает Notification: боты обнуляют Webhook.Server.
   inherited Destroy;
   FreeAndNil(FBots);
@@ -512,21 +503,22 @@ end;
 
 procedure TTgWebhookServer.Loaded;
 var
-  LLink: IInterface;
+  LLink: ITgOwnerLink;
 begin
   inherited Loaded;
   if FStreamedActive and not (csDesigning in ComponentState) then
   begin
     FStreamedActive := False;
     FStartPending := True;
-    LLink := FLinkRef;
+    LLink := FLink;
     // Как у TTelegramBot: OnCreate формы успевает задать Port/PublicUrl.
     TThread.ForceQueue(nil,
       procedure
       var
         LOwner: TTgWebhookServer;
       begin
-        LOwner := TLink(LLink as TObject).FOwner;
+        // Владелец связи — всегда TTgWebhookServer (TgNewOwnerLink(Self)).
+        LOwner := TTgWebhookServer(LLink.Owner);
         if Assigned(LOwner) then
           LOwner.StartDeferred;
       end);

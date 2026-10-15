@@ -9162,6 +9162,363 @@ begin
   Check(TgGetLanguage = LLanguage, 'язык восстановлен');
 end;
 
+{ Владение, фаза 5: ITgJsonHolder, ITgOwnerLink, номер запуска компонента }
+
+type
+  /// <summary>DTO с доступом к защищённому JsonOwner.</summary>
+  IOwnerDto = interface(ITgJsonObject)
+    ['{EB41F43D-8271-4822-88F2-204BD4445B5E}']
+    function Owner: IInterface;
+  end;
+
+  TOwnerDto = class(TTgJsonDto, IOwnerDto)
+  public
+    function Owner: IInterface;
+  end;
+
+  /// <summary>Посторонний владелец JSON (не держатель): считает освобождения.</summary>
+  TOwnerProbe = class(TInterfacedObject)
+  private
+    FFreed: PInteger;
+  public
+    constructor Create(AFreed: PInteger);
+    destructor Destroy; override;
+  end;
+
+var
+  // Замер OWN5: сколько перезапусков компонента получили бота по прежнему адресу.
+  GOwnAbaSameAddress: Integer = -1;
+  GOwnAbaRestarts: Integer = 0;
+
+function TOwnerDto.Owner: IInterface;
+begin
+  Result := JsonOwner;
+end;
+
+constructor TOwnerProbe.Create(AFreed: PInteger);
+begin
+  inherited Create;
+  FFreed := AFreed;
+end;
+
+destructor TOwnerProbe.Destroy;
+begin
+  Inc(FFreed^);
+  inherited Destroy;
+end;
+
+/// <summary>Тождество объектов за интерфейсами (канонический IInterface).</summary>
+function SameIntf(const A, B: IInterface): Boolean;
+begin
+  Result := Assigned(A) and Assigned(B) and ((A as IInterface) = (B as IInterface));
+end;
+
+{ Хелперы TestJsonHolderIntf: временные ссылки на держателя живут до выхода
+  из функции, а не до конца теста. }
+
+/// <summary>Владелец ADto — держатель, владеющий JSON самого ADto.</summary>
+function HolderOwnsValue(const ADto: IOwnerDto): Boolean;
+var
+  LHolder: ITgJsonHolder;
+begin
+  Result := Supports(ADto.Owner, ITgJsonHolder, LHolder) and (LHolder.Value = ADto.RawValue);
+end;
+
+/// <summary>Вложенный DTO над полем AName корня ARoot (владелец — держатель корня).</summary>
+function NewNestedDto(const ARoot: IOwnerDto; const AName: string): IOwnerDto;
+begin
+  Result := TOwnerDto.Create(ARoot.Raw.GetValue(AName), ARoot.Owner);
+end;
+
+function SameOwner(const A, B: IOwnerDto): Boolean;
+begin
+  Result := SameIntf(A.Owner, B.Owner);
+end;
+
+/// <summary>Владелец JSON у ADto — держатель (ITgJsonHolder), а не AForeign.</summary>
+function OwnerIsOwnHolder(const ADto: IOwnerDto; const AForeign: IInterface): Boolean;
+var
+  LOwner: IInterface;
+begin
+  LOwner := ADto.Owner;
+  Result := Supports(LOwner, ITgJsonHolder) and not SameIntf(LOwner, AForeign);
+end;
+
+procedure TestJsonHolderIntf;
+var
+  LRoot, LNested, LForeign: IOwnerDto;
+  LProbe: IInterface;
+  LJson: TJSONObject;
+  LFreed: Integer;
+begin
+  LRoot := TOwnerDto.Create(JsonOf('{"a":{"b":1}}'), nil);
+  Check(HolderOwnsValue(LRoot), 'корень: владелец — ITgJsonHolder с JSON корня');
+  // Вложенный DTO над частью JSON корня — тот же держатель (Supports, без приведения к классу).
+  LNested := NewNestedDto(LRoot, 'a');
+  Check(SameOwner(LNested, LRoot), 'вложенный DTO — общий держатель корня');
+  Check(not HolderOwnsValue(LNested), 'держатель вложенного — корневой (JSON корня)');
+  CheckEquals('{"b":1}', LNested.AsJson, 'вложенный DTO читает JSON корня');
+  // Корень отпущен — вложенный удерживает держателя и JSON.
+  LRoot := nil;
+  CheckEquals('{"b":1}', LNested.AsJson, 'после отпускания корня JSON жив');
+  LNested := nil;
+  // Посторонний владелец: новый держатель удерживает его, JSON не освобождает.
+  LFreed := 0;
+  LJson := TJSONObject.Create;
+  try
+    LProbe := TOwnerProbe.Create(@LFreed);
+    LForeign := TOwnerDto.Create(LJson, LProbe);
+    // Отдельная функция: временные ссылки на держателя отпускаются при выходе из неё.
+    Check(OwnerIsOwnHolder(LForeign, LProbe), 'посторонний владелец: создан свой держатель');
+    LProbe := nil;
+    CheckEquals(0, LFreed, 'посторонний владелец удерживается DTO');
+    LForeign := nil;
+    CheckEquals(1, LFreed, 'посторонний владелец отпущен вместе с DTO');
+  finally
+    // Держатель постороннего JSON им не владеет — освобождает создатель.
+    LJson.Free;
+  end;
+end;
+
+procedure TestOwnerLink;
+const
+  CReaders = 4;
+var
+  LObj: TObject;
+  LLink: ITgOwnerLink;
+  LStop, LBad, LReads, LSawNil, I: Integer;
+  LThreads: array[0..CReaders - 1] of TThread;
+begin
+  LObj := TObject.Create;
+  try
+    LLink := TgNewOwnerLink(LObj);
+    Check(LLink.Owner = LObj, 'Owner — владелец');
+    LStop := 0;
+    LBad := 0;
+    LReads := 0;
+    LSawNil := 0;
+    for I := 0 to CReaders - 1 do
+    begin
+      LThreads[I] := TThread.CreateAnonymousThread(
+        procedure
+        var
+          LSeenNil: Boolean;
+          LOwner: TObject;
+        begin
+          LSeenNil := False;
+          while AtomicCmpExchange(LStop, 0, 0) = 0 do
+          begin
+            LOwner := LLink.Owner;
+            AtomicIncrement(LReads);
+            if not Assigned(LOwner) then
+            begin
+              if not LSeenNil then
+                AtomicIncrement(LSawNil);
+              LSeenNil := True;
+            end
+            // Только владелец или nil; после nil владелец не возвращается.
+            else if (LOwner <> LObj) or LSeenNil then
+              AtomicIncrement(LBad);
+          end;
+        end);
+      LThreads[I].FreeOnTerminate := False;
+      LThreads[I].Start;
+    end;
+    try
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := AtomicCmpExchange(LReads, 0, 0) > 10000;
+        end, 5000), 'читатели работают');
+      LLink.Clear;
+      Check(not Assigned(LLink.Owner), 'Clear → Owner = nil');
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := AtomicCmpExchange(LSawNil, 0, 0) = CReaders;
+        end, 5000), 'все читатели увидели nil');
+      LLink.Clear;
+      Check(not Assigned(LLink.Owner), 'повторный Clear — nil');
+    finally
+      AtomicExchange(LStop, 1);
+      for I := 0 to CReaders - 1 do
+      begin
+        LThreads[I].WaitFor;
+        LThreads[I].Free;
+      end;
+    end;
+    CheckEquals(0, LBad, 'чтения: только владелец или nil, без возврата владельца после nil');
+  finally
+    LLink := nil;
+    LObj.Free;
+  end;
+end;
+
+/// <summary>
+///   Выполняет AProc в отдельном потоке и ждёт его завершения: события,
+///   поставленные AProc в очередь, остаются в ней (CheckSynchronize не
+///   вызывается до сигнала завершения).
+/// </summary>
+procedure RunInBackground(const AProc: TProc);
+var
+  LDone: TEvent;
+  LThread: TThread;
+begin
+  LDone := TEvent.Create(nil, True, False, '');
+  try
+    LThread := TThread.CreateAnonymousThread(
+      procedure
+      begin
+        try
+          AProc();
+        finally
+          LDone.SetEvent;
+        end;
+      end);
+    LThread.FreeOnTerminate := False;
+    try
+      LThread.Start;
+      Check(LDone.WaitFor(5000) = wrSignaled, 'фоновый вызов завершён');
+    finally
+      LThread.WaitFor;
+      LThread.Free;
+    end;
+  finally
+    LDone.Free;
+  end;
+end;
+
+/// <summary>
+///   Вызывает обработчики бота (ARegistered, AFault с ETgApiError 500) из
+///   фонового потока — они ставят события в очередь главного потока, — затем
+///   метку 'mark' в ALog и обрабатывает очередь (CheckSynchronize) до метки
+///   номер AMarks + 1.
+/// </summary>
+procedure PostLateEvents(ALog: TTextLog; var AMarks: Integer; const ARegistered: TProc;
+  const AFault: TProc<Exception>);
+var
+  LExpected: Integer;
+begin
+  RunInBackground(
+    procedure
+    var
+      LError: Exception;
+    begin
+      if Assigned(ARegistered) then
+        ARegistered();
+      if Assigned(AFault) then
+      begin
+        LError := ETgApiError.Create('stale', 500, 'stale');
+        try
+          AFault(LError);
+        finally
+          LError.Free;
+        end;
+      end;
+      // Очередь FIFO: метка обрабатывается после поставленных выше событий.
+      TThread.Queue(nil,
+        procedure
+        begin
+          ALog.Add('mark');
+        end);
+    end);
+  Inc(AMarks);
+  LExpected := AMarks;
+  Check(PumpUntil(
+    function: Boolean
+    begin
+      Result := ALog.CountOf('mark') = LExpected;
+    end, 5000), 'очередь обработана (метка ' + IntToStr(LExpected) + ')');
+end;
+
+/// <summary>
+///   Поздние события старого запуска (Delivery = Main): обработчики
+///   OnWebhookRegistered/OnFault прежнего бота, вызванные из фонового потока
+///   после Stop → Start, ставят события в очередь; затем CheckSynchronize.
+///   Событие прежнего запуска не должно сработать для нового (сверяется номер
+///   запуска, а не указатель бота — новый бот часто занимает адрес прежнего).
+///   Событие, поставленное в очередь до Stop, сюда не годится: Stop из
+///   главного потока сам обрабатывает очередь (прежний бот ещё Stopping).
+/// </summary>
+procedure TestComponentGenerationABA;
+const
+  CRestarts = 5;
+var
+  LEvents: TComponentEvents;
+  LTransportRef: ITgTransport;
+  LBot: TTelegramBot;
+  LOldRegistered, LCurrentRegistered: TProc;
+  LOldFault: TProc<Exception>;
+  LOldBot: Pointer;
+  I, LMarks: Integer;
+begin
+  LMarks := 0;
+  GOwnAbaSameAddress := 0;
+  GOwnAbaRestarts := CRestarts;
+  LEvents := TComponentEvents.Create;
+  try
+    LTransportRef := TScriptCancellableTransport.Create(WebhookScript(False));
+    LBot := TTelegramBot.Create(nil);
+    try
+      LBot.Transport := LTransportRef;
+      LBot.Mode := TTgReceiveMode.Webhook;
+      LBot.Webhook.Url := 'https://example.org/hook';
+      LBot.OnStop := LEvents.DoStop;
+      LBot.OnFault := LEvents.DoFault;
+      LBot.OnWebhookRegistered := LEvents.DoWebhookRegistered;
+      LBot.Active := True;
+      Check(PumpUntil(
+        function: Boolean
+        begin
+          Result := LEvents.Log.CountOf('registered') = 1;
+        end, 5000), 'первый запуск: OnWebhookRegistered');
+      for I := 1 to CRestarts do
+      begin
+        // Обработчики, назначенные компонентом этому боту (его запуску).
+        LOldRegistered := LBot.Bot.OnWebhookRegistered;
+        LOldFault := LBot.Bot.OnFault;
+        LOldBot := Pointer(LBot.Bot);
+        LBot.Active := False;
+        LBot.Active := True;
+        if Pointer(LBot.Bot) = LOldBot then
+          Inc(GOwnAbaSameAddress);
+        Check(PumpUntil(
+          function: Boolean
+          begin
+            Result := LEvents.Log.CountOf('registered') = I + 1;
+          end, 5000), Format('перезапуск %d: OnWebhookRegistered нового бота', [I]));
+        PostLateEvents(LEvents.Log, LMarks, LOldRegistered, LOldFault);
+        CheckEquals(I + 1, LEvents.Log.CountOf('registered'),
+          Format('перезапуск %d: OnWebhookRegistered прежнего запуска не вызван', [I]));
+        // OnFault прежнего запуска доставляется, как и раньше (ошибка была),
+        // но новый бот не останавливается и OnStop(Fault) не вызывается.
+        CheckEquals(I, LEvents.Log.CountOf('fault 500'),
+          Format('перезапуск %d: OnFault прежнего запуска доставлен', [I]));
+        CheckEquals(0, LEvents.Log.CountOf('stop fault'),
+          Format('перезапуск %d: OnStop(Fault) от прежнего запуска не вызван', [I]));
+        Check(LBot.Active and (LBot.State = TTgBotState.Running),
+          Format('перезапуск %d: новый бот работает', [I]));
+      end;
+      CheckEquals(CRestarts, LEvents.Log.CountOf('stop requested'), 'OnStop(Requested) — по разу на Stop');
+      // Контроль: обработчик текущего запуска через ту же очередь срабатывает.
+      LCurrentRegistered := LBot.Bot.OnWebhookRegistered;
+      PostLateEvents(LEvents.Log, LMarks, LCurrentRegistered, nil);
+      CheckEquals(CRestarts + 2, LEvents.Log.CountOf('registered'),
+        'обработчик текущего запуска — событие доставлено');
+      CheckEquals(0, LEvents.NotMain, 'события — в главном потоке');
+      LBot.Active := False;
+    finally
+      LBot.Free;
+    end;
+    // Компонент освобождён: связь отцеплена, поздний обработчик — без события и без AV.
+    PostLateEvents(LEvents.Log, LMarks, LCurrentRegistered, LOldFault);
+    CheckEquals(CRestarts + 2, LEvents.Log.CountOf('registered'), 'после Free — OnWebhookRegistered не вызван');
+    CheckEquals(CRestarts, LEvents.Log.CountOf('fault 500'), 'после Free — OnFault не вызван');
+  finally
+    LEvents.Free;
+  end;
+end;
+
 procedure RunAll;
 begin
   Writeln('TgBot ', TgBotVersion, ' (Bot API ', TgBotApiVersion, ') — офлайн-тесты');
@@ -9287,6 +9644,13 @@ begin
   RunTest('6E2: Ctx.Edit — «message is not modified» → False, сырые Api — исключение', TestContextEditNotModified);
   RunTest('6E2: Webhook.IpAddress и Certificate → setWebhook (ip_address, certificate multipart)',
     TestComponentWebhookCertificate);
+  RunTest('Владение, фаза 5: ITgJsonHolder — общий держатель вложенных DTO, посторонний владелец',
+    TestJsonHolderIntf);
+  RunTest('Владение, фаза 5: ITgOwnerLink — Clear → Owner = nil, чтение из 4 потоков',
+    TestOwnerLink);
+  RunTest('Владение, фаза 5: компонент (Main) — поздние события старого запуска после ' +
+    'Stop → Start не срабатывают для нового (номер запуска, а не указатель)',
+    TestComponentGenerationABA);
 {$IFDEF MSWINDOWS}
   RunTest('Завершение процесса при висящих обработчиках: < 2 с, код 0',
     TestProcessExitWithHangingHandlers);
@@ -9324,6 +9688,8 @@ begin
     '200 циклов Start/Stop/Free = %d; счётчики живых объектов: %s',
     [GOwnFreeCancellableMs, GOwnFreePlainMs, GOwnChurnMs,
     {$IFDEF TGBOT_TESTHOOKS}'включены'{$ELSE}'выключены (без TGBOT_TESTHOOKS)'{$ENDIF}]));
+  Writeln(Format('Замеры OWN5: новый бот по адресу прежнего — %d из %d перезапусков',
+    [GOwnAbaSameAddress, GOwnAbaRestarts]));
   Writeln(Format('Тестов: %d, не прошло: %d; проверок: %d, ошибок: %d',
     [GTests, GTestsFailed, GPassed + GFailed, GFailed]));
   if GFailed > 0 then
