@@ -1,5 +1,36 @@
 # История изменений TgBot
 
+## 0.2.0 — 2026-10-15
+
+Внутренняя реструктуризация исходников. Публичный API не изменился: по-прежнему достаточно `uses TgBot`
+(плюс `TgBot.Component` / `TgBot.Webhook` для компонентов).
+
+### Изменения
+
+- **`TgBot.pas` разбит на модули** `TgBot.Types` (сгенерированный слой и `TTgApi`), `TgBot.Keyboards`
+  (`TTgKeyboard`, `TgRow`), `TgBot.Context` (`ITgContext`), `TgBot.Router` (маршрутизатор), `TgBot.Bot.Core`
+  (внутреннее ядро бота) и `TgBot.Bot` (`TTgBot`). `TgBot` стал фасадом: только реэкспорт псевдонимами
+  (псевдонимы сгенерированных типов — `Source\Generated\Gen.Aliases.inc`, создаёт `TgBotGen --gen`).
+- **`TgBot.Updates.pas` разбит на модули** `TgBot.Updates.Types` (общие типы), `TgBot.Updates.Dispatcher`
+  (`TTgUpdateDispatcher`), `TgBot.Updates.Polling` (`TTgLongPollSource`) и `TgBot.Updates.WebhookSource`
+  (`TTgWebhookSource`). `TgBot.Updates` стал фасадом.
+- **Ядра за интерфейсами.** У бота, диспетчера и источников обновлений одно поле ядра через служебный
+  интерфейс (`ITgBotCore`, `ITgDispatchCore`, `ITgPollCore`, `ITgWebhookCore`) вместо пары «объект + ссылка
+  на интерфейс» и приведений типов.
+- Удалён неиспользуемый код (подготовка к разбиению).
+
+### Совместимость
+
+- Исходный код, использующий `uses TgBot`, менять не нужно.
+- Изменились `UnitName` и полные имена типов в RTTI: `TgBot.TTgBot` → `TgBot.Bot.TTgBot`, `TgBot.TTgApi` →
+  `TgBot.Types.TTgApi`, `TgBot.TTgBotState` → `TgBot.Bot.Core.TTgBotState`, `TgBot.ITgContext` →
+  `TgBot.Context.ITgContext`, `TgBot.TTgKeyboard` → `TgBot.Keyboards.TTgKeyboard`,
+  `TgBot.Updates.TTgLongPollSource` → `TgBot.Updates.Polling.TTgLongPollSource` и др. Важно, только если
+  код сравнивает или сохраняет эти имена.
+- Изменились имена ресурсов `resourcestring` перенесённых текстов (теперь с префиксом нового модуля).
+  Важно только для внешних переводов (ITE, `.drc`) — их нужно обновить.
+- Пакеты пересоберите: в `TgBotRT` добавлены новые модули (`.dcp`/`.bpl` 0.1.0 несовместимы).
+
 ## 0.1.0 — 2026-10-09
 
 Первый публичный выпуск.

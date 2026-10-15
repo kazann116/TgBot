@@ -137,15 +137,16 @@ type
   /// <summary>
   ///   Реализация ITgContext. Поля читаются из сырого JSON обновления;
   ///   типизированные объекты (Update, From, Message) разделяют этот JSON и
-  ///   удерживают обновление. Контекст удерживает ядро бота (FCoreRef):
-  ///   клиент FApi действителен, пока жив контекст, даже после Free бота.
+  ///   удерживают обновление. FCoreKeepAlive удерживает ядро бота, пока жив
+  ///   контекст (ядро через это поле не вызывается): клиент FApi действителен,
+  ///   пока жив контекст, даже после Free бота.
   ///   Служебное: создаёт ядро бота (TgBot.Bot.Core), Command и Args
   ///   заполняет маршрутизатор (TTgRouter, TgBot.Router); не часть
   ///   публичного API библиотеки.
   /// </summary>
   TTgContext = class(TInterfacedObject, ITgContext)
   private
-    FCoreRef: IInterface;
+    FCoreKeepAlive: IInterface;
     FApi: TTgApi;
     FRaw: ITgRawUpdate;
     FCancel: ITgCancellation;
@@ -227,7 +228,7 @@ constructor TTgContext.Create(const ACore: IInterface; AApi: TTgApi; const ARaw:
   const ACancel: ITgCancellation; const AStorage: ITgStateStorage);
 begin
   inherited Create;
-  FCoreRef := ACore;
+  FCoreKeepAlive := ACore;
   FApi := AApi;
   FRaw := ARaw;
   FCancel := ACancel;
