@@ -108,6 +108,7 @@
         <DCCReference Include="..\Source\TgBot.Updates.Types.pas"/>
         <DCCReference Include="..\Source\TgBot.Updates.Dispatcher.pas"/>
         <DCCReference Include="..\Source\TgBot.Updates.Polling.pas"/>
+        <DCCReference Include="..\Source\TgBot.Updates.WebhookSource.pas"/>
         <DCCReference Include="..\Source\TgBot.Updates.pas"/>
         <DCCReference Include="..\Source\TgBot.State.pas"/>
         <DCCReference Include="..\Source\TgBot.Keyboards.pas"/>
