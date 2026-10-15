@@ -1,7 +1,7 @@
 ﻿unit TgBot;
 
 {
-  TgBot 0.2.1 — библиотека Telegram Bot API 10.3 для Delphi (10.4 Sydney и новее;
+  TgBot 0.2.2 — библиотека Telegram Bot API 10.3 для Delphi (10.4 Sydney и новее;
   Win32, Win64, Linux64, Android).
 
   Подключение: добавьте папку Source в Search Path проекта (или в пути

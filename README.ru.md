@@ -17,13 +17,14 @@
 11. [Тесты и обновление API](#11-тесты-и-обновление-api)
 12. [Демо-проекты](#12-демо-проекты)
 13. [Язык сообщений и перевод](#13-язык-сообщений-и-перевод)
+14. [Правила владения](#14-правила-владения)
 
 ---
 
 ## 1. Что это
 
 - **Telegram Bot API 10.3, весь API.** Все типы и методы сгенерированы по официальной спецификации генератором
-  `Tools\TgBotGen` (константа `TgBotApiVersion`). Версия библиотеки — `TgBotVersion` (сейчас 0.2.1).
+  `Tools\TgBotGen` (константа `TgBotApiVersion`). Версия библиотеки — `TgBotVersion` (сейчас 0.2.2).
 - **Платформы:** Win32, Win64, Linux64, Android (32 и 64 бит). iOS не поддерживается.
 - **Delphi 10.4 Sydney и новее.** Проверено на 10.4 и 12.
 - **Зависимости.** Ядро использует только RTL (`System.Net.HttpClient`, `System.JSON`, `System.Threading`).
@@ -507,25 +508,55 @@ end;
 ### Отмена
 
 Сгенерированные методы используют «окружающий» токен отмены потока (`TTgCancelScope`). Внутри обработчиков
-бота он задан автоматически (`ACtx.Cancel`): при остановке бота вызовы `ACtx.Api` прерываются. Свой токен:
+бота он задан автоматически (`ACtx.Cancel`): при остановке бота вызовы `ACtx.Api` прерываются. Свой токен —
+источник отмены `TTgCancellationSource.New` (`New(AParent)` — связанный: отменяется вместе с родителем).
+Храните его как `ITgCancellationSource`, например в поле формы для кнопки «Отмена»:
 
 ```pascal
-var
-  LSource: TTgCancellationSource;
-  LToken: ITgCancellation;
-  LScope: TTgCancelScope;
-begin
-  LSource := TTgCancellationSource.Create;
-  LToken := LSource; // интерфейсная ссылка управляет временем жизни источника
-  // LSource.Cancel из другого потока (кнопка «Отмена») прервёт вызовы ниже
-  LScope := TTgCancelScope.Enter(LToken);
-  try
-    LApi.SendDocument(LChatId, TTgInputFile.FromFile('C:\big.zip'));
-  finally
-    LScope.Leave;
+type
+  TMainForm = class(TForm)
+    ...
+  private
+    FApi: TTgApi;
+    FChatId: Int64;
+    FCancel: ITgCancellationSource; // интерфейс, а не TTgCancellationSource
   end;
+
+procedure TMainForm.SendButtonClick(Sender: TObject);
+var
+  LCancel: ITgCancellationSource;
+begin
+  LCancel := TTgCancellationSource.New;
+  FCancel := LCancel;
+  TTask.Run(
+    procedure
+    var
+      LScope: TTgCancelScope;
+    begin
+      LScope := TTgCancelScope.Enter(LCancel); // вызовы ниже прерываются отменой
+      try
+        try
+          FApi.SendDocument(FChatId, TTgInputFile.FromFile('C:\big.zip'));
+        except
+          on ETgCancelledError do
+            ; // отменено кнопкой
+        end;
+      finally
+        LScope.Leave;
+      end;
+    end);
+end;
+
+procedure TMainForm.CancelButtonClick(Sender: TObject);
+begin
+  if FCancel <> nil then
+    FCancel.Cancel;
 end;
 ```
+
+Не храните ссылку на класс (`LSource: TTgCancellationSource`) и не вызывайте для источника `Free`: объект живёт
+по счётчику ссылок интерфейсов и освобождается вместе с последней из них — переменная класса станет висячей.
+Конструктор `Create` оставлен для совместимости; подробнее — [раздел 14](#14-правила-владения).
 
 Отмена прерывает ожидания (лимитёр, `retry_after`) сразу, а идущий HTTP-запрос — на Windows сразу, на Linux и
 Android — по таймауту ответа. `Free` клиента отменяет его незавершённые вызовы. Для универсального `Call` есть
@@ -1033,3 +1064,56 @@ webhook-сервера тоже: `TgBotIndyRT` берёт их оттуда). Е
   («Ошибка Telegram Bot API в методе sendMessage (код 400): Bad Request: chat not found»).
 - Стандартные HTTP-ответы встроенного webhook-сервера (`Bad Request`, `Not Found` и т.п.).
 - Имена параметров, методов и полей, подставляемые в тексты.
+
+## 14. Правила владения
+
+Внутри библиотеки объекты со счётчиком ссылок (`TInterfacedObject`) используются только через интерфейсы.
+Для прикладного кода из этого следует несколько правил.
+
+### Что освобождаете вы, а что живёт по счётчику ссылок
+
+- **Обычные объекты — `Free` или владелец.** `TTgApi`, `TTgBot` (создали — освободите), компоненты
+  `TTelegramBot` и `TTgWebhookServer` (владелец — форма). `TTgApi` не подсчитывается: клиентом, созданным
+  вами, владеете вы, а `TTgBot.Api` и `ACtx.Api` принадлежат боту — не освобождайте их.
+- **Интерфейсы — только интерфейсная ссылка.** `ITgContext`, `ITgCancellation` / `ITgCancellationSource`,
+  подписка `Register` (освобождение ссылки — отписка), `ITgStateStorage`, DTO Bot API (`ITgMessage` и др.).
+  Объект освобождается вместе с последней ссылкой; `Free` не нужен.
+
+### Что можно хранить
+
+- **`ITgContext` — и после возврата из обработчика, и после `Free` бота.** Контекст удерживает внутреннее
+  ядро бота: `Text`, `StateKey`, `State[...]` доступны, а `ACtx.Api.GetMe`, `ACtx.Reply` и другие вызовы
+  выбрасывают `ETgCancelledError` (клиент закрыт). Ядро освобождается вместе с последним контекстом. Указатель
+  `ACtx.Api` (класс `TTgApi`) не храните дольше самого контекста.
+- **Источник отмены — как `ITgCancellationSource`**, созданный через `TTgCancellationSource.New`
+  ([раздел 5, «Отмена»](#отмена)); потребителям отдавайте его как `ITgCancellation`.
+
+### Чего делать нельзя
+
+- Вызывать `Free` для `Bot.Source`, `Bot.WebhookSource` и `Bot.Dispatcher`: это объекты со счётчиком ссылок,
+  ими владеет бот (свойства отдают классы для тонкой настройки; перевод на интерфейсы запланирован в 0.3.0).
+- Хранить `TTgCancellationSource` как класс (`LSource: TTgCancellationSource`) и вызывать для него `Free`.
+- Обращаться после `Free` бота к переменной бота, захваченной в обработчике (`LBot` — уже освобождённый
+  объект).
+
+### Free во время висящих запросов
+
+`Free` бота не ждёт зависший запрос или обработчик дольше `Stop`: незавершённые вызовы отменяются, а
+внутреннее ядро (клиент, хранилище состояния, назначенные обработчики) освобождается позже — когда последнюю
+ссылку отпустит фоновая подготовка запуска (`getMe`, `setMyCommands`), обработчик или сохранённый
+`ITgContext`. Поэтому ядро может освободиться в потоке пула или обработчика, а не в главном: обработчики и
+захваченные ими объекты не должны рассчитывать на освобождение в главном потоке. Поздние ответы и ошибки таких
+запросов боту уже не сообщаются (`OnError` не вызывается).
+
+### Тесты владения
+
+`Tests\TgBotTests.dpr`, собранный с символом `TGBOT_TESTHOOKS`, дополнительно проверяет счётчики живых ядер и
+задач подготовки запуска (служебные хуки `TgBot.Bot.Core`, только для тестов):
+
+```
+dcc64 -B -DTGBOT_TESTHOOKS -U..\Source TgBotTests.dpr
+TgBotTests.exe
+```
+
+Без символа эти проверки пропускаются; остаются косвенные (транспорт отпущен) и отчёт менеджера памяти об
+утечках. В свои программы `TGBOT_TESTHOOKS` не добавляйте.
