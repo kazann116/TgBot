@@ -59,9 +59,10 @@
         procedure(ACtx: ITgContext) begin ACtx.Reply('Заказ №' + ACtx.Args); end);
 
   Модуль собирает в одном месте:
-  - сгенерированные типы и методы Bot API (Source\Generated\Gen.*.inc,
-    TgBotGen по спецификации Bot API 10.3) — включаются относительно этого
-    файла, дополнительный путь -I не нужен;
+  - псевдонимы сгенерированных типов и клиента TTgApi из TgBot.Types
+    (Source\Generated\Gen.Aliases.inc, TgBotGen по спецификации Bot API
+    10.3) — включается относительно этого файла, дополнительный путь -I
+    не нужен;
   - псевдонимы типов ядра (TgBot.Base, TgBot.Json, TgBot.Http, TgBot.Dto,
     TgBot.Core, TgBot.Updates, TgBot.State), чтобы пользователю не
     требовались другие модули в uses;
@@ -91,6 +92,7 @@ uses
   TgBot.Http,
   TgBot.Dto,
   TgBot.Core,
+  TgBot.Types,
   TgBot.Updates,
   TgBot.State;
 
@@ -272,14 +274,9 @@ type
   /// <summary>Хранилище состояния в памяти (по умолчанию).</summary>
   TTgMemoryStateStorage = TgBot.State.TTgMemoryStateStorage;
 
-  { Сгенерированные типы Bot API }
+  { Сгенерированные типы Bot API и клиент TTgApi (TgBot.Types) }
 
-{$I Generated\Gen.Forward.inc}
-{$I Generated\Gen.Enums.inc}
-{$I Generated\Gen.Unions.inc}
-{$I Generated\Gen.Intf.inc}
-{$I Generated\Gen.Factories.inc}
-{$I Generated\Gen.Options.inc}
+{$I Generated\Gen.Aliases.inc}
 
   { Построители клавиатур (ручной код) }
 
@@ -401,15 +398,6 @@ type
     /// <summary>Принудительный ответ на сообщение (ForceReply) с подсказкой APlaceholder.</summary>
     class function ForceReply(const APlaceholder: string = '';
       ASelective: Boolean = False): ITgForceReply; static;
-  end;
-
-  /// <summary>
-  ///   Клиент Telegram Bot API. Для каждого метода: синхронный вызов
-  ///   (исключение при ошибке), Try* (False и TTgErrorInfo), *Async (колбэки
-  ///   в рабочем потоке). Потокобезопасен. Не уничтожайте объект из колбэка Async.
-  /// </summary>
-  TTgApi = class(TTgApiCore)
-{$I Generated\Gen.Methods.inc}
   end;
 
   /// <summary>
@@ -1066,11 +1054,6 @@ procedure TgSetAsyncPoolSize(AMaxThreads: Integer);
 begin
   TgBot.Core.TgSetAsyncPoolSize(AMaxThreads);
 end;
-
-{$I Generated\Gen.ImplClasses.inc}
-{$I Generated\Gen.ImplMake.inc}
-{$I Generated\Gen.ImplTypes.inc}
-{$I Generated\Gen.ImplMethods.inc}
 
 { Построители клавиатур }
 

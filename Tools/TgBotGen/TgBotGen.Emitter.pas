@@ -3,7 +3,7 @@
 {
   TgBotGen — генерация .inc-файлов библиотеки TgBot по результатам анализа.
 
-  Файлы (раскладка для ручного модуля TgBot.pas):
+  Файлы (раскладка для ручного модуля TgBot.Types.pas):
     interface, один type-блок:
       Gen.Forward.inc    — forward-объявления интерфейсов;
       Gen.Enums.inc      — enum Kind полиморфных типов, записи констант;
@@ -19,6 +19,10 @@
       Gen.ImplMake.inc    — фабрики DTO из JSON (TgMake<Name>);
       Gen.ImplTypes.inc   — тела классов, фабрик и записей-объединений;
       Gen.ImplMethods.inc — ApplyTo записей опций и методы TTgApi.
+  Для модуля TgBot.pas (interface, type-блок):
+      Gen.Aliases.inc     — псевдонимы всех типов TgBot.Types (интерфейсы, виды Kind,
+                           записи констант, объединения, фабрики, опции, TTgApi),
+                           чтобы пользователю хватало TgBot в uses.
 
   Файлы пишутся в UTF-8 с BOM и переводами строк CRLF. Генерация атомарна:
   все файлы создаются во временной папке рядом с целевой и только после
@@ -120,6 +124,7 @@ type
     procedure EmitImplMake;
     procedure EmitImplTypes;
     procedure EmitImplMethods;
+    procedure EmitAliases;
     procedure EmitClassBodies(W: TGenCodeWriter; AInfo: TGenTypeInfo);
     procedure EmitMethodDecls(W: TGenCodeWriter; AMethod: TGenMethodInfo);
     procedure EmitMethodBodies(W: TGenCodeWriter; AMethod: TGenMethodInfo);
@@ -156,6 +161,8 @@ const
   // Типы, к полям которых добавляется подсказка о построителе клавиатур.
   CInlineKeyboardType = 'InlineKeyboardMarkup';
   CReplyMarkupUnion = 'ReplyMarkup';
+  // Модуль со сгенерированными типами (включает Gen.*.inc, кроме Gen.Aliases.inc).
+  CTypesUnit = 'TgBot.Types';
 
 function GenIdent(const AName: string): string;
 begin
@@ -1918,6 +1925,79 @@ begin
   Save(W, 'Gen.ImplMethods.inc');
 end;
 
+{ Gen.Aliases.inc }
+
+/// <summary>Первое предложение первого абзаца описания (краткая подсказка псевдонима).</summary>
+function FirstSentence(const AText: string): string;
+var
+  LPos: Integer;
+begin
+  Result := Trim(FirstParagraph(AText));
+  LPos := Pos('. ', Result);
+  if LPos > 0 then
+    Result := Copy(Result, 1, LPos);
+end;
+
+procedure TGenEmitter.EmitAliases;
+var
+  W: TGenCodeWriter;
+  LInfo: TGenTypeInfo;
+  LConst: TGenConstInfo;
+  LUnion: TGenUnionInfo;
+  LMethod: TGenMethodInfo;
+
+  procedure Alias(const AName, ADoc: string);
+  begin
+    W.Doc(ADoc);
+    W.Add(AName + ' = ' + CTypesUnit + '.' + AName + ';');
+  end;
+
+begin
+  // Порядок групп — как в Gen.*.inc модуля TgBot.Types; внутри группы — порядок анализа.
+  W := NewWriter('Gen.Aliases.inc — псевдонимы типов ' + CTypesUnit + ' (interface модуля TgBot, type-блок).');
+  W.Indent;
+  W.Add('{ Интерфейсы объектов Bot API }');
+  W.Add('');
+  for LInfo in IncludedTypes do
+    Alias(LInfo.IntfName, FirstSentence(CleanDescription(LInfo.Description)));
+  W.Add('');
+  W.Add('{ Виды полиморфных типов (свойство Kind) }');
+  W.Add('');
+  for LInfo in IncludedTypes do
+    if LInfo.Category = TGenCategory.Polymorphic then
+      Alias(LInfo.KindEnumName, 'Вид объекта ' + LInfo.Name + ' (свойство Kind интерфейса ' +
+        LInfo.IntfName + ').');
+  W.Add('');
+  W.Add('{ Записи констант }');
+  W.Add('');
+  for LConst in FAnalysis.Constants do
+    Alias(LConst.RecName, LConst.Description);
+  W.Add('');
+  W.Add('{ Записи-объединения исходящих типов }');
+  W.Add('');
+  for LUnion in FAnalysis.Unions do
+    if LUnion.Included then
+      Alias(LUnion.RecName, FirstSentence(CleanDescription(LUnion.Description)));
+  W.Add('');
+  W.Add('{ Фабрики TTg<Name>: Create, FromJson }');
+  W.Add('');
+  for LInfo in IncludedTypes do
+    if HasCreate(LInfo) or HasMake(LInfo) then
+      Alias(LInfo.RecName, 'Создание ' + LInfo.IntfName + '.');
+  W.Add('');
+  W.Add('{ Необязательные параметры методов }');
+  W.Add('');
+  for LMethod in FAnalysis.Methods do
+    if LMethod.Included and LMethod.HasOptions then
+      Alias(LMethod.OptionsName, 'Необязательные параметры ' + LMethod.Name + '.');
+  W.Add('');
+  W.Add('{ Клиент Bot API }');
+  W.Add('');
+  Alias('TTgApi', 'Клиент Telegram Bot API: для каждого метода синхронный вызов, Try* и *Async ' +
+    '(описание — ' + CTypesUnit + '.TTgApi).');
+  Save(W, 'Gen.Aliases.inc');
+end;
+
 procedure TGenEmitter.Generate;
 var
   LTarget, LTemp, LFile: string;
@@ -1944,6 +2024,7 @@ begin
     EmitImplMake;
     EmitImplTypes;
     EmitImplMethods;
+    EmitAliases;
     // Все файлы созданы — заменяем прежние.
     ForceDirectories(LTarget);
     for I := 0 to FFiles.Count - 1 do
