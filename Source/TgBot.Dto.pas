@@ -311,32 +311,8 @@ type
 implementation
 
 uses
-  System.TypInfo;
-
-type
-  TDtoText = (NotObject, FileUpload, Unsupported);
-
-const
-  CDtoTexts: array[TTgLanguage, TDtoText] of string = (
-    ('Значение не является JSON-объектом (поле %s)',
-     'Поле %s: загрузка файла невозможна вне параметров метода',
-     'Объект типа %s не поддерживает сериализацию'),
-    ('The value is not a JSON object (field %s)',
-     'Field %s: file upload is not possible outside method parameters',
-     'Object of type %s does not support serialization'));
-
-function DtoText(AText: TDtoText; const AArg: string): string;
-begin
-  Result := Format(CDtoTexts[TgGetLanguage, AText], [AArg]);
-end;
-
-const
-  CEmptyItemTexts: array[TTgLanguage] of string = (
-    'Элемент %d массива «%s» не задан (nil или пустое объединение)',
-    'Item %d of array "%s" is not set (nil or empty union)');
-  CNotJsonDtoTexts: array[TTgLanguage] of string = (
-    'Объект типа %s не является DTO поверх JSON (ITgJsonObject)',
-    'Object of type %s is not a JSON-based DTO (ITgJsonObject)');
+  System.TypInfo,
+  TgBot.Consts;
 
 { TTgJsonHolder }
 
@@ -446,7 +422,7 @@ end;
 function TTgJsonDto.RequireJson: TJSONObject;
 begin
   if not Assigned(FJson) then
-    raise ETgError.Create(DtoText(TDtoText.NotObject, ClassName));
+    raise ETgError.Create(TgLangTextFmt(@SRuDtoNotObject, @SEnDtoNotObject, [ClassName]));
   Result := FJson;
 end;
 
@@ -535,7 +511,7 @@ begin
   if AValue.IsEmpty then
     SetValue(AName, nil)
   else if AValue.IsUpload then
-    raise ETgError.Create(DtoText(TDtoText.FileUpload, AName))
+    raise ETgError.Create(TgLangTextFmt(@SRuDtoFileUpload, @SEnDtoFileUpload, [AName]))
   else
     SetValue(AName, TJSONString.Create(AValue.ToParamValue));
 end;
@@ -789,7 +765,8 @@ begin
           if Assigned(AParams) then
             LValue := TJSONString.Create(AParams.AddAttachment(LPart.FileValue))
           else if LPart.FileValue.IsUpload then
-            raise ETgError.Create(DtoText(TDtoText.FileUpload, LPart.Name))
+            raise ETgError.Create(TgLangTextFmt(@SRuDtoFileUpload, @SEnDtoFileUpload,
+              [LPart.Name]))
           else
             LValue := TJSONString.Create(LPart.FileValue.ToParamValue);
         TPartKind.Obj:
@@ -975,7 +952,8 @@ begin
       Exit(TJSONValue(LJson.RawValue.Clone));
     Exit(TJSONNull.Create);
   end;
-  raise ETgError.Create(DtoText(TDtoText.Unsupported, (AValue as TObject).ClassName));
+  raise ETgError.Create(TgLangTextFmt(@SRuDtoUnsupported, @SEnDtoUnsupported,
+    [(AValue as TObject).ClassName]));
 end;
 
 class function TTgDto.SerializeArray(const AValues: TArray<IInterface>;
@@ -989,7 +967,7 @@ begin
     begin
       // null в массиве Bot API недопустим: пустой элемент — ошибка в точке вызова.
       if not Assigned(AValues[I]) then
-        raise ETgError.Create(Format(CEmptyItemTexts[TgGetLanguage], [I, AName]));
+        raise ETgError.Create(TgLangTextFmt(@SRuDtoEmptyItem, @SEnDtoEmptyItem, [I, AName]));
       Result.AddElement(Serialize(AValues[I], AParams));
     end;
   except
@@ -1073,7 +1051,8 @@ begin
   // Копия того же класса реализует тот же интерфейс.
   if not Supports(AValue, ITgJsonObject, LJson) or
     not Supports(LJson.Clone, GetTypeData(PTypeInfo(ATypeInfo))^.Guid, AResult) then
-    raise ETgError.Create(Format(CNotJsonDtoTexts[TgGetLanguage], [(AValue as TObject).ClassName]));
+    raise ETgError.Create(TgLangTextFmt(@SRuDtoNotJsonDto, @SEnDtoNotJsonDto,
+      [(AValue as TObject).ClassName]));
 end;
 
 class function TTgDto.Detach<T>(const AValue: T): T;
