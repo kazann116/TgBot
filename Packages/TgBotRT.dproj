@@ -110,6 +110,8 @@
         <DCCReference Include="..\Source\TgBot.Keyboards.pas"/>
         <DCCReference Include="..\Source\TgBot.Context.pas"/>
         <DCCReference Include="..\Source\TgBot.Router.pas"/>
+        <DCCReference Include="..\Source\TgBot.Bot.Core.pas"/>
+        <DCCReference Include="..\Source\TgBot.Bot.pas"/>
         <DCCReference Include="..\Source\TgBot.pas"/>
         <DCCReference Include="..\Source\TgBot.Component.pas"/>
         <BuildConfiguration Include="Base">
