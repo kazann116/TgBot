@@ -139,7 +139,8 @@ type
   ///   типизированные объекты (Update, From, Message) разделяют этот JSON и
   ///   удерживают обновление. Контекст удерживает ядро бота (FCoreRef):
   ///   клиент FApi действителен, пока жив контекст, даже после Free бота.
-  ///   Служебное: создаёт и заполняет ядро TTgBot (модуль TgBot); не часть
+  ///   Служебное: создаёт ядро бота (TgBot.Bot.Core), Command и Args
+  ///   заполняет маршрутизатор (TTgRouter, TgBot.Router); не часть
   ///   публичного API библиотеки.
   /// </summary>
   TTgContext = class(TInterfacedObject, ITgContext)
@@ -152,7 +153,7 @@ type
     FPayload: TJSONObject;
     FUpdate: ITgUpdate;
     FAnswered: Boolean;
-    // Маршрутизатор (заполняет ядро в потоке обработчика).
+    // Маршрутизатор (заполняет TTgRouter в потоке обработчика).
     FCommand: string;
     FArgs: string;
     FHandled: Boolean;
@@ -191,9 +192,9 @@ type
     function GetArgs: string;
     function GetHandled: Boolean;
     procedure SetHandled(AValue: Boolean);
-    /// <summary>Служебное (ядро TTgBot): команда, разобранная маршрутизатором.</summary>
+    /// <summary>Служебное (TTgRouter.ParseCommand по вызову ядра): ключ разобранной команды.</summary>
     procedure SetCommand(const AValue: string);
-    /// <summary>Служебное (ядро TTgBot): аргументы сработавшего правила.</summary>
+    /// <summary>Служебное (TTgRouter по вызову ядра): аргументы сработавшего правила.</summary>
     procedure SetArgs(const AValue: string);
     /// <summary>Поле text сообщения вида message ('' — нет текста или другой вид).</summary>
     function MessageText: string;
