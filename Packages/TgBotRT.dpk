@@ -18,6 +18,7 @@ requires
   rtl;
 
 contains
+  TgBot.Consts in '..\Source\TgBot.Consts.pas',
   TgBot.Base in '..\Source\TgBot.Base.pas',
   TgBot.Json in '..\Source\TgBot.Json.pas',
   TgBot.Http in '..\Source\TgBot.Http.pas',

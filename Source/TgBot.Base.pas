@@ -413,56 +413,23 @@ function TgGetLanguage: TTgLanguage;
 function TgText(AText: TTgText): string;
 /// <summary>Локализованный текст с форматированием (Format).</summary>
 function TgTextFmt(AText: TTgText; const AArgs: array of const): string;
+/// <summary>
+///   Служебное (для модулей библиотеки): текст пары ресурсных строк
+///   TgBot.Consts (SRu…/SEn…) на текущем языке библиотеки.
+/// </summary>
+function TgLangText(ARu, AEn: PResStringRec): string;
+/// <summary>
+///   Служебное (для модулей библиотеки): TgLangText с форматированием (Format).
+/// </summary>
+function TgLangTextFmt(ARu, AEn: PResStringRec; const AArgs: array of const): string;
 
 implementation
 
-resourcestring
-  SRuTokenRequired = 'Не задан токен бота';
-  SEnTokenRequired = 'Bot token is not specified';
-  SRuOptionalEmpty = 'Опциональное значение не задано';
-  SEnOptionalEmpty = 'Optional value is not set';
-  SRuChatIdEmpty = 'Идентификатор чата не задан';
-  SEnChatIdEmpty = 'Chat identifier is not specified';
-  SRuChatIdNotNumeric = 'Идентификатор чата "%s" не является числом';
-  SEnChatIdNotNumeric = 'Chat identifier "%s" is not numeric';
-  SRuInputFileEmpty = 'Файл не задан';
-  SEnInputFileEmpty = 'Input file is not specified';
-  SRuInputFileNotUpload = 'Файл требует загрузки и не может быть передан строкой';
-  SEnInputFileNotUpload = 'Input file must be uploaded and cannot be passed as a string';
-  SRuInputFileStreamNil = 'Поток для загрузки файла не задан (nil)';
-  SEnInputFileStreamNil = 'Upload stream is not assigned (nil)';
-  SRuLocalPathNotAbsolute = 'Путь "%s" должен быть абсолютным';
-  SEnLocalPathNotAbsolute = 'Path "%s" must be absolute';
-  SRuParamNameEmpty = 'Имя параметра не задано';
-  SEnParamNameEmpty = 'Parameter name is not specified';
-  SRuInvalidJson = 'Некорректный JSON в параметре "%s"';
-  SEnInvalidJson = 'Invalid JSON in parameter "%s"';
-  SRuApiError = 'Ошибка Telegram Bot API в методе %s (код %d): %s';
-  SEnApiError = 'Telegram Bot API error in method %s (code %d): %s';
-  SRuNetworkError = 'Сетевая ошибка при вызове %s: %s';
-  SEnNetworkError = 'Network error while calling %s: %s';
-  SRuInvalidResponse = 'Некорректный ответ сервера при вызове %s (HTTP %d)';
-  SEnInvalidResponse = 'Invalid server response while calling %s (HTTP %d)';
-  SRuUnexpectedResult = 'Неожиданный формат результата метода %s';
-  SEnUnexpectedResult = 'Unexpected result format of method %s';
-  SRuCancelled = 'Операция прервана';
-  SEnCancelled = 'Operation cancelled';
-  SRuFilePathEmpty = 'Не задан путь к файлу на сервере (file_path)';
-  SEnFilePathEmpty = 'Server file path (file_path) is not specified';
-  SRuFilePathInvalid = 'Недопустимый путь к файлу на сервере: "%s"';
-  SEnFilePathInvalid = 'Invalid server file path: "%s"';
-  SRuDownloadFailed = 'Не удалось скачать файл (HTTP %d)';
-  SEnDownloadFailed = 'File download failed (HTTP %d)';
-  SRuTransportRequired = 'Не задан транспорт Bot API';
-  SEnTransportRequired = 'Bot API transport is not specified';
-  SRuConflict = 'Конфликт в методе %s (код %d): %s. Вероятно, запущен другой ' +
-    'экземпляр бота с этим токеном или для getUpdates установлен webhook';
-  SEnConflict = 'Conflict in method %s (code %d): %s. Another bot instance with ' +
-    'this token is probably running, or a webhook is set while using getUpdates';
-  SRuClientClosed = 'Клиент Bot API уничтожается: асинхронный вызов отменён';
-  SEnClientClosed = 'Bot API client is being destroyed: asynchronous call cancelled';
+uses
+  TgBot.Consts;
 
 const
+  // Тексты TTgText: пары ресурсных строк TgBot.Consts (SRu…, SEn…).
   CTexts: array[TTgText, TTgLanguage] of PResStringRec = (
     (@SRuTokenRequired, @SEnTokenRequired),
     (@SRuOptionalEmpty, @SEnOptionalEmpty),
@@ -509,9 +476,22 @@ begin
   Result := TgBotLanguage;
 end;
 
+function TgLangText(ARu, AEn: PResStringRec): string;
+begin
+  if TgBotLanguage = TTgLanguage.En then
+    Result := LoadResString(AEn)
+  else
+    Result := LoadResString(ARu);
+end;
+
+function TgLangTextFmt(ARu, AEn: PResStringRec; const AArgs: array of const): string;
+begin
+  Result := Format(TgLangText(ARu, AEn), AArgs);
+end;
+
 function TgText(AText: TTgText): string;
 begin
-  Result := LoadResString(CTexts[AText, TgBotLanguage]);
+  Result := TgLangText(CTexts[AText, TTgLanguage.Ru], CTexts[AText, TTgLanguage.En]);
 end;
 
 function TgTextFmt(AText: TTgText; const AArgs: array of const): string;
