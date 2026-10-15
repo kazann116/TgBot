@@ -1,24 +1,22 @@
 ﻿unit TgBot.Updates;
 
 {
-  TgBot — приём и раздача обновлений (нижний слой, работает с сырым JSON
-  и не зависит от сгенерированных типов TgBot.pas).
+  TgBot — приём обновлений: источники и фасад нижнего слоя (работает с
+  сырым JSON и не зависит от сгенерированных типов TgBot.Types).
 
-  - ITgRawUpdate / TTgRawUpdate — обновление: update_id, вид (ключ поля),
-    ключ «полосы» ChatKey и JSON (обновление владеет своим объектом);
-  - ITgUpdateSource / TTgLongPollSource — long polling (getUpdates) в
-    собственном потоке: offset, политики подтверждения, паузы при ошибках,
-    обработка 401/404/409, корректная остановка с дренажом и итоговым
+  - TTgLongPollSource — long polling (getUpdates) в собственном потоке:
+    offset, политики подтверждения, паузы при ошибках, обработка
+    401/404/409, корректная остановка с дренажом и итоговым
     подтверждением;
   - TTgWebhookSource / ITgWebhookReceiver — webhook без HTTP-сервера:
     setWebhook/deleteWebhook, приём тела запроса из любого сервера (Accept),
-    проверка секрета, дедупликация update_id, ограниченное ожидание очереди;
-  - ITgUpdateSink / TTgUpdateDispatcher — раздача обработчику: обновления
-    одного чата строго по порядку, разных чатов — параллельно (MaxParallel
-    собственных потоков); доставка в рабочем потоке или в главном
-    (TThread.Queue, без Synchronize);
-  - TTgShutdownSignal — Ctrl+C / закрытие консоли (Windows),
-    SIGINT/SIGTERM (Linux, macOS) для консольных ботов.
+    проверка секрета, дедупликация update_id, ограниченное ожидание очереди.
+
+  Общие типы (ITgRawUpdate, ITgUpdateSink, ITgUpdateSource, перечисления,
+  константы, тексты, TTgShutdownSignal) объявлены в TgBot.Updates.Types,
+  диспетчер TTgUpdateDispatcher — в TgBot.Updates.Dispatcher. Здесь они
+  реэкспортируются псевдонимами (функции — обёртками), поэтому достаточно
+  uses TgBot.Updates.
 
   Время жизни: потоки источника и диспетчера держат только счётчиковые
   ссылки на внутреннее состояние, поэтому Stop может «отпустить» поток,
@@ -39,227 +37,86 @@ uses
   System.JSON,
   TgBot.Base,
   TgBot.Json,
-  TgBot.Http;
+  TgBot.Http,
+  TgBot.Updates.Types,
+  TgBot.Updates.Dispatcher;
 
 const
+  { Псевдонимы констант TgBot.Updates.Types }
+
   /// <summary>Таймаут long polling (параметр timeout getUpdates) по умолчанию, с.</summary>
-  TgDefaultPollTimeoutSec = 50;
+  TgDefaultPollTimeoutSec = TgBot.Updates.Types.TgDefaultPollTimeoutSec;
   /// <summary>Максимум обновлений за один getUpdates по умолчанию (1–100).</summary>
-  TgDefaultPollLimit = 100;
+  TgDefaultPollLimit = TgBot.Updates.Types.TgDefaultPollLimit;
   /// <summary>Ёмкость очереди диспетчера по умолчанию (обновлений).</summary>
-  TgDefaultQueueCapacity = 1000;
+  TgDefaultQueueCapacity = TgBot.Updates.Types.TgDefaultQueueCapacity;
   /// <summary>Число потоков диспетчера по умолчанию.</summary>
-  TgDefaultMaxParallel = 4;
+  TgDefaultMaxParallel = TgBot.Updates.Types.TgDefaultMaxParallel;
   /// <summary>Сколько Stop ждёт обработки уже принятых обновлений по умолчанию, мс.</summary>
-  TgDefaultDrainTimeoutMs = 5000;
+  TgDefaultDrainTimeoutMs = TgBot.Updates.Types.TgDefaultDrainTimeoutMs;
   /// <summary>Минимальный интервал между событиями OnConflict «другой getUpdates», мс.</summary>
-  TgDefaultConflictNotifyMs = 60000;
+  TgDefaultConflictNotifyMs = TgBot.Updates.Types.TgDefaultConflictNotifyMs;
   /// <summary>Разброс пауз между повторами по умолчанию, ± процентов.</summary>
-  TgDefaultBackoffJitterPercent = 20;
+  TgDefaultBackoffJitterPercent = TgBot.Updates.Types.TgDefaultBackoffJitterPercent;
   /// <summary>Первая пауза после ошибки getUpdates, мс (далее — удвоение).</summary>
-  TgBackoffMinMs = 1000;
+  TgBackoffMinMs = TgBot.Updates.Types.TgBackoffMinMs;
   /// <summary>Максимальная пауза после ошибки getUpdates, мс.</summary>
-  TgBackoffMaxMs = 60000;
+  TgBackoffMaxMs = TgBot.Updates.Types.TgBackoffMaxMs;
   /// <summary>Минимальная пауза после 409 «другой getUpdates», мс.</summary>
-  TgConflictRetryMs = 5000;
+  TgConflictRetryMs = TgBot.Updates.Types.TgConflictRetryMs;
   /// <summary>Наибольший размер тела webhook-запроса по умолчанию, байт (1 МБ).</summary>
-  TgDefaultWebhookMaxBodySize = 1024 * 1024;
+  TgDefaultWebhookMaxBodySize = TgBot.Updates.Types.TgDefaultWebhookMaxBodySize;
   /// <summary>Сколько Accept ждёт места в очереди по умолчанию, мс (затем Unavailable).</summary>
-  TgDefaultWebhookPostTimeoutMs = 250;
+  TgDefaultWebhookPostTimeoutMs = TgBot.Updates.Types.TgDefaultWebhookPostTimeoutMs;
   /// <summary>Окно дедупликации webhook по умолчанию: сколько последних update_id помнить.</summary>
-  TgDefaultWebhookDedupWindow = 1000;
+  TgDefaultWebhookDedupWindow = TgBot.Updates.Types.TgDefaultWebhookDedupWindow;
   /// <summary>Длина секрета webhook, генерируемого библиотекой (символы [A-Za-z0-9_-]).</summary>
-  TgWebhookSecretLength = 48;
+  TgWebhookSecretLength = TgBot.Updates.Types.TgWebhookSecretLength;
 
 type
-  /// <summary>Состояние источника обновлений.</summary>
-  TTgSourceState = (
-    /// <summary>Не запущен или остановлен.</summary>
-    Idle,
-    /// <summary>Принимает обновления.</summary>
-    Running,
-    /// <summary>Остановка запрошена (дренаж, итоговое подтверждение).</summary>
-    Stopping,
-    /// <summary>Остановлен из-за неустранимой ошибки (401, 404, webhook и т.п.).</summary>
-    Faulted);
+  { Псевдонимы типов TgBot.Updates.Types }
 
-  /// <summary>Когда подтверждать (offset) принятые обновления.</summary>
-  TTgAckPolicy = (
-    /// <summary>
-    ///   Сразу после приёма: следующий getUpdates отправляется, как только
-    ///   пакет помещён в очередь (ограничение — ёмкость очереди). Быстро, но
-    ///   при аварийном завершении процесса обновления из очереди теряются.
-    /// </summary>
-    AfterReceive,
-    /// <summary>
-    ///   После обработки: следующий getUpdates — только когда обработаны все
-    ///   обновления пакета. Медленнее, зато при сбое пакет придёт повторно.
-    /// </summary>
-    AfterBatch);
-
-  /// <summary>Где выполняются обработчики обновлений.</summary>
-  TTgDelivery = (
-    /// <summary>В потоках диспетчера (параллельно для разных чатов).</summary>
-    Worker,
-    /// <summary>
-    ///   В главном потоке (TThread.Queue): для VCL/FMX — без ручной
-    ///   синхронизации; в консоли главный поток должен вызывать
-    ///   CheckSynchronize (это делает TTgBot.Run).
-    /// </summary>
-    Main);
-
-  /// <summary>
-  ///   Итог приёма webhook-запроса (TTgWebhookSource.Accept); HTTP-код
-  ///   ответа — TgWebhookHttpStatus.
-  /// </summary>
-  TTgWebhookResult = (
-    /// <summary>Принято (или повтор уже принятого update_id) — 200.</summary>
-    Accepted,
-    /// <summary>Неверный X-Telegram-Bot-Api-Secret-Token — 403.</summary>
-    Forbidden,
-    /// <summary>Тело не JSON-объект обновления, нет update_id или больше лимита — 400.</summary>
-    BadRequest,
-    /// <summary>
-    ///   Источник не запущен, останавливается, в Faulted или очередь
-    ///   переполнена — 503 (Telegram повторит доставку позже).
-    /// </summary>
-    Unavailable);
-
-  /// <summary>Тексты сообщений модуля (для TgBot.pas).</summary>
-  TTgUpdatesText = (SourceRunning, DispatcherRunning, StopFromHandler, NoChat,
-    RunNotMainThread, RunUnsupported, BotRunning, HandlerFiltered, WebhookUrlRequired,
-    WebhookBadSecret, WebhookUnsupported);
-
-  /// <summary>
-  ///   Обновление Bot API в сыром виде. Владеет своим JSON-объектом (не
-  ///   освобождайте Json); живёт, пока на него есть ссылки.
-  /// </summary>
-  ITgRawUpdate = interface
-    ['{D51FD45E-3FE0-4240-9B70-5A58992E6674}']
-    function GetUpdateId: Int64;
-    function GetKind: string;
-    function GetChatKey: string;
-    function GetJson: TJSONObject;
-    /// <summary>update_id.</summary>
-    property UpdateId: Int64 read GetUpdateId;
-    /// <summary>Вид обновления — имя поля ('message', 'callback_query', …; TTgUpdateType).</summary>
-    property Kind: string read GetKind;
-    /// <summary>
-    ///   Ключ порядка: id чата ('-100123'), 'u' + id пользователя для
-    ///   обновлений без чата ('u42'), '' — порядок не важен (poll, poll_answer).
-    /// </summary>
-    property ChatKey: string read GetChatKey;
-    /// <summary>JSON обновления целиком (владелец — обновление).</summary>
-    property Json: TJSONObject read GetJson;
-  end;
-
+  /// <summary>Состояние источника обновлений (Idle, Running, Stopping, Faulted).</summary>
+  TTgSourceState = TgBot.Updates.Types.TTgSourceState;
+  /// <summary>Когда подтверждать (offset) принятые обновления (AfterReceive, AfterBatch).</summary>
+  TTgAckPolicy = TgBot.Updates.Types.TTgAckPolicy;
+  /// <summary>Где выполняются обработчики обновлений (Worker, Main).</summary>
+  TTgDelivery = TgBot.Updates.Types.TTgDelivery;
+  /// <summary>Итог приёма webhook-запроса (Accepted, Forbidden, BadRequest, Unavailable).</summary>
+  TTgWebhookResult = TgBot.Updates.Types.TTgWebhookResult;
+  /// <summary>Тексты сообщений (служебное, для TgBot.Bot).</summary>
+  TTgUpdatesText = TgBot.Updates.Types.TTgUpdatesText;
+  /// <summary>Обновление Bot API в сыром виде (update_id, вид, ключ чата, JSON).</summary>
+  ITgRawUpdate = TgBot.Updates.Types.ITgRawUpdate;
   /// <summary>Приёмник обновлений (очередь диспетчера).</summary>
-  ITgUpdateSink = interface
-    ['{C83E716B-723A-43C2-8DE7-FCC6C6BAD5BF}']
-    /// <summary>
-    ///   Ставит обновление в очередь; при полной очереди ждёт места.
-    ///   False — приёмник остановлен или ACancel отменён (обновление не принято).
-    /// </summary>
-    function Post(const AUpdate: ITgRawUpdate; const ACancel: ITgCancellation): Boolean;
-  end;
-
-  /// <summary>
-  ///   Приёмник с ограниченным ожиданием места в очереди (webhook: поток
-  ///   HTTP-сервера не должен висеть на полной очереди).
-  /// </summary>
-  ITgTimedUpdateSink = interface
-    ['{8E4B1F0A-6C2D-4E73-9A5B-3D7F2C1E8B64}']
-    /// <summary>
-    ///   Как Post, но место в очереди ждёт не дольше ATimeoutMs мс (0 — не
-    ///   ждёт). False — очередь полна, приёмник остановлен или ACancel отменён.
-    /// </summary>
-    function TryPost(const AUpdate: ITgRawUpdate; const ACancel: ITgCancellation;
-      ATimeoutMs: Cardinal): Boolean;
-  end;
-
-  /// <summary>
-  ///   Приём тела webhook-запроса из любого HTTP-сервера (потокобезопасно,
-  ///   из любого числа потоков). ASecretHeader — значение заголовка
-  ///   X-Telegram-Bot-Api-Secret-Token ('' — заголовка нет).
-  /// </summary>
-  ITgWebhookReceiver = interface
-    ['{4F7A2C9E-1B3D-4A86-8E5F-6C0D9B2A7E31}']
-    /// <summary>Тело — байты UTF-8 (как пришли по сети).</summary>
-    function Accept(const ABody: TBytes; const ASecretHeader: string): TTgWebhookResult; overload;
-    /// <summary>Тело — уже декодированная строка.</summary>
-    function Accept(const ABody, ASecretHeader: string): TTgWebhookResult; overload;
-  end;
-
+  ITgUpdateSink = TgBot.Updates.Types.ITgUpdateSink;
+  /// <summary>Приёмник с ограниченным ожиданием места в очереди.</summary>
+  ITgTimedUpdateSink = TgBot.Updates.Types.ITgTimedUpdateSink;
+  /// <summary>Приём тела webhook-запроса из любого HTTP-сервера.</summary>
+  ITgWebhookReceiver = TgBot.Updates.Types.ITgWebhookReceiver;
   /// <summary>Источник обновлений (long polling или webhook).</summary>
-  ITgUpdateSource = interface
-    ['{2EB5AB98-37B8-4632-8BB9-B64429C8269B}']
-    /// <summary>Запускает приём в ASink. Повторный Start работающего источника — ETgError.</summary>
-    procedure Start(const ASink: ITgUpdateSink);
-    /// <summary>
-    ///   Останавливает приём не дольше ≈AWaitMs мс. False — поток не удалось
-    ///   прервать и он отпущен (его поздний результат будет выброшен).
-    /// </summary>
-    function Stop(AWaitMs: Cardinal): Boolean;
-    /// <summary>Обновление AUpdateId обработано (для подтверждения offset).</summary>
-    procedure Processed(AUpdateId: Int64);
-    function GetState: TTgSourceState;
-    /// <summary>Состояние источника.</summary>
-    property State: TTgSourceState read GetState;
-  end;
-
+  ITgUpdateSource = TgBot.Updates.Types.ITgUpdateSource;
   /// <summary>Часы и паузы источника (подменяются в тестах).</summary>
-  ITgPollTimer = interface
-    ['{CD72B2B4-FC57-46C4-958D-A76187CBB215}']
-    /// <summary>Монотонное время, мс.</summary>
-    function NowMs: Int64;
-    /// <summary>Пауза AMs мс; True — прервана отменой ACancel.</summary>
-    function Sleep(AMs: Cardinal; const ACancel: ITgCancellation): Boolean;
-  end;
-
+  ITgPollTimer = TgBot.Updates.Types.ITgPollTimer;
   /// <summary>Обработчик обновления нижнего уровня.</summary>
-  TTgRawHandler = reference to procedure(const AUpdate: ITgRawUpdate);
+  TTgRawHandler = TgBot.Updates.Types.TTgRawHandler;
   /// <summary>Обработчик исключения обработчика (объект исключения действителен только внутри).</summary>
-  TTgRawErrorHandler = reference to procedure(AError: Exception; const AUpdate: ITgRawUpdate);
+  TTgRawErrorHandler = TgBot.Updates.Types.TTgRawErrorHandler;
   /// <summary>Событие конфликта 409 (объект исключения действителен только внутри).</summary>
-  TTgConflictHandler = reference to procedure(AError: ETgConflictError);
-
+  TTgConflictHandler = TgBot.Updates.Types.TTgConflictHandler;
   /// <summary>Реализация ITgRawUpdate.</summary>
-  TTgRawUpdate = class(TInterfacedObject, ITgRawUpdate)
-  private
-    FJson: TJSONObject;
-    FUpdateId: Int64;
-    FKind: string;
-    FChatKey: string;
-  public
-    /// <summary>
-    ///   Владение AJson переходит к обновлению сразу (в т.ч. при исключении
-    ///   конструктора). update_id не целое — ETgError.
-    /// </summary>
-    constructor Create(AJson: TJSONObject);
-    destructor Destroy; override;
-    /// <summary>Вид обновления: первое поле, кроме update_id; '' — нет.</summary>
-    class function KindOf(AJson: TJSONObject): string; static;
-    /// <summary>
-    ///   Ключ порядка: chat.id полезной нагрузки (для callback_query —
-    ///   message.chat.id); иначе 'u' + from.id (или user.id); poll,
-    ///   poll_answer и обновления без чата и пользователя — ''.
-    /// </summary>
-    class function ChatKeyOf(AJson: TJSONObject): string; static;
-    function GetUpdateId: Int64;
-    function GetKind: string;
-    function GetChatKey: string;
-    function GetJson: TJSONObject;
-  end;
-
+  TTgRawUpdate = TgBot.Updates.Types.TTgRawUpdate;
   /// <summary>Часы и паузы по умолчанию (TStopwatch, WaitFor токена).</summary>
-  TTgSystemPollTimer = class(TInterfacedObject, ITgPollTimer)
-  private
-    FWatch: TStopwatch;
-  public
-    constructor Create;
-    function NowMs: Int64;
-    function Sleep(AMs: Cardinal; const ACancel: ITgCancellation): Boolean;
-  end;
+  TTgSystemPollTimer = TgBot.Updates.Types.TTgSystemPollTimer;
+  /// <summary>Сигнал завершения консольной программы (Ctrl+C, SIGINT/SIGTERM).</summary>
+  TTgShutdownSignal = TgBot.Updates.Types.TTgShutdownSignal;
+
+  { Псевдоним диспетчера TgBot.Updates.Dispatcher }
+
+  /// <summary>Диспетчер обновлений: порядок внутри чата, параллельность между чатами.</summary>
+  TTgUpdateDispatcher = TgBot.Updates.Dispatcher.TTgUpdateDispatcher;
+
+  { Источники обновлений }
 
   /// <summary>
   ///   Long polling (getUpdates) в собственном потоке. Настройки задаются до
@@ -494,97 +351,10 @@ type
     property OnFault: TProc<Exception> read FOnFault write FOnFault;
   end;
 
-  /// <summary>
-  ///   Диспетчер обновлений: «полосы» по ChatKey (обновления одного чата —
-  ///   строго по порядку, разных — параллельно), MaxParallel собственных
-  ///   потоков, общая очередь готовых полос, ёмкость QueueCapacity.
-  ///   Обработчик выполняется внутри TTgCancelScope с токеном диспетчера
-  ///   (вызовы TTgApi без явного токена прерываются при Stop). Исключение
-  ///   обработчика передаётся в OnError (исключения OnError поглощаются),
-  ///   обновление считается обработанным (OnProcessed).
-  /// </summary>
-  TTgUpdateDispatcher = class(TInterfacedObject, ITgUpdateSink, ITgTimedUpdateSink)
-  private
-    FLock: TCriticalSection;
-    FCore: TObject;
-    FCoreRef: IInterface;
-    FHandler: TTgRawHandler;
-    FOnError: TTgRawErrorHandler;
-    FOnProcessed: TProc<Int64>;
-    FMaxParallel: Integer;
-    FQueueCapacity: Integer;
-    FDelivery: TTgDelivery;
-    function CurrentCore(out ARef: IInterface): TObject;
-    function GetActive: Boolean;
-    function GetCancel: ITgCancellation;
-  public
-    /// <summary>Диспетчер с обработчиком AHandler.</summary>
-    constructor Create(const AHandler: TTgRawHandler);
-    /// <summary>
-    ///   Не блокирует: отменяет токен, выбрасывает очередь и ждёт потоки не
-    ///   дольше 30 мс (без CheckSynchronize). Поток с зависшим обработчиком
-    ///   отпускается: состояние диспетчера живёт, пока обработчик не вернётся.
-    ///   Дождаться обработчиков — Stop(AWaitMs) до Free.
-    /// </summary>
-    destructor Destroy; override;
-    /// <summary>Запускает потоки. Повторный Start работающего диспетчера — ETgError.</summary>
-    procedure Start;
-    /// <summary>
-    ///   Отменяет токен диспетчера, выбрасывает необработанную очередь и ждёт
-    ///   потоки не дольше AWaitMs (из главного потока — с CheckSynchronize).
-    ///   False — потоки с зависшими обработчиками отпущены.
-    /// </summary>
-    function Stop(AWaitMs: Cardinal): Boolean;
-    /// <summary>Ждёт, пока очередь опустеет и обработчики завершатся; True — дождались.</summary>
-    function WaitIdle(AMs: Cardinal): Boolean;
-    function Post(const AUpdate: ITgRawUpdate; const ACancel: ITgCancellation): Boolean;
-    function TryPost(const AUpdate: ITgRawUpdate; const ACancel: ITgCancellation;
-      ATimeoutMs: Cardinal): Boolean;
-    /// <summary>Текущий поток выполняет обработчик диспетчера.</summary>
-    class function InHandler: Boolean; static;
-    /// <summary>Диспетчер запущен и не останавливается.</summary>
-    property Active: Boolean read GetActive;
-    /// <summary>Токен отмены текущего запуска (nil — не запущен).</summary>
-    property Cancel: ITgCancellation read GetCancel;
-    /// <summary>Число потоков (1–64), по умолчанию TgDefaultMaxParallel; задаётся до Start.</summary>
-    property MaxParallel: Integer read FMaxParallel write FMaxParallel;
-    /// <summary>Ёмкость очереди, по умолчанию TgDefaultQueueCapacity; задаётся до Start.</summary>
-    property QueueCapacity: Integer read FQueueCapacity write FQueueCapacity;
-    /// <summary>Где выполнять обработчик; задаётся до Start.</summary>
-    property Delivery: TTgDelivery read FDelivery write FDelivery;
-    /// <summary>Исключение обработчика (в потоке обработчика); задаётся до Start.</summary>
-    property OnError: TTgRawErrorHandler read FOnError write FOnError;
-    /// <summary>Обновление обработано (в т.ч. с исключением); задаётся до Start.</summary>
-    property OnProcessed: TProc<Int64> read FOnProcessed write FOnProcessed;
-  end;
+{ Обёртки функций TgBot.Updates.Types (не inline: inline-обёртка дала бы
+  пользователю подсказку H2443 о модуле, не указанном в uses). }
 
-  /// <summary>
-  ///   Сигнал завершения консольной программы: Windows — Ctrl+C, Ctrl+Break,
-  ///   закрытие окна, выход из системы, выключение (для трёх последних
-  ///   обработчик ждёт NotifyStopped до 4,5 с — затем Windows завершает
-  ///   процесс); Linux/macOS — SIGINT, SIGTERM (обработчик только атомарно
-  ///   пишет флаг; прежние обработчики восстанавливаются в Uninstall);
-  ///   Android — недоступно (Install = False).
-  /// </summary>
-  TTgShutdownSignal = class sealed
-  public
-    /// <summary>Устанавливает обработчики (вложенные вызовы считаются); False — недоступно.</summary>
-    class function Install: Boolean; static;
-    /// <summary>Снимает обработчики (парно Install).</summary>
-    class procedure Uninstall; static;
-    /// <summary>Сигнал получен (или вызван Request).</summary>
-    class function Requested: Boolean; static;
-    /// <summary>Программный запрос завершения (как сигнал).</summary>
-    class procedure Request; static;
-    /// <summary>Сбрасывает признак сигнала и «остановлен».</summary>
-    class procedure Reset; static;
-    /// <summary>Программа остановилась: обработчик закрытия консоли может вернуть управление.</summary>
-    class procedure NotifyStopped; static;
-    /// <summary>Сигналы поддерживаются на этой платформе.</summary>
-    class function Supported: Boolean; static;
-  end;
-
-/// <summary>Локализованный текст модуля (служебное, для TgBot.pas).</summary>
+/// <summary>Локализованный текст (служебное, для TgBot.Bot).</summary>
 function TgUpdatesText(AText: TTgUpdatesText): string;
 
 /// <summary>
@@ -602,84 +372,33 @@ uses
 {$IFDEF MSWINDOWS}
   Winapi.Windows,
 {$ENDIF}
-{$IF defined(POSIX) and not defined(ANDROID)}
-  Posix.Signal,
-{$IFEND}
   System.Math,
   System.StrUtils;
 
 resourcestring
-  SRuSourceRunning = 'Источник обновлений уже запущен';
-  SEnSourceRunning = 'Update source is already running';
-  SRuDispatcherRunning = 'Диспетчер обновлений уже запущен';
-  SEnDispatcherRunning = 'Update dispatcher is already running';
-  SRuStopFromHandler = 'Нельзя ждать остановки бота из обработчика обновления: ' +
-    'используйте RequestStop';
-  SEnStopFromHandler = 'Cannot wait for the bot to stop from an update handler: ' +
-    'use RequestStop';
-  SRuNoChat = 'В обновлении нет чата для ответа';
-  SEnNoChat = 'The update has no chat to reply to';
-  SRuRunNotMainThread = 'Run с Delivery = Main можно вызывать только из главного потока';
-  SEnRunNotMainThread = 'Run with Delivery = Main must be called from the main thread';
-  SRuRunUnsupported = 'Run недоступен на этой платформе: используйте Start и Stop';
-  SEnRunUnsupported = 'Run is not available on this platform: use Start and Stop';
-  SRuBotRunning = 'Бот уже запущен';
-  SEnBotRunning = 'The bot is already running';
-  SRuHandlerFiltered = 'Назначен %s, но AllowedUpdates не содержит "%s": ' +
-    'такие обновления сервер присылать не будет';
-  SEnHandlerFiltered = '%s is assigned, but AllowedUpdates does not include "%s": ' +
-    'the server will not send such updates';
-  SRuWebhookUrlRequired = 'Режим Webhook: не задан WebhookUrl (внешний HTTPS-адрес бота)';
-  SEnWebhookUrlRequired = 'Webhook mode: WebhookUrl (the public HTTPS address of the bot) is not set';
-  SRuWebhookBadSecret = 'Недопустимый секрет webhook: нужно 1–256 символов A-Z, a-z, 0-9, "_" и "-"';
-  SEnWebhookBadSecret = 'Invalid webhook secret: 1-256 characters A-Z, a-z, 0-9, "_" and "-" are required';
-  SRuWebhookUnsupported = 'Режим Webhook недоступен на этой платформе: используйте Polling';
-  SEnWebhookUnsupported = 'Webhook mode is not available on this platform: use Polling';
   SRuNoRandom = 'Криптостойкий генератор случайных чисел ОС недоступен';
   SEnNoRandom = 'The OS cryptographic random number generator is not available';
 
 const
-  CUpdatesTexts: array[TTgUpdatesText, TTgLanguage] of PResStringRec = (
-    (@SRuSourceRunning, @SEnSourceRunning),
-    (@SRuDispatcherRunning, @SEnDispatcherRunning),
-    (@SRuStopFromHandler, @SEnStopFromHandler),
-    (@SRuNoChat, @SEnNoChat),
-    (@SRuRunNotMainThread, @SEnRunNotMainThread),
-    (@SRuRunUnsupported, @SEnRunUnsupported),
-    (@SRuBotRunning, @SEnBotRunning),
-    (@SRuHandlerFiltered, @SEnHandlerFiltered),
-    (@SRuWebhookUrlRequired, @SEnWebhookUrlRequired),
-    (@SRuWebhookBadSecret, @SEnWebhookBadSecret),
-    (@SRuWebhookUnsupported, @SEnWebhookUnsupported)
-  );
   CNoRandomTexts: array[TTgLanguage] of PResStringRec = (@SRuNoRandom, @SEnNoRandom);
   // Алфавит секрета webhook: 64 символа — байт mod 64 распределён равномерно.
   CSecretAlphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-';
   // Сколько Stop источника ждёт поток после отмены итогового запроса, мс.
   CFinalGraceMs = 100;
-  // Предел потоков диспетчера.
-  CMaxParallelLimit = 64;
-  // Сколько Destroy диспетчера/источника ждёт свои потоки (если остановку ещё
-  // не запрашивали), мс; дальше потоки отпускаются — ядро держат они сами.
-  CDestroyGraceMs = 30;
 
 function TgUpdatesText(AText: TTgUpdatesText): string;
 begin
-  Result := LoadResString(CUpdatesTexts[AText, TgGetLanguage]);
+  Result := TgBot.Updates.Types.TgUpdatesText(AText);
+end;
+
+function TgWaitEventPumping(AEvent: TEvent; AMs: Cardinal): Boolean;
+begin
+  Result := TgBot.Updates.Types.TgWaitEventPumping(AEvent, AMs);
 end;
 
 function TgWebhookHttpStatus(AResult: TTgWebhookResult): Integer;
 begin
-  case AResult of
-    TTgWebhookResult.Accepted:
-      Result := 200;
-    TTgWebhookResult.Forbidden:
-      Result := 403;
-    TTgWebhookResult.BadRequest:
-      Result := 400;
-  else
-    Result := 503;
-  end;
+  Result := TgBot.Updates.Types.TgWebhookHttpStatus(AResult);
 end;
 
 {$IFDEF MSWINDOWS}
@@ -739,31 +458,6 @@ begin
   Result := LDiff = 0;
 end;
 
-function TgWaitEventPumping(AEvent: TEvent; AMs: Cardinal): Boolean;
-var
-  LWatch: TStopwatch;
-  LLeft: Int64;
-begin
-  if TThread.CurrentThread.ThreadID <> MainThreadID then
-    Exit(AEvent.WaitFor(AMs) = TWaitResult.wrSignaled);
-  LWatch := TStopwatch.StartNew;
-  while True do
-  begin
-    if AEvent.WaitFor(0) = TWaitResult.wrSignaled then
-      Exit(True);
-    LLeft := Int64(AMs) - LWatch.ElapsedMilliseconds;
-    if LLeft <= 0 then
-      Exit(False);
-    try
-      CheckSynchronize(Integer(Min(LLeft, 10)));
-    except
-      // Исключение чужой процедуры из очереди не должно прерывать остановку.
-      if Assigned(ApplicationHandleException) then
-        ApplicationHandleException(nil);
-    end;
-  end;
-end;
-
 /// <summary>
 ///   Вызов метода Bot API через транспорт с токеном отмены (как
 ///   TTgApiCore.Call, но без клиента: потоки держат только счётчиковые ссылки).
@@ -799,130 +493,6 @@ begin
   except
     // Исключения пользовательских событий не прерывают работу потоков.
   end;
-end;
-
-{ TTgRawUpdate }
-
-constructor TTgRawUpdate.Create(AJson: TJSONObject);
-begin
-  // Владение — сразу: при исключении деструктор освободит JSON.
-  FJson := AJson;
-  inherited Create;
-  if not Assigned(FJson) then
-    raise EArgumentNilException.Create('AJson');
-  FUpdateId := TTgJson.GetInt64(FJson, 'update_id');
-  FKind := KindOf(FJson);
-  try
-    FChatKey := ChatKeyOf(FJson);
-  except
-    // Некорректный id чата не мешает обработке: обновление идёт без порядка.
-    FChatKey := '';
-  end;
-end;
-
-destructor TTgRawUpdate.Destroy;
-begin
-  FreeAndNil(FJson);
-  inherited Destroy;
-end;
-
-class function TTgRawUpdate.KindOf(AJson: TJSONObject): string;
-var
-  I: Integer;
-begin
-  Result := '';
-  if not Assigned(AJson) then
-    Exit;
-  for I := 0 to AJson.Count - 1 do
-    if AJson.Pairs[I].JsonString.Value <> 'update_id' then
-      Exit(AJson.Pairs[I].JsonString.Value);
-end;
-
-class function TTgRawUpdate.ChatKeyOf(AJson: TJSONObject): string;
-
-  function ChatOf(AObj: TJSONObject): string;
-  var
-    LChat: TJSONObject;
-  begin
-    LChat := TTgJson.GetObj(AObj, 'chat');
-    if TTgJson.Has(LChat, 'id') then
-      Result := IntToStr(TTgJson.GetInt64(LChat, 'id'))
-    else
-      Result := '';
-  end;
-
-  function UserOf(AObj: TJSONObject): string;
-  var
-    LUser: TJSONObject;
-  begin
-    LUser := TTgJson.GetObj(AObj, 'from');
-    if not Assigned(LUser) then
-      LUser := TTgJson.GetObj(AObj, 'user');
-    if TTgJson.Has(LUser, 'id') then
-      Result := 'u' + IntToStr(TTgJson.GetInt64(LUser, 'id'))
-    else
-      Result := '';
-  end;
-
-var
-  LKind: string;
-  LPayload: TJSONObject;
-begin
-  Result := '';
-  LKind := KindOf(AJson);
-  LPayload := TTgJson.GetObj(AJson, LKind);
-  if not Assigned(LPayload) then
-    Exit;
-  // Опросы не привязаны к диалогу: порядок не нужен.
-  if (LKind = 'poll') or (LKind = 'poll_answer') then
-    Exit;
-  if LKind = 'callback_query' then
-    Result := ChatOf(TTgJson.GetObj(LPayload, 'message'))
-  else
-    Result := ChatOf(LPayload);
-  if Result = '' then
-    Result := UserOf(LPayload);
-end;
-
-function TTgRawUpdate.GetUpdateId: Int64;
-begin
-  Result := FUpdateId;
-end;
-
-function TTgRawUpdate.GetKind: string;
-begin
-  Result := FKind;
-end;
-
-function TTgRawUpdate.GetChatKey: string;
-begin
-  Result := FChatKey;
-end;
-
-function TTgRawUpdate.GetJson: TJSONObject;
-begin
-  Result := FJson;
-end;
-
-{ TTgSystemPollTimer }
-
-constructor TTgSystemPollTimer.Create;
-begin
-  inherited Create;
-  FWatch := TStopwatch.StartNew;
-end;
-
-function TTgSystemPollTimer.NowMs: Int64;
-begin
-  Result := FWatch.ElapsedMilliseconds;
-end;
-
-function TTgSystemPollTimer.Sleep(AMs: Cardinal; const ACancel: ITgCancellation): Boolean;
-begin
-  if Assigned(ACancel) then
-    Exit(ACancel.WaitFor(AMs));
-  TThread.Sleep(AMs);
-  Result := False;
 end;
 
 type
@@ -1624,7 +1194,7 @@ begin
       LFirst := not LCore.IsStopRequested;
       LCore.RequestStop(TgDefaultDrainTimeoutMs + 1000);
       if LFirst then
-        LCore.Done.WaitFor(CDestroyGraceMs);
+        LCore.Done.WaitFor(TgDestroyGraceMs);
     end;
     LRef := nil;
   end;
@@ -2119,7 +1689,7 @@ begin
       LFirst := not LCore.IsStopRequested;
       LCore.RequestStop;
       if LFirst then
-        LCore.Done.WaitFor(CDestroyGraceMs);
+        LCore.Done.WaitFor(TgDestroyGraceMs);
     end;
     LRef := nil;
   end;
@@ -2345,834 +1915,5 @@ begin
       if not CharInSet(C, ['A'..'Z', 'a'..'z', '0'..'9', '_', '-']) then
         Exit(False);
 end;
-
-type
-  /// <summary>Состояние полосы диспетчера.</summary>
-  TTgLaneState = (Idle, Ready, Running);
-
-  /// <summary>Полоса: очередь обновлений одного ChatKey.</summary>
-  TTgLane = class
-  public
-    Key: string;
-    Keyed: Boolean;
-    State: TTgLaneState;
-    Items: TQueue<ITgRawUpdate>;
-    constructor Create(const AKey: string; AKeyed: Boolean);
-    destructor Destroy; override;
-  end;
-
-  /// <summary>Внутреннее состояние одного запуска диспетчера.</summary>
-  TTgDispatchCore = class(TInterfacedObject)
-  private
-    FLock: TObject;
-    FLanes: TDictionary<string, TTgLane>;
-    FReady: TQueue<TTgLane>;
-    FCount: Integer;
-    FBusy: Integer;
-    FCapacity: Integer;
-    FStopping: Boolean;
-    FWorkers: Integer;
-    FAllExited: TEvent;
-    FIdle: TEvent;
-    FCancelSource: TTgCancellationSource;
-    FCancel: ITgCancellation;
-    FDelivery: TTgDelivery;
-    FHandler: TTgRawHandler;
-    FOnError: TTgRawErrorHandler;
-    FOnProcessed: TProc<Int64>;
-    procedure Deliver(const AUpdate: ITgRawUpdate);
-    procedure DeliverMain(const AUpdate: ITgRawUpdate);
-    procedure FinishLane(ALane: TTgLane);
-  public
-    constructor Create(ADispatcher: TTgUpdateDispatcher);
-    destructor Destroy; override;
-    procedure WorkerLoop;
-    procedure WorkerStarted;
-    procedure WorkerExited;
-    /// <summary>Выполняет обработчик в текущем потоке (с областью отмены).</summary>
-    procedure Execute(const AUpdate: ITgRawUpdate);
-    /// <summary>Место в очереди ждёт не дольше ATimeoutMs (INFINITE — без предела).</summary>
-    function Post(const AUpdate: ITgRawUpdate; const ACancel: ITgCancellation;
-      ATimeoutMs: Cardinal): Boolean;
-    procedure BeginStop;
-    function Stopping: Boolean;
-    property AllExited: TEvent read FAllExited;
-    property Idle: TEvent read FIdle;
-    property Cancel: ITgCancellation read FCancel;
-  end;
-
-  /// <summary>Поток диспетчера (FreeOnTerminate).</summary>
-  TTgDispatchThread = class(TThread)
-  private
-    FCore: TTgDispatchCore;
-    FCoreRef: IInterface;
-  protected
-    procedure Execute; override;
-  public
-    constructor Create(ACore: TTgDispatchCore);
-  end;
-
-  /// <summary>
-  ///   Задание для главного потока (Delivery = Main). Состояния:
-  ///   0 — ждёт, 1 — выполняется, 2 — выполнено, 3 — брошено (процедура в
-  ///   очереди ничего не сделает).
-  /// </summary>
-  TTgMainJob = class(TInterfacedObject)
-  private
-    FState: Integer;
-  public
-    function TryStart(const ACancel: ITgCancellation): Boolean;
-    procedure Finish;
-    procedure Wake;
-    /// <summary>Ждёт выполнения; при отмене не начатое задание бросается.</summary>
-    procedure WaitFor(const ACancel: ITgCancellation);
-  end;
-
-threadvar
-  // Глубина вложенности обработчиков диспетчера в текущем потоке.
-  GTgHandlerDepth: Integer;
-
-{ TTgLane }
-
-constructor TTgLane.Create(const AKey: string; AKeyed: Boolean);
-begin
-  inherited Create;
-  Key := AKey;
-  Keyed := AKeyed;
-  Items := TQueue<ITgRawUpdate>.Create;
-end;
-
-destructor TTgLane.Destroy;
-begin
-  FreeAndNil(Items);
-  inherited Destroy;
-end;
-
-{ TTgMainJob }
-
-function TTgMainJob.TryStart(const ACancel: ITgCancellation): Boolean;
-begin
-  TMonitor.Enter(Self);
-  try
-    Result := FState = 0;
-    if not Result then
-      Exit;
-    // Диспетчер уже останавливается — не начинаем.
-    if ACancel.IsCancelled then
-    begin
-      FState := 3;
-      TMonitor.PulseAll(Self);
-      Exit(False);
-    end;
-    FState := 1;
-  finally
-    TMonitor.Exit(Self);
-  end;
-end;
-
-procedure TTgMainJob.Finish;
-begin
-  TMonitor.Enter(Self);
-  try
-    FState := 2;
-    TMonitor.PulseAll(Self);
-  finally
-    TMonitor.Exit(Self);
-  end;
-end;
-
-procedure TTgMainJob.Wake;
-begin
-  TMonitor.Enter(Self);
-  try
-    TMonitor.PulseAll(Self);
-  finally
-    TMonitor.Exit(Self);
-  end;
-end;
-
-procedure TTgMainJob.WaitFor(const ACancel: ITgCancellation);
-begin
-  TMonitor.Enter(Self);
-  try
-    while True do
-    begin
-      if FState in [2, 3] then
-        Exit;
-      if (FState = 0) and ACancel.IsCancelled then
-      begin
-        FState := 3;
-        Exit;
-      end;
-      TMonitor.Wait(Self, INFINITE);
-    end;
-  finally
-    TMonitor.Exit(Self);
-  end;
-end;
-
-// Замыкания — в отдельных функциях: захватывается только нужное.
-
-function NewJobWakeCallback(const AJobRef: IInterface): TProc;
-begin
-  Result :=
-    procedure
-    begin
-      TTgMainJob(AJobRef as TObject).Wake;
-    end;
-end;
-
-function NewMainJobProc(const ACoreRef, AJobRef: IInterface;
-  const AUpdate: ITgRawUpdate): TThreadProcedure;
-begin
-  Result :=
-    procedure
-    var
-      LCore: TTgDispatchCore;
-      LJob: TTgMainJob;
-    begin
-      LCore := TTgDispatchCore(ACoreRef as TObject);
-      LJob := TTgMainJob(AJobRef as TObject);
-      // «Осиротевшая» процедура (задание брошено) ничего не делает.
-      if not LJob.TryStart(LCore.Cancel) then
-        Exit;
-      try
-        LCore.Execute(AUpdate);
-      finally
-        LJob.Finish;
-      end;
-    end;
-end;
-
-function NewPulseCallback(const ACoreRef: IInterface): TProc;
-begin
-  Result :=
-    procedure
-    var
-      LLock: TObject;
-    begin
-      LLock := TTgDispatchCore(ACoreRef as TObject).FLock;
-      TMonitor.Enter(LLock);
-      try
-        TMonitor.PulseAll(LLock);
-      finally
-        TMonitor.Exit(LLock);
-      end;
-    end;
-end;
-
-{ TTgDispatchThread }
-
-constructor TTgDispatchThread.Create(ACore: TTgDispatchCore);
-begin
-  inherited Create(True);
-  FCore := ACore;
-  FCoreRef := ACore;
-  FreeOnTerminate := True;
-end;
-
-procedure TTgDispatchThread.Execute;
-var
-  LName: string;
-begin
-  LName := 'TgBot.Dispatcher';
-  NameThreadForDebugging(LName);
-  try
-    try
-      FCore.WorkerLoop;
-    except
-      // Цикл не выпускает исключений обработчиков; защита от сбоев самого цикла.
-    end;
-  finally
-    FCore.WorkerExited;
-    FCore := nil;
-    FCoreRef := nil;
-  end;
-end;
-
-{ TTgDispatchCore }
-
-constructor TTgDispatchCore.Create(ADispatcher: TTgUpdateDispatcher);
-begin
-  inherited Create;
-  FLock := TObject.Create;
-  FLanes := TDictionary<string, TTgLane>.Create;
-  FReady := TQueue<TTgLane>.Create;
-  FAllExited := TEvent.Create(nil, True, True, '');
-  FIdle := TEvent.Create(nil, True, True, '');
-  FCancelSource := TTgCancellationSource.Create;
-  FCancel := FCancelSource;
-  FCapacity := Max(ADispatcher.FQueueCapacity, 1);
-  FDelivery := ADispatcher.FDelivery;
-  FHandler := ADispatcher.FHandler;
-  FOnError := ADispatcher.FOnError;
-  FOnProcessed := ADispatcher.FOnProcessed;
-end;
-
-destructor TTgDispatchCore.Destroy;
-var
-  LLane: TTgLane;
-begin
-  // Потоков уже нет: оставшиеся полосы принадлежат только ядру.
-  if Assigned(FReady) then
-    while FReady.Count > 0 do
-    begin
-      LLane := FReady.Dequeue;
-      if LLane.Keyed then
-        FLanes.Remove(LLane.Key);
-      LLane.Free;
-    end;
-  if Assigned(FLanes) then
-    for LLane in FLanes.Values do
-      LLane.Free;
-  FreeAndNil(FLanes);
-  FreeAndNil(FReady);
-  FreeAndNil(FAllExited);
-  FreeAndNil(FIdle);
-  FreeAndNil(FLock);
-  FCancel := nil;
-  inherited Destroy;
-end;
-
-procedure TTgDispatchCore.WorkerStarted;
-begin
-  TMonitor.Enter(FLock);
-  try
-    Inc(FWorkers);
-    FAllExited.ResetEvent;
-  finally
-    TMonitor.Exit(FLock);
-  end;
-end;
-
-procedure TTgDispatchCore.WorkerExited;
-begin
-  TMonitor.Enter(FLock);
-  try
-    Dec(FWorkers);
-    if FWorkers = 0 then
-      FAllExited.SetEvent;
-  finally
-    TMonitor.Exit(FLock);
-  end;
-end;
-
-procedure TTgDispatchCore.WorkerLoop;
-var
-  LLane: TTgLane;
-  LUpdate: ITgRawUpdate;
-begin
-  while True do
-  begin
-    TMonitor.Enter(FLock);
-    try
-      while (FReady.Count = 0) and not FStopping do
-        TMonitor.Wait(FLock, INFINITE);
-      if FStopping then
-        Exit;
-      LLane := FReady.Dequeue;
-      LLane.State := TTgLaneState.Running;
-      LUpdate := LLane.Items.Dequeue;
-      Dec(FCount);
-      Inc(FBusy);
-      // Ждущие Post: в очереди появилось место.
-      TMonitor.PulseAll(FLock);
-    finally
-      TMonitor.Exit(FLock);
-    end;
-    try
-      Deliver(LUpdate);
-    finally
-      LUpdate := nil;
-      FinishLane(LLane);
-    end;
-  end;
-end;
-
-procedure TTgDispatchCore.FinishLane(ALane: TTgLane);
-begin
-  TMonitor.Enter(FLock);
-  try
-    Dec(FBusy);
-    if ALane.Items.Count > 0 then
-    begin
-      // В конец общей очереди: другие чаты не голодают.
-      ALane.State := TTgLaneState.Ready;
-      FReady.Enqueue(ALane);
-      TMonitor.PulseAll(FLock);
-    end
-    else
-    begin
-      if ALane.Keyed then
-        FLanes.Remove(ALane.Key);
-      ALane.Free;
-    end;
-    if (FCount = 0) and (FBusy = 0) then
-      FIdle.SetEvent;
-  finally
-    TMonitor.Exit(FLock);
-  end;
-end;
-
-procedure TTgDispatchCore.Deliver(const AUpdate: ITgRawUpdate);
-begin
-  if FDelivery = TTgDelivery.Main then
-    DeliverMain(AUpdate)
-  else
-    Execute(AUpdate);
-end;
-
-procedure TTgDispatchCore.DeliverMain(const AUpdate: ITgRawUpdate);
-var
-  LJob: TTgMainJob;
-  LJobRef, LCoreRef, LRegistration: IInterface;
-begin
-  LJob := TTgMainJob.Create;
-  LJobRef := LJob;
-  LCoreRef := Self;
-  // Отмена диспетчера будит ожидание: не начатое задание бросается.
-  LRegistration := FCancel.Register(NewJobWakeCallback(LJobRef));
-  try
-    // Процедура привязана к потоку диспетчера: TThread.Destroy вызывает
-    // RemoveQueuedEvents(Self) — брошенное задание снимается из очереди
-    // главного потока вместе с потоком (без CheckSynchronize замыкание с
-    // ядром не висит до выхода). Выполнится раньше — TryStart откажет.
-    TThread.Queue(TThread.CurrentThread, NewMainJobProc(LCoreRef, LJobRef, AUpdate));
-    LJob.WaitFor(FCancel);
-  finally
-    LRegistration := nil;
-  end;
-end;
-
-procedure TTgDispatchCore.Execute(const AUpdate: ITgRawUpdate);
-var
-  LScope: TTgCancelScope;
-begin
-  LScope := TTgCancelScope.Enter(FCancel);
-  Inc(GTgHandlerDepth);
-  try
-    try
-      FHandler(AUpdate);
-    except
-      on E: Exception do
-        if Assigned(FOnError) then
-          try
-            FOnError(E, AUpdate);
-          except
-            // Исключение OnError поглощается: цикл обработки продолжается.
-          end;
-    end;
-  finally
-    Dec(GTgHandlerDepth);
-    LScope.Leave;
-  end;
-  // Обработано — в т.ч. с исключением (иначе offset навсегда застрянет).
-  if Assigned(FOnProcessed) then
-    try
-      FOnProcessed(AUpdate.UpdateId);
-    except
-      // Подтверждение не должно ронять поток диспетчера.
-    end;
-end;
-
-function TTgDispatchCore.Post(const AUpdate: ITgRawUpdate;
-  const ACancel: ITgCancellation; ATimeoutMs: Cardinal): Boolean;
-var
-  LRegistration: IInterface;
-  LLane: TTgLane;
-  LKey: string;
-  LWatch: TStopwatch;
-  LLeft: Int64;
-begin
-  LRegistration := nil;
-  LKey := AUpdate.ChatKey;
-  LWatch := TStopwatch.StartNew;
-  TMonitor.Enter(FLock);
-  try
-    while (FCount >= FCapacity) and not FStopping and
-      not (Assigned(ACancel) and ACancel.IsCancelled) do
-    begin
-      // Отмена ACancel будит ожидание места (подписка — только при блокировке).
-      if Assigned(ACancel) and not Assigned(LRegistration) then
-      begin
-        LRegistration := ACancel.Register(NewPulseCallback(Self));
-        Continue;
-      end;
-      if ATimeoutMs = INFINITE then
-        TMonitor.Wait(FLock, INFINITE)
-      else
-      begin
-        // Ограниченное ожидание (webhook): очередь так и не освободилась — отказ.
-        LLeft := Int64(ATimeoutMs) - LWatch.ElapsedMilliseconds;
-        if LLeft <= 0 then
-          Exit(False);
-        TMonitor.Wait(FLock, Cardinal(LLeft));
-      end;
-    end;
-    if FStopping or (Assigned(ACancel) and ACancel.IsCancelled) then
-      Exit(False);
-    if (LKey = '') or not FLanes.TryGetValue(LKey, LLane) then
-    begin
-      LLane := TTgLane.Create(LKey, LKey <> '');
-      if LLane.Keyed then
-        try
-          FLanes.Add(LKey, LLane);
-        except
-          LLane.Free;
-          raise;
-        end;
-    end;
-    LLane.Items.Enqueue(AUpdate);
-    Inc(FCount);
-    FIdle.ResetEvent;
-    if LLane.State = TTgLaneState.Idle then
-    begin
-      LLane.State := TTgLaneState.Ready;
-      FReady.Enqueue(LLane);
-      TMonitor.PulseAll(FLock);
-    end;
-    Result := True;
-  finally
-    TMonitor.Exit(FLock);
-  end;
-end;
-
-procedure TTgDispatchCore.BeginStop;
-var
-  LLane: TTgLane;
-begin
-  TMonitor.Enter(FLock);
-  try
-    FStopping := True;
-    // Необработанная очередь выбрасывается; выполняющиеся полосы освободят потоки.
-    while FReady.Count > 0 do
-    begin
-      LLane := FReady.Dequeue;
-      if LLane.Keyed then
-        FLanes.Remove(LLane.Key);
-      LLane.Free;
-    end;
-    for LLane in FLanes.Values do
-      LLane.Items.Clear;
-    FCount := 0;
-    if FBusy = 0 then
-      FIdle.SetEvent;
-    TMonitor.PulseAll(FLock);
-  finally
-    TMonitor.Exit(FLock);
-  end;
-  FCancelSource.Cancel;
-end;
-
-function TTgDispatchCore.Stopping: Boolean;
-begin
-  TMonitor.Enter(FLock);
-  try
-    Result := FStopping;
-  finally
-    TMonitor.Exit(FLock);
-  end;
-end;
-
-{ TTgUpdateDispatcher }
-
-constructor TTgUpdateDispatcher.Create(const AHandler: TTgRawHandler);
-begin
-  inherited Create;
-  if not Assigned(AHandler) then
-    raise EArgumentNilException.Create('AHandler');
-  FLock := TCriticalSection.Create;
-  FHandler := AHandler;
-  FMaxParallel := TgDefaultMaxParallel;
-  FQueueCapacity := TgDefaultQueueCapacity;
-  FDelivery := TTgDelivery.Worker;
-end;
-
-destructor TTgUpdateDispatcher.Destroy;
-var
-  LRef: IInterface;
-  LCore: TTgDispatchCore;
-  LFirst: Boolean;
-begin
-  if Assigned(FLock) then
-  begin
-    LCore := TTgDispatchCore(CurrentCore(LRef));
-    if Assigned(LCore) then
-    begin
-      // Потоки (FreeOnTerminate) держат ядро сами: зависший обработчик не ждём.
-      // После Stop повторно не ждём; из обработчика ждать нечего (свой поток).
-      LFirst := not LCore.Stopping;
-      LCore.BeginStop;
-      if LFirst and (GTgHandlerDepth = 0) then
-        LCore.AllExited.WaitFor(CDestroyGraceMs);
-    end;
-    LRef := nil;
-  end;
-  FCore := nil;
-  FCoreRef := nil;
-  FreeAndNil(FLock);
-  inherited Destroy;
-end;
-
-function TTgUpdateDispatcher.CurrentCore(out ARef: IInterface): TObject;
-begin
-  FLock.Enter;
-  try
-    Result := FCore;
-    ARef := FCoreRef;
-  finally
-    FLock.Leave;
-  end;
-end;
-
-procedure TTgUpdateDispatcher.Start;
-var
-  LCore: TTgDispatchCore;
-  LRef: IInterface;
-  LThreads: TArray<TTgDispatchThread>;
-  I: Integer;
-begin
-  FLock.Enter;
-  try
-    if Assigned(FCore) and not TTgDispatchCore(FCore).Stopping then
-      raise ETgError.Create(TgUpdatesText(TTgUpdatesText.DispatcherRunning));
-    LCore := TTgDispatchCore.Create(Self);
-    LRef := LCore;
-    SetLength(LThreads, EnsureRange(FMaxParallel, 1, CMaxParallelLimit));
-    try
-      for I := 0 to High(LThreads) do
-      begin
-        LThreads[I] := TTgDispatchThread.Create(LCore);
-        LCore.WorkerStarted;
-      end;
-    except
-      // Созданные, но не запущенные потоки освобождаются сами (FreeOnTerminate) —
-      // запускаем их уже остановленными.
-      LCore.BeginStop;
-      for I := 0 to High(LThreads) do
-        if Assigned(LThreads[I]) then
-          LThreads[I].Start;
-      raise;
-    end;
-    FCore := LCore;
-    FCoreRef := LRef;
-  finally
-    FLock.Leave;
-  end;
-  for I := 0 to High(LThreads) do
-    LThreads[I].Start;
-end;
-
-function TTgUpdateDispatcher.Stop(AWaitMs: Cardinal): Boolean;
-var
-  LRef: IInterface;
-  LCore: TTgDispatchCore;
-begin
-  LCore := TTgDispatchCore(CurrentCore(LRef));
-  if not Assigned(LCore) then
-    Exit(True);
-  LCore.BeginStop;
-  Result := TgWaitEventPumping(LCore.AllExited, AWaitMs);
-end;
-
-function TTgUpdateDispatcher.WaitIdle(AMs: Cardinal): Boolean;
-var
-  LRef: IInterface;
-  LCore: TObject;
-begin
-  LCore := CurrentCore(LRef);
-  Result := not Assigned(LCore) or TgWaitEventPumping(TTgDispatchCore(LCore).Idle, AMs);
-end;
-
-function TTgUpdateDispatcher.Post(const AUpdate: ITgRawUpdate;
-  const ACancel: ITgCancellation): Boolean;
-var
-  LRef: IInterface;
-  LCore: TObject;
-begin
-  LCore := CurrentCore(LRef);
-  Result := Assigned(LCore) and Assigned(AUpdate) and
-    TTgDispatchCore(LCore).Post(AUpdate, ACancel, INFINITE);
-end;
-
-function TTgUpdateDispatcher.TryPost(const AUpdate: ITgRawUpdate;
-  const ACancel: ITgCancellation; ATimeoutMs: Cardinal): Boolean;
-var
-  LRef: IInterface;
-  LCore: TObject;
-begin
-  LCore := CurrentCore(LRef);
-  Result := Assigned(LCore) and Assigned(AUpdate) and
-    TTgDispatchCore(LCore).Post(AUpdate, ACancel, ATimeoutMs);
-end;
-
-class function TTgUpdateDispatcher.InHandler: Boolean;
-begin
-  Result := GTgHandlerDepth > 0;
-end;
-
-function TTgUpdateDispatcher.GetActive: Boolean;
-var
-  LRef: IInterface;
-  LCore: TObject;
-begin
-  LCore := CurrentCore(LRef);
-  Result := Assigned(LCore) and not TTgDispatchCore(LCore).Stopping;
-end;
-
-function TTgUpdateDispatcher.GetCancel: ITgCancellation;
-var
-  LRef: IInterface;
-  LCore: TObject;
-begin
-  LCore := CurrentCore(LRef);
-  if Assigned(LCore) then
-    Result := TTgDispatchCore(LCore).Cancel
-  else
-    Result := nil;
-end;
-
-{ TTgShutdownSignal }
-
-var
-  // Признак сигнала: пишется атомарно (в т.ч. из обработчика сигнала POSIX).
-  GTgSignalFlag: Integer = 0;
-  // Число вложенных Install.
-  GTgSignalInstalls: Integer = 0;
-
-{$IFDEF MSWINDOWS}
-var
-  // Событие «программа остановилась» (живёт до завершения процесса).
-  GTgStoppedEvent: THandle = 0;
-
-function TgConsoleCtrlHandler(ACtrlType: DWORD): BOOL; stdcall;
-begin
-  case ACtrlType of
-    CTRL_C_EVENT, CTRL_BREAK_EVENT:
-      begin
-        AtomicExchange(GTgSignalFlag, 1);
-        Result := True;
-      end;
-    CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT:
-      begin
-        AtomicExchange(GTgSignalFlag, 1);
-        // После возврата Windows завершает процесс: даём боту остановиться.
-        if GTgStoppedEvent <> 0 then
-          WaitForSingleObject(GTgStoppedEvent, 4500);
-        Result := True;
-      end;
-  else
-    Result := False;
-  end;
-end;
-{$ENDIF}
-
-{$IF defined(POSIX) and not defined(ANDROID)}
-var
-  GTgOldSigInt: sigaction_t;
-  GTgOldSigTerm: sigaction_t;
-
-procedure TgSignalHandler(ASignal: Integer); cdecl;
-begin
-  // Только запись выровненного Integer — допустимо в обработчике сигнала.
-  GTgSignalFlag := 1;
-end;
-{$IFEND}
-
-class function TTgShutdownSignal.Supported: Boolean;
-begin
-{$IF defined(MSWINDOWS) or (defined(POSIX) and not defined(ANDROID))}
-  Result := True;
-{$ELSE}
-  Result := False;
-{$IFEND}
-end;
-
-class function TTgShutdownSignal.Install: Boolean;
-{$IF defined(POSIX) and not defined(ANDROID)}
-var
-  LAction: sigaction_t;
-{$IFEND}
-begin
-  Result := Supported;
-  if not Result then
-    Exit;
-  if AtomicIncrement(GTgSignalInstalls) > 1 then
-    Exit;
-{$IFDEF MSWINDOWS}
-  if GTgStoppedEvent = 0 then
-    GTgStoppedEvent := CreateEvent(nil, True, False, nil);
-  Result := SetConsoleCtrlHandler(@TgConsoleCtrlHandler, True);
-{$ENDIF}
-{$IF defined(POSIX) and not defined(ANDROID)}
-  FillChar(LAction, SizeOf(LAction), 0);
-  // Поле обработчика — первое в sigaction_t (имя объединения различается
-  // в Linux и macOS), поэтому пишем его по смещению 0.
-  PPointer(@LAction)^ := @TgSignalHandler;
-  sigemptyset(LAction.sa_mask);
-  LAction.sa_flags := SA_RESTART;
-  Result := (sigaction(SIGINT, @LAction, @GTgOldSigInt) = 0) and
-    (sigaction(SIGTERM, @LAction, @GTgOldSigTerm) = 0);
-{$IFEND}
-  if not Result then
-    AtomicDecrement(GTgSignalInstalls);
-end;
-
-class procedure TTgShutdownSignal.Uninstall;
-begin
-  if not Supported then
-    Exit;
-  if AtomicDecrement(GTgSignalInstalls) <> 0 then
-  begin
-    if GTgSignalInstalls < 0 then
-      GTgSignalInstalls := 0;
-    Exit;
-  end;
-{$IFDEF MSWINDOWS}
-  SetConsoleCtrlHandler(@TgConsoleCtrlHandler, False);
-{$ENDIF}
-{$IF defined(POSIX) and not defined(ANDROID)}
-  sigaction(SIGINT, @GTgOldSigInt, nil);
-  sigaction(SIGTERM, @GTgOldSigTerm, nil);
-{$IFEND}
-end;
-
-class function TTgShutdownSignal.Requested: Boolean;
-begin
-  Result := AtomicCmpExchange(GTgSignalFlag, 0, 0) <> 0;
-end;
-
-class procedure TTgShutdownSignal.Request;
-begin
-  AtomicExchange(GTgSignalFlag, 1);
-end;
-
-class procedure TTgShutdownSignal.Reset;
-begin
-  AtomicExchange(GTgSignalFlag, 0);
-{$IFDEF MSWINDOWS}
-  if GTgStoppedEvent <> 0 then
-    ResetEvent(GTgStoppedEvent);
-{$ENDIF}
-end;
-
-class procedure TTgShutdownSignal.NotifyStopped;
-begin
-{$IFDEF MSWINDOWS}
-  if GTgStoppedEvent <> 0 then
-    SetEvent(GTgStoppedEvent);
-{$ENDIF}
-end;
-
-initialization
-
-finalization
-{$IFDEF MSWINDOWS}
-  if GTgStoppedEvent <> 0 then
-  begin
-    CloseHandle(GTgStoppedEvent);
-    GTgStoppedEvent := 0;
-  end;
-{$ENDIF}
 
 end.

@@ -1,0 +1,668 @@
+﻿unit TgBot.Updates.Types;
+
+{
+  TgBot — общие типы приёма обновлений (нижний слой, работает с сырым JSON
+  и не зависит от сгенерированных типов TgBot.Types).
+
+  - ITgRawUpdate / TTgRawUpdate — обновление: update_id, вид (ключ поля),
+    ключ «полосы» ChatKey и JSON (обновление владеет своим объектом);
+  - ITgUpdateSink / ITgTimedUpdateSink — приёмник обновлений (очередь
+    диспетчера TTgUpdateDispatcher, модуль TgBot.Updates.Dispatcher);
+  - ITgUpdateSource / ITgWebhookReceiver / ITgPollTimer — контракты
+    источников TTgLongPollSource и TTgWebhookSource (TgBot.Updates);
+  - перечисления, константы по умолчанию, тексты (TgUpdatesText),
+    TgWebhookHttpStatus, TgWaitEventPumping;
+  - TTgShutdownSignal — Ctrl+C / закрытие консоли (Windows),
+    SIGINT/SIGTERM (Linux, macOS) для консольных ботов.
+
+  Пользователю достаточно uses TgBot.Updates (или TgBot): публичные
+  идентификаторы модуля реэкспортируются там псевдонимами.
+}
+
+{$SCOPEDENUMS ON}
+
+interface
+
+uses
+  System.SysUtils,
+  System.SyncObjs,
+  System.Diagnostics,
+  System.JSON,
+  TgBot.Base;
+
+const
+  /// <summary>Таймаут long polling (параметр timeout getUpdates) по умолчанию, с.</summary>
+  TgDefaultPollTimeoutSec = 50;
+  /// <summary>Максимум обновлений за один getUpdates по умолчанию (1–100).</summary>
+  TgDefaultPollLimit = 100;
+  /// <summary>Ёмкость очереди диспетчера по умолчанию (обновлений).</summary>
+  TgDefaultQueueCapacity = 1000;
+  /// <summary>Число потоков диспетчера по умолчанию.</summary>
+  TgDefaultMaxParallel = 4;
+  /// <summary>Сколько Stop ждёт обработки уже принятых обновлений по умолчанию, мс.</summary>
+  TgDefaultDrainTimeoutMs = 5000;
+  /// <summary>Минимальный интервал между событиями OnConflict «другой getUpdates», мс.</summary>
+  TgDefaultConflictNotifyMs = 60000;
+  /// <summary>Разброс пауз между повторами по умолчанию, ± процентов.</summary>
+  TgDefaultBackoffJitterPercent = 20;
+  /// <summary>Первая пауза после ошибки getUpdates, мс (далее — удвоение).</summary>
+  TgBackoffMinMs = 1000;
+  /// <summary>Максимальная пауза после ошибки getUpdates, мс.</summary>
+  TgBackoffMaxMs = 60000;
+  /// <summary>Минимальная пауза после 409 «другой getUpdates», мс.</summary>
+  TgConflictRetryMs = 5000;
+  /// <summary>Наибольший размер тела webhook-запроса по умолчанию, байт (1 МБ).</summary>
+  TgDefaultWebhookMaxBodySize = 1024 * 1024;
+  /// <summary>Сколько Accept ждёт места в очереди по умолчанию, мс (затем Unavailable).</summary>
+  TgDefaultWebhookPostTimeoutMs = 250;
+  /// <summary>Окно дедупликации webhook по умолчанию: сколько последних update_id помнить.</summary>
+  TgDefaultWebhookDedupWindow = 1000;
+  /// <summary>Длина секрета webhook, генерируемого библиотекой (символы [A-Za-z0-9_-]).</summary>
+  TgWebhookSecretLength = 48;
+  /// <summary>
+  ///   Сколько деструктор диспетчера или источника ждёт свои потоки, если
+  ///   остановку ещё не запрашивали, мс; дальше потоки отпускаются — своё
+  ///   состояние они держат сами (служебное).
+  /// </summary>
+  TgDestroyGraceMs = 30;
+
+type
+  /// <summary>Состояние источника обновлений.</summary>
+  TTgSourceState = (
+    /// <summary>Не запущен или остановлен.</summary>
+    Idle,
+    /// <summary>Принимает обновления.</summary>
+    Running,
+    /// <summary>Остановка запрошена (дренаж, итоговое подтверждение).</summary>
+    Stopping,
+    /// <summary>Остановлен из-за неустранимой ошибки (401, 404, webhook и т.п.).</summary>
+    Faulted);
+
+  /// <summary>Когда подтверждать (offset) принятые обновления.</summary>
+  TTgAckPolicy = (
+    /// <summary>
+    ///   Сразу после приёма: следующий getUpdates отправляется, как только
+    ///   пакет помещён в очередь (ограничение — ёмкость очереди). Быстро, но
+    ///   при аварийном завершении процесса обновления из очереди теряются.
+    /// </summary>
+    AfterReceive,
+    /// <summary>
+    ///   После обработки: следующий getUpdates — только когда обработаны все
+    ///   обновления пакета. Медленнее, зато при сбое пакет придёт повторно.
+    /// </summary>
+    AfterBatch);
+
+  /// <summary>Где выполняются обработчики обновлений.</summary>
+  TTgDelivery = (
+    /// <summary>В потоках диспетчера (параллельно для разных чатов).</summary>
+    Worker,
+    /// <summary>
+    ///   В главном потоке (TThread.Queue): для VCL/FMX — без ручной
+    ///   синхронизации; в консоли главный поток должен вызывать
+    ///   CheckSynchronize (это делает TTgBot.Run).
+    /// </summary>
+    Main);
+
+  /// <summary>
+  ///   Итог приёма webhook-запроса (TTgWebhookSource.Accept); HTTP-код
+  ///   ответа — TgWebhookHttpStatus.
+  /// </summary>
+  TTgWebhookResult = (
+    /// <summary>Принято (или повтор уже принятого update_id) — 200.</summary>
+    Accepted,
+    /// <summary>Неверный X-Telegram-Bot-Api-Secret-Token — 403.</summary>
+    Forbidden,
+    /// <summary>Тело не JSON-объект обновления, нет update_id или больше лимита — 400.</summary>
+    BadRequest,
+    /// <summary>
+    ///   Источник не запущен, останавливается, в Faulted или очередь
+    ///   переполнена — 503 (Telegram повторит доставку позже).
+    /// </summary>
+    Unavailable);
+
+  /// <summary>Тексты сообщений (служебное: источники, диспетчер, TgBot.Bot).</summary>
+  TTgUpdatesText = (SourceRunning, DispatcherRunning, StopFromHandler, NoChat,
+    RunNotMainThread, RunUnsupported, BotRunning, HandlerFiltered, WebhookUrlRequired,
+    WebhookBadSecret, WebhookUnsupported);
+
+  /// <summary>
+  ///   Обновление Bot API в сыром виде. Владеет своим JSON-объектом (не
+  ///   освобождайте Json); живёт, пока на него есть ссылки.
+  /// </summary>
+  ITgRawUpdate = interface
+    ['{D51FD45E-3FE0-4240-9B70-5A58992E6674}']
+    function GetUpdateId: Int64;
+    function GetKind: string;
+    function GetChatKey: string;
+    function GetJson: TJSONObject;
+    /// <summary>update_id.</summary>
+    property UpdateId: Int64 read GetUpdateId;
+    /// <summary>Вид обновления — имя поля ('message', 'callback_query', …; TTgUpdateType).</summary>
+    property Kind: string read GetKind;
+    /// <summary>
+    ///   Ключ порядка: id чата ('-100123'), 'u' + id пользователя для
+    ///   обновлений без чата ('u42'), '' — порядок не важен (poll, poll_answer).
+    /// </summary>
+    property ChatKey: string read GetChatKey;
+    /// <summary>JSON обновления целиком (владелец — обновление).</summary>
+    property Json: TJSONObject read GetJson;
+  end;
+
+  /// <summary>Приёмник обновлений (очередь диспетчера).</summary>
+  ITgUpdateSink = interface
+    ['{C83E716B-723A-43C2-8DE7-FCC6C6BAD5BF}']
+    /// <summary>
+    ///   Ставит обновление в очередь; при полной очереди ждёт места.
+    ///   False — приёмник остановлен или ACancel отменён (обновление не принято).
+    /// </summary>
+    function Post(const AUpdate: ITgRawUpdate; const ACancel: ITgCancellation): Boolean;
+  end;
+
+  /// <summary>
+  ///   Приёмник с ограниченным ожиданием места в очереди (webhook: поток
+  ///   HTTP-сервера не должен висеть на полной очереди).
+  /// </summary>
+  ITgTimedUpdateSink = interface
+    ['{8E4B1F0A-6C2D-4E73-9A5B-3D7F2C1E8B64}']
+    /// <summary>
+    ///   Как Post, но место в очереди ждёт не дольше ATimeoutMs мс (0 — не
+    ///   ждёт). False — очередь полна, приёмник остановлен или ACancel отменён.
+    /// </summary>
+    function TryPost(const AUpdate: ITgRawUpdate; const ACancel: ITgCancellation;
+      ATimeoutMs: Cardinal): Boolean;
+  end;
+
+  /// <summary>
+  ///   Приём тела webhook-запроса из любого HTTP-сервера (потокобезопасно,
+  ///   из любого числа потоков). ASecretHeader — значение заголовка
+  ///   X-Telegram-Bot-Api-Secret-Token ('' — заголовка нет).
+  /// </summary>
+  ITgWebhookReceiver = interface
+    ['{4F7A2C9E-1B3D-4A86-8E5F-6C0D9B2A7E31}']
+    /// <summary>Тело — байты UTF-8 (как пришли по сети).</summary>
+    function Accept(const ABody: TBytes; const ASecretHeader: string): TTgWebhookResult; overload;
+    /// <summary>Тело — уже декодированная строка.</summary>
+    function Accept(const ABody, ASecretHeader: string): TTgWebhookResult; overload;
+  end;
+
+  /// <summary>Источник обновлений (long polling или webhook).</summary>
+  ITgUpdateSource = interface
+    ['{2EB5AB98-37B8-4632-8BB9-B64429C8269B}']
+    /// <summary>Запускает приём в ASink. Повторный Start работающего источника — ETgError.</summary>
+    procedure Start(const ASink: ITgUpdateSink);
+    /// <summary>
+    ///   Останавливает приём не дольше ≈AWaitMs мс. False — поток не удалось
+    ///   прервать и он отпущен (его поздний результат будет выброшен).
+    /// </summary>
+    function Stop(AWaitMs: Cardinal): Boolean;
+    /// <summary>Обновление AUpdateId обработано (для подтверждения offset).</summary>
+    procedure Processed(AUpdateId: Int64);
+    function GetState: TTgSourceState;
+    /// <summary>Состояние источника.</summary>
+    property State: TTgSourceState read GetState;
+  end;
+
+  /// <summary>Часы и паузы источника (подменяются в тестах).</summary>
+  ITgPollTimer = interface
+    ['{CD72B2B4-FC57-46C4-958D-A76187CBB215}']
+    /// <summary>Монотонное время, мс.</summary>
+    function NowMs: Int64;
+    /// <summary>Пауза AMs мс; True — прервана отменой ACancel.</summary>
+    function Sleep(AMs: Cardinal; const ACancel: ITgCancellation): Boolean;
+  end;
+
+  /// <summary>Обработчик обновления нижнего уровня.</summary>
+  TTgRawHandler = reference to procedure(const AUpdate: ITgRawUpdate);
+  /// <summary>Обработчик исключения обработчика (объект исключения действителен только внутри).</summary>
+  TTgRawErrorHandler = reference to procedure(AError: Exception; const AUpdate: ITgRawUpdate);
+  /// <summary>Событие конфликта 409 (объект исключения действителен только внутри).</summary>
+  TTgConflictHandler = reference to procedure(AError: ETgConflictError);
+
+  /// <summary>Реализация ITgRawUpdate.</summary>
+  TTgRawUpdate = class(TInterfacedObject, ITgRawUpdate)
+  private
+    FJson: TJSONObject;
+    FUpdateId: Int64;
+    FKind: string;
+    FChatKey: string;
+  public
+    /// <summary>
+    ///   Владение AJson переходит к обновлению сразу (в т.ч. при исключении
+    ///   конструктора). update_id не целое — ETgError.
+    /// </summary>
+    constructor Create(AJson: TJSONObject);
+    destructor Destroy; override;
+    /// <summary>Вид обновления: первое поле, кроме update_id; '' — нет.</summary>
+    class function KindOf(AJson: TJSONObject): string; static;
+    /// <summary>
+    ///   Ключ порядка: chat.id полезной нагрузки (для callback_query —
+    ///   message.chat.id); иначе 'u' + from.id (или user.id); poll,
+    ///   poll_answer и обновления без чата и пользователя — ''.
+    /// </summary>
+    class function ChatKeyOf(AJson: TJSONObject): string; static;
+    function GetUpdateId: Int64;
+    function GetKind: string;
+    function GetChatKey: string;
+    function GetJson: TJSONObject;
+  end;
+
+  /// <summary>Часы и паузы по умолчанию (TStopwatch, WaitFor токена).</summary>
+  TTgSystemPollTimer = class(TInterfacedObject, ITgPollTimer)
+  private
+    FWatch: TStopwatch;
+  public
+    constructor Create;
+    function NowMs: Int64;
+    function Sleep(AMs: Cardinal; const ACancel: ITgCancellation): Boolean;
+  end;
+
+  /// <summary>
+  ///   Сигнал завершения консольной программы: Windows — Ctrl+C, Ctrl+Break,
+  ///   закрытие окна, выход из системы, выключение (для трёх последних
+  ///   обработчик ждёт NotifyStopped до 4,5 с — затем Windows завершает
+  ///   процесс); Linux/macOS — SIGINT, SIGTERM (обработчик только атомарно
+  ///   пишет флаг; прежние обработчики восстанавливаются в Uninstall);
+  ///   Android — недоступно (Install = False).
+  /// </summary>
+  TTgShutdownSignal = class sealed
+  public
+    /// <summary>Устанавливает обработчики (вложенные вызовы считаются); False — недоступно.</summary>
+    class function Install: Boolean; static;
+    /// <summary>Снимает обработчики (парно Install).</summary>
+    class procedure Uninstall; static;
+    /// <summary>Сигнал получен (или вызван Request).</summary>
+    class function Requested: Boolean; static;
+    /// <summary>Программный запрос завершения (как сигнал).</summary>
+    class procedure Request; static;
+    /// <summary>Сбрасывает признак сигнала и «остановлен».</summary>
+    class procedure Reset; static;
+    /// <summary>Программа остановилась: обработчик закрытия консоли может вернуть управление.</summary>
+    class procedure NotifyStopped; static;
+    /// <summary>Сигналы поддерживаются на этой платформе.</summary>
+    class function Supported: Boolean; static;
+  end;
+
+/// <summary>
+///   Локализованный текст (служебное: источники, диспетчер, TgBot.Bot);
+///   язык — TgGetLanguage в момент вызова.
+/// </summary>
+function TgUpdatesText(AText: TTgUpdatesText): string;
+
+/// <summary>
+///   Ждёт AEvent не дольше AMs мс; в главном потоке при этом выполняет
+///   CheckSynchronize (обработчики с Delivery = Main не блокируются).
+/// </summary>
+function TgWaitEventPumping(AEvent: TEvent; AMs: Cardinal): Boolean;
+
+/// <summary>HTTP-код ответа на webhook-запрос: 200, 403, 400 или 503.</summary>
+function TgWebhookHttpStatus(AResult: TTgWebhookResult): Integer;
+
+implementation
+
+uses
+  System.Classes,
+  System.Generics.Collections,
+{$IFDEF MSWINDOWS}
+  Winapi.Windows,
+{$ENDIF}
+{$IF defined(POSIX) and not defined(ANDROID)}
+  Posix.Signal,
+{$IFEND}
+  System.Math,
+  TgBot.Json;
+
+resourcestring
+  SRuSourceRunning = 'Источник обновлений уже запущен';
+  SEnSourceRunning = 'Update source is already running';
+  SRuDispatcherRunning = 'Диспетчер обновлений уже запущен';
+  SEnDispatcherRunning = 'Update dispatcher is already running';
+  SRuStopFromHandler = 'Нельзя ждать остановки бота из обработчика обновления: ' +
+    'используйте RequestStop';
+  SEnStopFromHandler = 'Cannot wait for the bot to stop from an update handler: ' +
+    'use RequestStop';
+  SRuNoChat = 'В обновлении нет чата для ответа';
+  SEnNoChat = 'The update has no chat to reply to';
+  SRuRunNotMainThread = 'Run с Delivery = Main можно вызывать только из главного потока';
+  SEnRunNotMainThread = 'Run with Delivery = Main must be called from the main thread';
+  SRuRunUnsupported = 'Run недоступен на этой платформе: используйте Start и Stop';
+  SEnRunUnsupported = 'Run is not available on this platform: use Start and Stop';
+  SRuBotRunning = 'Бот уже запущен';
+  SEnBotRunning = 'The bot is already running';
+  SRuHandlerFiltered = 'Назначен %s, но AllowedUpdates не содержит "%s": ' +
+    'такие обновления сервер присылать не будет';
+  SEnHandlerFiltered = '%s is assigned, but AllowedUpdates does not include "%s": ' +
+    'the server will not send such updates';
+  SRuWebhookUrlRequired = 'Режим Webhook: не задан WebhookUrl (внешний HTTPS-адрес бота)';
+  SEnWebhookUrlRequired = 'Webhook mode: WebhookUrl (the public HTTPS address of the bot) is not set';
+  SRuWebhookBadSecret = 'Недопустимый секрет webhook: нужно 1–256 символов A-Z, a-z, 0-9, "_" и "-"';
+  SEnWebhookBadSecret = 'Invalid webhook secret: 1-256 characters A-Z, a-z, 0-9, "_" and "-" are required';
+  SRuWebhookUnsupported = 'Режим Webhook недоступен на этой платформе: используйте Polling';
+  SEnWebhookUnsupported = 'Webhook mode is not available on this platform: use Polling';
+
+const
+  CUpdatesTexts: array[TTgUpdatesText, TTgLanguage] of PResStringRec = (
+    (@SRuSourceRunning, @SEnSourceRunning),
+    (@SRuDispatcherRunning, @SEnDispatcherRunning),
+    (@SRuStopFromHandler, @SEnStopFromHandler),
+    (@SRuNoChat, @SEnNoChat),
+    (@SRuRunNotMainThread, @SEnRunNotMainThread),
+    (@SRuRunUnsupported, @SEnRunUnsupported),
+    (@SRuBotRunning, @SEnBotRunning),
+    (@SRuHandlerFiltered, @SEnHandlerFiltered),
+    (@SRuWebhookUrlRequired, @SEnWebhookUrlRequired),
+    (@SRuWebhookBadSecret, @SEnWebhookBadSecret),
+    (@SRuWebhookUnsupported, @SEnWebhookUnsupported)
+  );
+
+function TgUpdatesText(AText: TTgUpdatesText): string;
+begin
+  Result := LoadResString(CUpdatesTexts[AText, TgGetLanguage]);
+end;
+
+function TgWebhookHttpStatus(AResult: TTgWebhookResult): Integer;
+begin
+  case AResult of
+    TTgWebhookResult.Accepted:
+      Result := 200;
+    TTgWebhookResult.Forbidden:
+      Result := 403;
+    TTgWebhookResult.BadRequest:
+      Result := 400;
+  else
+    Result := 503;
+  end;
+end;
+
+function TgWaitEventPumping(AEvent: TEvent; AMs: Cardinal): Boolean;
+var
+  LWatch: TStopwatch;
+  LLeft: Int64;
+begin
+  if TThread.CurrentThread.ThreadID <> MainThreadID then
+    Exit(AEvent.WaitFor(AMs) = TWaitResult.wrSignaled);
+  LWatch := TStopwatch.StartNew;
+  while True do
+  begin
+    if AEvent.WaitFor(0) = TWaitResult.wrSignaled then
+      Exit(True);
+    LLeft := Int64(AMs) - LWatch.ElapsedMilliseconds;
+    if LLeft <= 0 then
+      Exit(False);
+    try
+      CheckSynchronize(Integer(Min(LLeft, 10)));
+    except
+      // Исключение чужой процедуры из очереди не должно прерывать остановку.
+      if Assigned(ApplicationHandleException) then
+        ApplicationHandleException(nil);
+    end;
+  end;
+end;
+
+{ TTgRawUpdate }
+
+constructor TTgRawUpdate.Create(AJson: TJSONObject);
+begin
+  // Владение — сразу: при исключении деструктор освободит JSON.
+  FJson := AJson;
+  inherited Create;
+  if not Assigned(FJson) then
+    raise EArgumentNilException.Create('AJson');
+  FUpdateId := TTgJson.GetInt64(FJson, 'update_id');
+  FKind := KindOf(FJson);
+  try
+    FChatKey := ChatKeyOf(FJson);
+  except
+    // Некорректный id чата не мешает обработке: обновление идёт без порядка.
+    FChatKey := '';
+  end;
+end;
+
+destructor TTgRawUpdate.Destroy;
+begin
+  FreeAndNil(FJson);
+  inherited Destroy;
+end;
+
+class function TTgRawUpdate.KindOf(AJson: TJSONObject): string;
+var
+  I: Integer;
+begin
+  Result := '';
+  if not Assigned(AJson) then
+    Exit;
+  for I := 0 to AJson.Count - 1 do
+    if AJson.Pairs[I].JsonString.Value <> 'update_id' then
+      Exit(AJson.Pairs[I].JsonString.Value);
+end;
+
+class function TTgRawUpdate.ChatKeyOf(AJson: TJSONObject): string;
+
+  function ChatOf(AObj: TJSONObject): string;
+  var
+    LChat: TJSONObject;
+  begin
+    LChat := TTgJson.GetObj(AObj, 'chat');
+    if TTgJson.Has(LChat, 'id') then
+      Result := IntToStr(TTgJson.GetInt64(LChat, 'id'))
+    else
+      Result := '';
+  end;
+
+  function UserOf(AObj: TJSONObject): string;
+  var
+    LUser: TJSONObject;
+  begin
+    LUser := TTgJson.GetObj(AObj, 'from');
+    if not Assigned(LUser) then
+      LUser := TTgJson.GetObj(AObj, 'user');
+    if TTgJson.Has(LUser, 'id') then
+      Result := 'u' + IntToStr(TTgJson.GetInt64(LUser, 'id'))
+    else
+      Result := '';
+  end;
+
+var
+  LKind: string;
+  LPayload: TJSONObject;
+begin
+  Result := '';
+  LKind := KindOf(AJson);
+  LPayload := TTgJson.GetObj(AJson, LKind);
+  if not Assigned(LPayload) then
+    Exit;
+  // Опросы не привязаны к диалогу: порядок не нужен.
+  if (LKind = 'poll') or (LKind = 'poll_answer') then
+    Exit;
+  if LKind = 'callback_query' then
+    Result := ChatOf(TTgJson.GetObj(LPayload, 'message'))
+  else
+    Result := ChatOf(LPayload);
+  if Result = '' then
+    Result := UserOf(LPayload);
+end;
+
+function TTgRawUpdate.GetUpdateId: Int64;
+begin
+  Result := FUpdateId;
+end;
+
+function TTgRawUpdate.GetKind: string;
+begin
+  Result := FKind;
+end;
+
+function TTgRawUpdate.GetChatKey: string;
+begin
+  Result := FChatKey;
+end;
+
+function TTgRawUpdate.GetJson: TJSONObject;
+begin
+  Result := FJson;
+end;
+
+{ TTgSystemPollTimer }
+
+constructor TTgSystemPollTimer.Create;
+begin
+  inherited Create;
+  FWatch := TStopwatch.StartNew;
+end;
+
+function TTgSystemPollTimer.NowMs: Int64;
+begin
+  Result := FWatch.ElapsedMilliseconds;
+end;
+
+function TTgSystemPollTimer.Sleep(AMs: Cardinal; const ACancel: ITgCancellation): Boolean;
+begin
+  if Assigned(ACancel) then
+    Exit(ACancel.WaitFor(AMs));
+  TThread.Sleep(AMs);
+  Result := False;
+end;
+
+{ TTgShutdownSignal }
+
+var
+  // Признак сигнала: пишется атомарно (в т.ч. из обработчика сигнала POSIX).
+  GTgSignalFlag: Integer = 0;
+  // Число вложенных Install.
+  GTgSignalInstalls: Integer = 0;
+
+{$IFDEF MSWINDOWS}
+var
+  // Событие «программа остановилась» (живёт до завершения процесса).
+  GTgStoppedEvent: THandle = 0;
+
+function TgConsoleCtrlHandler(ACtrlType: DWORD): BOOL; stdcall;
+begin
+  case ACtrlType of
+    CTRL_C_EVENT, CTRL_BREAK_EVENT:
+      begin
+        AtomicExchange(GTgSignalFlag, 1);
+        Result := True;
+      end;
+    CTRL_CLOSE_EVENT, CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT:
+      begin
+        AtomicExchange(GTgSignalFlag, 1);
+        // После возврата Windows завершает процесс: даём боту остановиться.
+        if GTgStoppedEvent <> 0 then
+          WaitForSingleObject(GTgStoppedEvent, 4500);
+        Result := True;
+      end;
+  else
+    Result := False;
+  end;
+end;
+{$ENDIF}
+
+{$IF defined(POSIX) and not defined(ANDROID)}
+var
+  GTgOldSigInt: sigaction_t;
+  GTgOldSigTerm: sigaction_t;
+
+procedure TgSignalHandler(ASignal: Integer); cdecl;
+begin
+  // Только запись выровненного Integer — допустимо в обработчике сигнала.
+  GTgSignalFlag := 1;
+end;
+{$IFEND}
+
+class function TTgShutdownSignal.Supported: Boolean;
+begin
+{$IF defined(MSWINDOWS) or (defined(POSIX) and not defined(ANDROID))}
+  Result := True;
+{$ELSE}
+  Result := False;
+{$IFEND}
+end;
+
+class function TTgShutdownSignal.Install: Boolean;
+{$IF defined(POSIX) and not defined(ANDROID)}
+var
+  LAction: sigaction_t;
+{$IFEND}
+begin
+  Result := Supported;
+  if not Result then
+    Exit;
+  if AtomicIncrement(GTgSignalInstalls) > 1 then
+    Exit;
+{$IFDEF MSWINDOWS}
+  if GTgStoppedEvent = 0 then
+    GTgStoppedEvent := CreateEvent(nil, True, False, nil);
+  Result := SetConsoleCtrlHandler(@TgConsoleCtrlHandler, True);
+{$ENDIF}
+{$IF defined(POSIX) and not defined(ANDROID)}
+  FillChar(LAction, SizeOf(LAction), 0);
+  // Поле обработчика — первое в sigaction_t (имя объединения различается
+  // в Linux и macOS), поэтому пишем его по смещению 0.
+  PPointer(@LAction)^ := @TgSignalHandler;
+  sigemptyset(LAction.sa_mask);
+  LAction.sa_flags := SA_RESTART;
+  Result := (sigaction(SIGINT, @LAction, @GTgOldSigInt) = 0) and
+    (sigaction(SIGTERM, @LAction, @GTgOldSigTerm) = 0);
+{$IFEND}
+  if not Result then
+    AtomicDecrement(GTgSignalInstalls);
+end;
+
+class procedure TTgShutdownSignal.Uninstall;
+begin
+  if not Supported then
+    Exit;
+  if AtomicDecrement(GTgSignalInstalls) <> 0 then
+  begin
+    if GTgSignalInstalls < 0 then
+      GTgSignalInstalls := 0;
+    Exit;
+  end;
+{$IFDEF MSWINDOWS}
+  SetConsoleCtrlHandler(@TgConsoleCtrlHandler, False);
+{$ENDIF}
+{$IF defined(POSIX) and not defined(ANDROID)}
+  sigaction(SIGINT, @GTgOldSigInt, nil);
+  sigaction(SIGTERM, @GTgOldSigTerm, nil);
+{$IFEND}
+end;
+
+class function TTgShutdownSignal.Requested: Boolean;
+begin
+  Result := AtomicCmpExchange(GTgSignalFlag, 0, 0) <> 0;
+end;
+
+class procedure TTgShutdownSignal.Request;
+begin
+  AtomicExchange(GTgSignalFlag, 1);
+end;
+
+class procedure TTgShutdownSignal.Reset;
+begin
+  AtomicExchange(GTgSignalFlag, 0);
+{$IFDEF MSWINDOWS}
+  if GTgStoppedEvent <> 0 then
+    ResetEvent(GTgStoppedEvent);
+{$ENDIF}
+end;
+
+class procedure TTgShutdownSignal.NotifyStopped;
+begin
+{$IFDEF MSWINDOWS}
+  if GTgStoppedEvent <> 0 then
+    SetEvent(GTgStoppedEvent);
+{$ENDIF}
+end;
+
+initialization
+
+finalization
+{$IFDEF MSWINDOWS}
+  if GTgStoppedEvent <> 0 then
+  begin
+    CloseHandle(GTgStoppedEvent);
+    GTgStoppedEvent := 0;
+  end;
+{$ENDIF}
+
+end.

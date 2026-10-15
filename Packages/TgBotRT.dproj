@@ -105,6 +105,8 @@
         <DCCReference Include="..\Source\TgBot.Dto.pas"/>
         <DCCReference Include="..\Source\TgBot.Core.pas"/>
         <DCCReference Include="..\Source\TgBot.Types.pas"/>
+        <DCCReference Include="..\Source\TgBot.Updates.Types.pas"/>
+        <DCCReference Include="..\Source\TgBot.Updates.Dispatcher.pas"/>
         <DCCReference Include="..\Source\TgBot.Updates.pas"/>
         <DCCReference Include="..\Source\TgBot.State.pas"/>
         <DCCReference Include="..\Source\TgBot.Keyboards.pas"/>
