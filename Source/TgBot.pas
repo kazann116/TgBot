@@ -66,8 +66,10 @@
   - псевдонимы типов ядра (TgBot.Base, TgBot.Json, TgBot.Http, TgBot.Dto,
     TgBot.Core, TgBot.Updates, TgBot.State), чтобы пользователю не
     требовались другие модули в uses;
-  - ручные удобства: построители клавиатур TTgKeyboard и TgRow;
-  - TTgBot и контекст обработчика ITgContext.
+  - псевдонимы построителей клавиатур TTgKeyboard (TgBot.Keyboards) и
+    обёртки TgRow;
+  - псевдоним контекста обработчика ITgContext (TgBot.Context);
+  - TTgBot.
 
   Обобщённый TTgOptional<T> псевдонимом не реэкспортируется (ограничение
   языка): поля опций принимают значения неявно (LOptions.ParseMode :=
@@ -94,7 +96,9 @@ uses
   TgBot.Core,
   TgBot.Types,
   TgBot.Updates,
-  TgBot.State;
+  TgBot.State,
+  TgBot.Keyboards,
+  TgBot.Context;
 
 const
   /// <summary>Название библиотеки.</summary>
@@ -278,239 +282,11 @@ type
 
 {$I Generated\Gen.Aliases.inc}
 
-  { Построители клавиатур (ручной код) }
-
-  /// <summary>
-  ///   Построитель инлайн-клавиатуры: TTgKeyboard.Inline.Row.Button('Да', 'yes')
-  ///   .Button('Нет', 'no').Row.Url('Сайт', 'https://…'). Запись-значение:
-  ///   каждый вызов возвращает изменённую копию, исходная не меняется. Первая
-  ///   кнопка без Row сама начинает строку; пустые строки не передаются.
-  ///   Неявно приводится к ITgInlineKeyboardMarkup (edit-методы, поля ReplyMarkup
-  ///   инлайн-типа) и к TTgReplyMarkup (send-методы); явно — Build и AsReplyMarkup.
-  /// </summary>
-  TTgInlineKeyboardBuilder = record
-  private
-    FRows: TArray<TArray<ITgInlineKeyboardButton>>;
-  public
-    /// <summary>Начинает новую строку кнопок.</summary>
-    function Row: TTgInlineKeyboardBuilder;
-    /// <summary>Добавляет готовую кнопку (стиль, иконка и т.п. — через With*) в текущую строку.</summary>
-    function Add(const AButton: ITgInlineKeyboardButton): TTgInlineKeyboardBuilder;
-    /// <summary>Кнопка с callback_data (1–64 байта): нажатие приходит как Update.CallbackQuery.</summary>
-    function Button(const AText, ACallbackData: string): TTgInlineKeyboardBuilder;
-    /// <summary>Кнопка-ссылка (http(s)://, tg://).</summary>
-    function Url(const AText, AUrl: string): TTgInlineKeyboardBuilder;
-    /// <summary>Кнопка Web App (только в личных чатах с ботом).</summary>
-    function WebApp(const AText, AUrl: string): TTgInlineKeyboardBuilder;
-    /// <summary>Кнопка авторизации на сайте (Telegram Login).</summary>
-    function LoginUrl(const AText, AUrl: string): TTgInlineKeyboardBuilder;
-    /// <summary>Выбор чата и inline-запрос к боту с текстом AQuery ('' — только имя бота).</summary>
-    function SwitchInline(const AText: string; const AQuery: string = ''): TTgInlineKeyboardBuilder;
-    /// <summary>Inline-запрос к боту в текущем чате.</summary>
-    function SwitchInlineCurrentChat(const AText: string;
-      const AQuery: string = ''): TTgInlineKeyboardBuilder;
-    /// <summary>Кнопка копирования ACopyText в буфер обмена.</summary>
-    function CopyText(const AText, ACopyText: string): TTgInlineKeyboardBuilder;
-    /// <summary>Кнопка оплаты (первая кнопка первой строки для sendInvoice).</summary>
-    function Pay(const AText: string): TTgInlineKeyboardBuilder;
-    /// <summary>Кнопка запуска игры (первая кнопка первой строки для sendGame).</summary>
-    function Game(const AText: string): TTgInlineKeyboardBuilder;
-    /// <summary>Число непустых строк.</summary>
-    function RowCount: Integer;
-    /// <summary>Нет ни одной кнопки.</summary>
-    function IsEmpty: Boolean;
-    /// <summary>Новая разметка ITgInlineKeyboardMarkup из текущих кнопок.</summary>
-    function Build: ITgInlineKeyboardMarkup;
-    /// <summary>Разметка для параметра reply_markup send-методов.</summary>
-    function AsReplyMarkup: TTgReplyMarkup;
-    class operator Implicit(const ABuilder: TTgInlineKeyboardBuilder): ITgInlineKeyboardMarkup;
-    class operator Implicit(const ABuilder: TTgInlineKeyboardBuilder): TTgReplyMarkup;
-  end;
-
-  /// <summary>
-  ///   Построитель обычной клавиатуры: TTgKeyboard.Reply.Row.Text('Меню')
-  ///   .RequestContact('Телефон').Resize.OneTime. Запись-значение, как
-  ///   TTgInlineKeyboardBuilder. Неявно приводится к ITgReplyKeyboardMarkup
-  ///   и TTgReplyMarkup.
-  /// </summary>
-  TTgReplyKeyboardBuilder = record
-  private
-    FRows: TArray<TArray<ITgKeyboardButton>>;
-    FResize: Boolean;
-    FOneTime: Boolean;
-    FPersistent: Boolean;
-    FSelective: Boolean;
-    FPlaceholder: string;
-  public
-    /// <summary>Начинает новую строку кнопок.</summary>
-    function Row: TTgReplyKeyboardBuilder;
-    /// <summary>Добавляет готовую кнопку (RequestUsers, RequestChat и т.п.) в текущую строку.</summary>
-    function Add(const AButton: ITgKeyboardButton): TTgReplyKeyboardBuilder;
-    /// <summary>Текстовая кнопка: нажатие отправляет AText как сообщение.</summary>
-    function Text(const AText: string): TTgReplyKeyboardBuilder;
-    /// <summary>Кнопка отправки своего контакта (только в личных чатах).</summary>
-    function RequestContact(const AText: string): TTgReplyKeyboardBuilder;
-    /// <summary>Кнопка отправки своей геопозиции (только в личных чатах).</summary>
-    function RequestLocation(const AText: string): TTgReplyKeyboardBuilder;
-    /// <summary>Кнопка создания опроса; APollType — TTgPollType.Quiz/Regular или '' (любой).</summary>
-    function RequestPoll(const AText: string; const APollType: string = ''): TTgReplyKeyboardBuilder;
-    /// <summary>Кнопка Web App (только в личных чатах).</summary>
-    function WebApp(const AText, AUrl: string): TTgReplyKeyboardBuilder;
-    /// <summary>resize_keyboard: подогнать высоту клавиатуры под кнопки.</summary>
-    function Resize(AValue: Boolean = True): TTgReplyKeyboardBuilder;
-    /// <summary>one_time_keyboard: скрыть клавиатуру после нажатия.</summary>
-    function OneTime(AValue: Boolean = True): TTgReplyKeyboardBuilder;
-    /// <summary>is_persistent: не скрывать клавиатуру.</summary>
-    function Persistent(AValue: Boolean = True): TTgReplyKeyboardBuilder;
-    /// <summary>selective: только упомянутым пользователям или автору исходного сообщения.</summary>
-    function Selective(AValue: Boolean = True): TTgReplyKeyboardBuilder;
-    /// <summary>input_field_placeholder: подсказка в поле ввода (1–64 символа).</summary>
-    function Placeholder(const AText: string): TTgReplyKeyboardBuilder;
-    /// <summary>Число непустых строк.</summary>
-    function RowCount: Integer;
-    /// <summary>Нет ни одной кнопки.</summary>
-    function IsEmpty: Boolean;
-    /// <summary>Новая разметка ITgReplyKeyboardMarkup из текущих кнопок и флагов.</summary>
-    function Build: ITgReplyKeyboardMarkup;
-    /// <summary>Разметка для параметра reply_markup send-методов.</summary>
-    function AsReplyMarkup: TTgReplyMarkup;
-    class operator Implicit(const ABuilder: TTgReplyKeyboardBuilder): ITgReplyKeyboardMarkup;
-    class operator Implicit(const ABuilder: TTgReplyKeyboardBuilder): TTgReplyMarkup;
-  end;
-
-  /// <summary>
-  ///   Точка входа построителей клавиатур:
-  ///   <code>
-  ///     LApi.SendMessage(LChatId, 'Выберите:',
-  ///       TTgKeyboard.Inline.Row.Button('Да', 'yes').Button('Нет', 'no'));
-  ///     LApi.SendMessage(LChatId, 'Меню', TTgKeyboard.Reply.Row.Text('Помощь').Resize);
-  ///     LApi.SendMessage(LChatId, 'Готово', TTgKeyboard.Remove);
-  ///   </code>
-  /// </summary>
-  TTgKeyboard = record
-  public
-    /// <summary>Пустая инлайн-клавиатура (кнопки под сообщением).</summary>
-    class function &Inline: TTgInlineKeyboardBuilder; static;
-    /// <summary>Пустая обычная клавиатура (вместо клавиатуры устройства).</summary>
-    class function Reply: TTgReplyKeyboardBuilder; static;
-    /// <summary>Убрать обычную клавиатуру (ReplyKeyboardRemove).</summary>
-    class function Remove(ASelective: Boolean = False): ITgReplyKeyboardRemove; static;
-    /// <summary>Принудительный ответ на сообщение (ForceReply) с подсказкой APlaceholder.</summary>
-    class function ForceReply(const APlaceholder: string = '';
-      ASelective: Boolean = False): ITgForceReply; static;
-  end;
-
-  /// <summary>
-  ///   Контекст обработки одного обновления (TTgBot.OnUpdate/OnMessage/
-  ///   OnCallbackQuery). Используйте только внутри обработчика и в его потоке.
-  ///
-  ///   Сообщение обновления (Message) — message, edited_message, channel_post,
-  ///   edited_channel_post, business_message, edited_business_message,
-  ///   guest_message или message из callback_query (если доступно).
-  ///   Text — текст (или подпись) этого сообщения; для callback_query —
-  ///   callback data (то же, что Data); для inline_query и
-  ///   chosen_inline_result — query; иначе ''. Data — только callback data.
-  ///
-  ///   Вызовы Api внутри обработчика прерываются при остановке бота (Cancel —
-  ///   окружающий токен обработчика).
-  /// </summary>
-  ITgContext = interface
-    ['{49678079-CCCC-45F5-A4ED-8064A44C34EA}']
-    function GetUpdate: ITgUpdate;
-    function GetRaw: ITgRawUpdate;
-    function GetKind: string;
-    function GetApi: TTgApi;
-    function GetCancel: ITgCancellation;
-    function GetChatId: TTgChatId;
-    function GetFrom: ITgUser;
-    function GetMessage: ITgMessage;
-    function GetText: string;
-    function GetData: string;
-    function GetStateKey: string;
-    function GetState(const AName: string): string;
-    procedure SetState(const AName, AValue: string);
-    /// <summary>
-    ///   Отправляет сообщение в чат обновления (в той же теме форума и том же
-    ///   бизнес-подключении). Нет чата — ETgError.
-    /// </summary>
-    function Reply(const AText: string): ITgMessage; overload;
-    /// <summary>Reply с клавиатурой (TTgKeyboard.Inline/Reply/Remove/ForceReply).</summary>
-    function Reply(const AText: string; const AKeyboard: TTgReplyMarkup): ITgMessage; overload;
-    /// <summary>Reply с parse_mode = HTML.</summary>
-    function ReplyHtml(const AText: string): ITgMessage; overload;
-    /// <summary>ReplyHtml с клавиатурой.</summary>
-    function ReplyHtml(const AText: string; const AKeyboard: TTgReplyMarkup): ITgMessage; overload;
-    /// <summary>
-    ///   answerCallbackQuery для callback_query (AText — уведомление, AShowAlert —
-    ///   окном). Обновление другого вида — False без запроса.
-    /// </summary>
-    function Answer(const AText: string = ''; AShowAlert: Boolean = False): Boolean;
-    /// <summary>
-    ///   Меняет текст сообщения с нажатой кнопкой (callback_query): обычное
-    ///   сообщение — editMessageText(chat_id, message_id), inline —
-    ///   editMessageText(inline_message_id). Не callback_query или нет
-    ///   сообщения — False без запроса; ответ 400 «message is not modified»
-    ///   (текст и клавиатура не изменились, например повторное нажатие) —
-    ///   False без исключения; другая ошибка Bot API — исключение.
-    ///   Без AKeyboard инлайн-клавиатура сообщения убирается (так Bot API
-    ///   обрабатывает отсутствие reply_markup).
-    /// </summary>
-    function Edit(const AText: string): Boolean; overload;
-    /// <summary>Edit с новой инлайн-клавиатурой (nil — клавиатура убирается).</summary>
-    function Edit(const AText: string; const AKeyboard: ITgInlineKeyboardMarkup): Boolean; overload;
-    /// <summary>Удаляет все значения состояния StateKey.</summary>
-    procedure ClearState;
-    function GetCommand: string;
-    function GetArgs: string;
-    function GetHandled: Boolean;
-    procedure SetHandled(AValue: Boolean);
-    /// <summary>
-    ///   Команда сообщения без '/' и '@бот', в нижнем регистре ('/Start@MyBot a'
-    ///   → 'start'); '' — не команда или команда другому боту. Заполняется до
-    ///   OnUpdate.
-    /// </summary>
-    property Command: string read GetCommand;
-    /// <summary>
-    ///   Аргументы сработавшего правила: текст после команды (без крайних
-    ///   пробелов), первая группа TextMatch (нет групп — всё совпадение),
-    ///   остаток callback data после префикса CallbackPrefix; иначе ''.
-    /// </summary>
-    property Args: string read GetArgs;
-    /// <summary>
-    ///   Обновление обработано: дальнейшие правила, OnMessage и OnCallbackQuery
-    ///   не вызываются. OnUpdate может выставить True (перехват); правило
-    ///   маршрутизатора выставляет True перед вызовом своего обработчика —
-    ///   обработчик может сбросить в False, чтобы обработка шла дальше.
-    /// </summary>
-    property Handled: Boolean read GetHandled write SetHandled;
-    /// <summary>Обновление (типизированное; разделяет JSON с Raw).</summary>
-    property Update: ITgUpdate read GetUpdate;
-    /// <summary>Обновление в сыром виде.</summary>
-    property Raw: ITgRawUpdate read GetRaw;
-    /// <summary>Вид обновления (TTgUpdateType.*).</summary>
-    property Kind: string read GetKind;
-    /// <summary>Клиент Bot API бота.</summary>
-    property Api: TTgApi read GetApi;
-    /// <summary>Токен отмены обработчика (отменяется при остановке бота).</summary>
-    property Cancel: ITgCancellation read GetCancel;
-    /// <summary>Чат обновления; пусто (IsEmpty), если чата нет (inline_query и т.п.).</summary>
-    property ChatId: TTgChatId read GetChatId;
-    /// <summary>Автор: from (или user) полезной нагрузки; nil, если нет (посты каналов).</summary>
-    property From: ITgUser read GetFrom;
-    /// <summary>Сообщение обновления или nil (см. описание интерфейса).</summary>
-    property Message: ITgMessage read GetMessage;
-    /// <summary>Текст (см. описание интерфейса).</summary>
-    property Text: string read GetText;
-    /// <summary>callback data (только callback_query), иначе ''.</summary>
-    property Data: string read GetData;
-    /// <summary>Ключ состояния 'чат:пользователь' (пустая часть, если её нет).</summary>
-    property StateKey: string read GetStateKey;
-    /// <summary>
-    ///   Значение состояния диалога (ключ StateKey); '' — нет значения.
-    ///   Присваивание '' удаляет значение.
-    /// </summary>
-    property State[const AName: string]: string read GetState write SetState;
-  end;
+  { Построители клавиатур (TgBot.Keyboards) и контекст обработчика (TgBot.Context) }
+  TTgInlineKeyboardBuilder = TgBot.Keyboards.TTgInlineKeyboardBuilder;
+  TTgReplyKeyboardBuilder = TgBot.Keyboards.TTgReplyKeyboardBuilder;
+  TTgKeyboard = TgBot.Keyboards.TTgKeyboard;
+  ITgContext = TgBot.Context.ITgContext;
 
   /// <summary>
   ///   Состояние бота (TTgBot.State).
@@ -942,7 +718,6 @@ function TgMarkdownV2Escape(const S: string): string;
 implementation
 
 uses
-  System.RTLConsts,
   System.Diagnostics,
   System.Math,
   System.RegularExpressions;
@@ -1055,361 +830,22 @@ begin
   TgBot.Core.TgSetAsyncPoolSize(AMaxThreads);
 end;
 
-{ Построители клавиатур }
+// TgRow — обычные обёртки: функцию с параметром «открытый массив» нельзя
+// объявить inline (E2439).
 
 function TgRow(const AButtons: array of ITgInlineKeyboardButton): TArray<ITgInlineKeyboardButton>;
 begin
-  Result := TTgDto.CopyArray<ITgInlineKeyboardButton>(AButtons);
+  Result := TgBot.Keyboards.TgRow(AButtons);
 end;
 
 function TgRow(const AButtons: array of ITgKeyboardButton): TArray<ITgKeyboardButton>;
 begin
-  Result := TTgDto.CopyArray<ITgKeyboardButton>(AButtons);
+  Result := TgBot.Keyboards.TgRow(AButtons);
 end;
 
-{ TTgInlineKeyboardBuilder }
-
-function TTgInlineKeyboardBuilder.Row: TTgInlineKeyboardBuilder;
-begin
-  // Копия внешнего массива: изменения не видны прежним копиям записи.
-  Result := Self;
-  Result.FRows := Copy(FRows);
-  SetLength(Result.FRows, Length(Result.FRows) + 1);
-end;
-
-function TTgInlineKeyboardBuilder.Add(const AButton: ITgInlineKeyboardButton): TTgInlineKeyboardBuilder;
-var
-  LLast: Integer;
-begin
-  if not Assigned(AButton) then
-    raise EArgumentNilException.CreateRes(@SArgumentNil);
-  Result := Self;
-  Result.FRows := Copy(FRows);
-  if Length(Result.FRows) = 0 then
-    SetLength(Result.FRows, 1);
-  LLast := High(Result.FRows);
-  // «+» создаёт новый массив строки — прежняя строка не меняется.
-  Result.FRows[LLast] := Result.FRows[LLast] + [AButton];
-end;
-
-function TTgInlineKeyboardBuilder.Button(const AText, ACallbackData: string): TTgInlineKeyboardBuilder;
-begin
-  Result := Add(TTgInlineKeyboardButton.Create(AText).WithCallbackData(ACallbackData));
-end;
-
-function TTgInlineKeyboardBuilder.Url(const AText, AUrl: string): TTgInlineKeyboardBuilder;
-begin
-  Result := Add(TTgInlineKeyboardButton.Create(AText).WithUrl(AUrl));
-end;
-
-function TTgInlineKeyboardBuilder.WebApp(const AText, AUrl: string): TTgInlineKeyboardBuilder;
-begin
-  Result := Add(TTgInlineKeyboardButton.Create(AText).WithWebApp(TTgWebAppInfo.Create(AUrl)));
-end;
-
-function TTgInlineKeyboardBuilder.LoginUrl(const AText, AUrl: string): TTgInlineKeyboardBuilder;
-begin
-  Result := Add(TTgInlineKeyboardButton.Create(AText).WithLoginUrl(TTgLoginUrl.Create(AUrl)));
-end;
-
-function TTgInlineKeyboardBuilder.SwitchInline(const AText, AQuery: string): TTgInlineKeyboardBuilder;
-begin
-  Result := Add(TTgInlineKeyboardButton.Create(AText).WithSwitchInlineQuery(AQuery));
-end;
-
-function TTgInlineKeyboardBuilder.SwitchInlineCurrentChat(const AText,
-  AQuery: string): TTgInlineKeyboardBuilder;
-begin
-  Result := Add(TTgInlineKeyboardButton.Create(AText).WithSwitchInlineQueryCurrentChat(AQuery));
-end;
-
-function TTgInlineKeyboardBuilder.CopyText(const AText, ACopyText: string): TTgInlineKeyboardBuilder;
-begin
-  Result := Add(TTgInlineKeyboardButton.Create(AText)
-    .WithCopyText(TTgCopyTextButton.Create(ACopyText)));
-end;
-
-function TTgInlineKeyboardBuilder.Pay(const AText: string): TTgInlineKeyboardBuilder;
-begin
-  Result := Add(TTgInlineKeyboardButton.Create(AText).WithPay(True));
-end;
-
-function TTgInlineKeyboardBuilder.Game(const AText: string): TTgInlineKeyboardBuilder;
-begin
-  Result := Add(TTgInlineKeyboardButton.Create(AText).WithCallbackGame(TTgCallbackGame.Create));
-end;
-
-function TTgInlineKeyboardBuilder.RowCount: Integer;
-var
-  LRow: TArray<ITgInlineKeyboardButton>;
-begin
-  Result := 0;
-  for LRow in FRows do
-    if Length(LRow) > 0 then
-      Inc(Result);
-end;
-
-function TTgInlineKeyboardBuilder.IsEmpty: Boolean;
-begin
-  Result := RowCount = 0;
-end;
-
-function TTgInlineKeyboardBuilder.Build: ITgInlineKeyboardMarkup;
-var
-  LRows: TArray<TArray<ITgInlineKeyboardButton>>;
-  LRow: TArray<ITgInlineKeyboardButton>;
-begin
-  LRows := nil;
-  for LRow in FRows do
-    if Length(LRow) > 0 then
-      LRows := LRows + [LRow];
-  Result := TTgInlineKeyboardMarkup.Create(LRows);
-end;
-
-function TTgInlineKeyboardBuilder.AsReplyMarkup: TTgReplyMarkup;
-begin
-  Result := Build;
-end;
-
-class operator TTgInlineKeyboardBuilder.Implicit(
-  const ABuilder: TTgInlineKeyboardBuilder): ITgInlineKeyboardMarkup;
-begin
-  Result := ABuilder.Build;
-end;
-
-class operator TTgInlineKeyboardBuilder.Implicit(const ABuilder: TTgInlineKeyboardBuilder): TTgReplyMarkup;
-begin
-  Result := ABuilder.Build;
-end;
-
-{ TTgReplyKeyboardBuilder }
-
-function TTgReplyKeyboardBuilder.Row: TTgReplyKeyboardBuilder;
-begin
-  Result := Self;
-  Result.FRows := Copy(FRows);
-  SetLength(Result.FRows, Length(Result.FRows) + 1);
-end;
-
-function TTgReplyKeyboardBuilder.Add(const AButton: ITgKeyboardButton): TTgReplyKeyboardBuilder;
-var
-  LLast: Integer;
-begin
-  if not Assigned(AButton) then
-    raise EArgumentNilException.CreateRes(@SArgumentNil);
-  Result := Self;
-  Result.FRows := Copy(FRows);
-  if Length(Result.FRows) = 0 then
-    SetLength(Result.FRows, 1);
-  LLast := High(Result.FRows);
-  Result.FRows[LLast] := Result.FRows[LLast] + [AButton];
-end;
-
-function TTgReplyKeyboardBuilder.Text(const AText: string): TTgReplyKeyboardBuilder;
-begin
-  Result := Add(TTgKeyboardButton.Create(AText));
-end;
-
-function TTgReplyKeyboardBuilder.RequestContact(const AText: string): TTgReplyKeyboardBuilder;
-begin
-  Result := Add(TTgKeyboardButton.Create(AText).WithRequestContact(True));
-end;
-
-function TTgReplyKeyboardBuilder.RequestLocation(const AText: string): TTgReplyKeyboardBuilder;
-begin
-  Result := Add(TTgKeyboardButton.Create(AText).WithRequestLocation(True));
-end;
-
-function TTgReplyKeyboardBuilder.RequestPoll(const AText, APollType: string): TTgReplyKeyboardBuilder;
-var
-  LPollType: ITgKeyboardButtonPollType;
-begin
-  LPollType := TTgKeyboardButtonPollType.Create;
-  if APollType <> '' then
-    LPollType.WithKeyboardButtonPollTypeType(APollType);
-  Result := Add(TTgKeyboardButton.Create(AText).WithRequestPoll(LPollType));
-end;
-
-function TTgReplyKeyboardBuilder.WebApp(const AText, AUrl: string): TTgReplyKeyboardBuilder;
-begin
-  Result := Add(TTgKeyboardButton.Create(AText).WithWebApp(TTgWebAppInfo.Create(AUrl)));
-end;
-
-function TTgReplyKeyboardBuilder.Resize(AValue: Boolean): TTgReplyKeyboardBuilder;
-begin
-  Result := Self;
-  Result.FResize := AValue;
-end;
-
-function TTgReplyKeyboardBuilder.OneTime(AValue: Boolean): TTgReplyKeyboardBuilder;
-begin
-  Result := Self;
-  Result.FOneTime := AValue;
-end;
-
-function TTgReplyKeyboardBuilder.Persistent(AValue: Boolean): TTgReplyKeyboardBuilder;
-begin
-  Result := Self;
-  Result.FPersistent := AValue;
-end;
-
-function TTgReplyKeyboardBuilder.Selective(AValue: Boolean): TTgReplyKeyboardBuilder;
-begin
-  Result := Self;
-  Result.FSelective := AValue;
-end;
-
-function TTgReplyKeyboardBuilder.Placeholder(const AText: string): TTgReplyKeyboardBuilder;
-begin
-  Result := Self;
-  Result.FPlaceholder := AText;
-end;
-
-function TTgReplyKeyboardBuilder.RowCount: Integer;
-var
-  LRow: TArray<ITgKeyboardButton>;
-begin
-  Result := 0;
-  for LRow in FRows do
-    if Length(LRow) > 0 then
-      Inc(Result);
-end;
-
-function TTgReplyKeyboardBuilder.IsEmpty: Boolean;
-begin
-  Result := RowCount = 0;
-end;
-
-function TTgReplyKeyboardBuilder.Build: ITgReplyKeyboardMarkup;
-var
-  LRows: TArray<TArray<ITgKeyboardButton>>;
-  LRow: TArray<ITgKeyboardButton>;
-begin
-  LRows := nil;
-  for LRow in FRows do
-    if Length(LRow) > 0 then
-      LRows := LRows + [LRow];
-  Result := TTgReplyKeyboardMarkup.Create(LRows);
-  // Флаги передаются, только если включены (false — значение Bot API по умолчанию).
-  if FResize then
-    Result.WithResizeKeyboard(True);
-  if FOneTime then
-    Result.WithOneTimeKeyboard(True);
-  if FPersistent then
-    Result.WithIsPersistent(True);
-  if FSelective then
-    Result.WithSelective(True);
-  if FPlaceholder <> '' then
-    Result.WithInputFieldPlaceholder(FPlaceholder);
-end;
-
-function TTgReplyKeyboardBuilder.AsReplyMarkup: TTgReplyMarkup;
-begin
-  Result := Build;
-end;
-
-class operator TTgReplyKeyboardBuilder.Implicit(const ABuilder: TTgReplyKeyboardBuilder): ITgReplyKeyboardMarkup;
-begin
-  Result := ABuilder.Build;
-end;
-
-class operator TTgReplyKeyboardBuilder.Implicit(const ABuilder: TTgReplyKeyboardBuilder): TTgReplyMarkup;
-begin
-  Result := ABuilder.Build;
-end;
-
-{ TTgKeyboard }
-
-class function TTgKeyboard.&Inline: TTgInlineKeyboardBuilder;
-begin
-  Result := Default(TTgInlineKeyboardBuilder);
-end;
-
-class function TTgKeyboard.Reply: TTgReplyKeyboardBuilder;
-begin
-  Result := Default(TTgReplyKeyboardBuilder);
-end;
-
-class function TTgKeyboard.Remove(ASelective: Boolean): ITgReplyKeyboardRemove;
-begin
-  Result := TTgReplyKeyboardRemove.Create;
-  if ASelective then
-    Result.WithSelective(True);
-end;
-
-class function TTgKeyboard.ForceReply(const APlaceholder: string; ASelective: Boolean): ITgForceReply;
-begin
-  Result := TTgForceReply.Create;
-  if APlaceholder <> '' then
-    Result.WithInputFieldPlaceholder(APlaceholder);
-  if ASelective then
-    Result.WithSelective(True);
-end;
-
-{ Контекст обработчика }
+{ Маршрутизатор и ядро бота }
 
 type
-  /// <summary>
-  ///   Реализация ITgContext. Поля читаются из сырого JSON обновления;
-  ///   типизированные объекты (Update, From, Message) разделяют этот JSON и
-  ///   удерживают обновление. Контекст удерживает ядро бота (FCoreRef):
-  ///   клиент FApi действителен, пока жив контекст, даже после Free бота.
-  /// </summary>
-  TTgContext = class(TInterfacedObject, ITgContext)
-  private
-    FCoreRef: IInterface;
-    FApi: TTgApi;
-    FRaw: ITgRawUpdate;
-    FCancel: ITgCancellation;
-    FStorage: ITgStateStorage;
-    FPayload: TJSONObject;
-    FUpdate: ITgUpdate;
-    FAnswered: Boolean;
-    // Маршрутизатор (заполняет ядро в потоке обработчика).
-    FCommand: string;
-    FArgs: string;
-    FHandled: Boolean;
-    function IsCallback: Boolean;
-    function MessageJson: TJSONObject;
-    function ChatJson: TJSONObject;
-    function UserJson: TJSONObject;
-    function SendText(const AText, AParseMode: string; const AKeyboard: TTgReplyMarkup): ITgMessage;
-    function EditText(const AText: string; const AKeyboard: ITgInlineKeyboardMarkup): Boolean;
-  public
-    /// <summary>ACore — ссылка на ядро, владеющее AApi (удерживается контекстом).</summary>
-    constructor Create(const ACore: IInterface; AApi: TTgApi; const ARaw: ITgRawUpdate;
-      const ACancel: ITgCancellation; const AStorage: ITgStateStorage);
-    function GetUpdate: ITgUpdate;
-    function GetRaw: ITgRawUpdate;
-    function GetKind: string;
-    function GetApi: TTgApi;
-    function GetCancel: ITgCancellation;
-    function GetChatId: TTgChatId;
-    function GetFrom: ITgUser;
-    function GetMessage: ITgMessage;
-    function GetText: string;
-    function GetData: string;
-    function GetStateKey: string;
-    function GetState(const AName: string): string;
-    procedure SetState(const AName, AValue: string);
-    function Reply(const AText: string): ITgMessage; overload;
-    function Reply(const AText: string; const AKeyboard: TTgReplyMarkup): ITgMessage; overload;
-    function ReplyHtml(const AText: string): ITgMessage; overload;
-    function ReplyHtml(const AText: string; const AKeyboard: TTgReplyMarkup): ITgMessage; overload;
-    function Answer(const AText: string = ''; AShowAlert: Boolean = False): Boolean;
-    function Edit(const AText: string): Boolean; overload;
-    function Edit(const AText: string; const AKeyboard: ITgInlineKeyboardMarkup): Boolean; overload;
-    procedure ClearState;
-    function GetCommand: string;
-    function GetArgs: string;
-    function GetHandled: Boolean;
-    procedure SetHandled(AValue: Boolean);
-    /// <summary>Поле text сообщения вида message ('' — нет текста или другой вид).</summary>
-    function MessageText: string;
-    /// <summary>Вызван Answer (для автоматического ответа на callback_query).</summary>
-    property Answered: Boolean read FAnswered;
-  end;
-
   /// <summary>Вид правила маршрутизатора с ключом.</summary>
   TTgRouteKind = (Command, Callback, CallbackPrefix, Text);
 
@@ -1587,9 +1023,9 @@ type
     /// </summary>
     function StartJobActive(AJob: TTgStartJob): Boolean;
     /// <summary>
-    ///   Разбор команды сообщения в AContext.FCommand/FArgs (только команда
-    ///   этому боту: без '@' или '@' + BotUserName); результат — сообщение
-    ///   является такой командой.
+    ///   Разбор команды сообщения в Command/Args контекста (SetCommand/
+    ///   SetArgs; только команда этому боту: без '@' или '@' + BotUserName);
+    ///   результат — сообщение является такой командой.
     /// </summary>
     function ParseCommand(AContext: TTgContext): Boolean;
     /// <summary>Правила message (итог — AContext.Handled).</summary>
@@ -1670,207 +1106,10 @@ type
     property Detached: Boolean read GetDetached;
   end;
 
-const
-  // Виды обновлений, полезная нагрузка которых — сообщение.
-  CMessageKinds: array[0..6] of string = (TTgUpdateType.Message, TTgUpdateType.EditedMessage,
-    TTgUpdateType.ChannelPost, TTgUpdateType.EditedChannelPost, TTgUpdateType.BusinessMessage,
-    TTgUpdateType.EditedBusinessMessage, TTgUpdateType.GuestMessage);
-
 threadvar
   // Поток выполняет OnError/OnFault отказа источника: Stop/Start отсюда
   // ждали бы завершения этого же потока.
   GTgInFaultNotify: Boolean;
-
-/// <summary>Id объекта (chat/user) строкой; '' — нет объекта или id.</summary>
-function JsonIdText(AObj: TJSONObject): string;
-begin
-  if TTgJson.Has(AObj, 'id') then
-    Result := IntToStr(TTgJson.GetInt64(AObj, 'id'))
-  else
-    Result := '';
-end;
-
-constructor TTgContext.Create(const ACore: IInterface; AApi: TTgApi; const ARaw: ITgRawUpdate;
-  const ACancel: ITgCancellation; const AStorage: ITgStateStorage);
-begin
-  inherited Create;
-  FCoreRef := ACore;
-  FApi := AApi;
-  FRaw := ARaw;
-  FCancel := ACancel;
-  FStorage := AStorage;
-  FPayload := TTgJson.GetObj(ARaw.Json, ARaw.Kind);
-end;
-
-function TTgContext.IsCallback: Boolean;
-begin
-  Result := FRaw.Kind = TTgUpdateType.CallbackQuery;
-end;
-
-function TTgContext.MessageJson: TJSONObject;
-var
-  LKind: string;
-begin
-  if IsCallback then
-    Exit(TTgJson.GetObj(FPayload, 'message'));
-  for LKind in CMessageKinds do
-    if FRaw.Kind = LKind then
-      Exit(FPayload);
-  Result := nil;
-end;
-
-function TTgContext.ChatJson: TJSONObject;
-var
-  LMessage: TJSONObject;
-begin
-  LMessage := MessageJson;
-  if Assigned(LMessage) then
-    Result := TTgJson.GetObj(LMessage, 'chat')
-  else
-    Result := TTgJson.GetObj(FPayload, 'chat');
-end;
-
-function TTgContext.UserJson: TJSONObject;
-begin
-  Result := TTgJson.GetObj(FPayload, 'from');
-  if not Assigned(Result) then
-    Result := TTgJson.GetObj(FPayload, 'user');
-end;
-
-function TTgContext.GetUpdate: ITgUpdate;
-begin
-  // Без копии JSON: DTO удерживает сырое обновление (владельца JSON).
-  if not Assigned(FUpdate) then
-    FUpdate := TgMakeUpdate(FRaw.Json, FRaw);
-  Result := FUpdate;
-end;
-
-function TTgContext.GetRaw: ITgRawUpdate;
-begin
-  Result := FRaw;
-end;
-
-function TTgContext.GetKind: string;
-begin
-  Result := FRaw.Kind;
-end;
-
-function TTgContext.GetApi: TTgApi;
-begin
-  Result := FApi;
-end;
-
-function TTgContext.GetCancel: ITgCancellation;
-begin
-  Result := FCancel;
-end;
-
-function TTgContext.GetChatId: TTgChatId;
-var
-  LChat: TJSONObject;
-begin
-  LChat := ChatJson;
-  if TTgJson.Has(LChat, 'id') then
-    Result := TTgChatId.FromId(TTgJson.GetInt64(LChat, 'id'))
-  else
-    Result := Default(TTgChatId);
-end;
-
-function TTgContext.GetFrom: ITgUser;
-var
-  LUser: TJSONObject;
-begin
-  LUser := UserJson;
-  if Assigned(LUser) then
-    Result := TgMakeUser(LUser, FRaw)
-  else
-    Result := nil;
-end;
-
-function TTgContext.GetMessage: ITgMessage;
-var
-  LMessage: TJSONObject;
-begin
-  LMessage := MessageJson;
-  // Недоступное сообщение callback_query (date = 0) — не Message.
-  if not Assigned(LMessage) or (IsCallback and (TTgJson.GetInt64(LMessage, 'date') = 0)) then
-    Exit(nil);
-  Result := TgMakeMessage(LMessage, FRaw);
-end;
-
-function TTgContext.GetText: string;
-var
-  LMessage: TJSONObject;
-begin
-  if IsCallback then
-    Exit(TTgJson.GetStr(FPayload, 'data'));
-  if (FRaw.Kind = TTgUpdateType.InlineQuery) or (FRaw.Kind = TTgUpdateType.ChosenInlineResult) then
-    Exit(TTgJson.GetStr(FPayload, 'query'));
-  LMessage := MessageJson;
-  Result := TTgJson.GetStr(LMessage, 'text');
-  if Result = '' then
-    Result := TTgJson.GetStr(LMessage, 'caption');
-end;
-
-function TTgContext.GetData: string;
-begin
-  if IsCallback then
-    Result := TTgJson.GetStr(FPayload, 'data')
-  else
-    Result := '';
-end;
-
-function TTgContext.GetStateKey: string;
-begin
-  Result := JsonIdText(ChatJson) + ':' + JsonIdText(UserJson);
-end;
-
-function TTgContext.GetState(const AName: string): string;
-begin
-  if not FStorage.TryGet(GetStateKey, AName, Result) then
-    Result := '';
-end;
-
-procedure TTgContext.SetState(const AName, AValue: string);
-begin
-  if AValue = '' then
-    FStorage.Delete(GetStateKey, AName)
-  else
-    FStorage.Put(GetStateKey, AName, AValue);
-end;
-
-procedure TTgContext.ClearState;
-begin
-  FStorage.Delete(GetStateKey);
-end;
-
-function TTgContext.GetCommand: string;
-begin
-  Result := FCommand;
-end;
-
-function TTgContext.GetArgs: string;
-begin
-  Result := FArgs;
-end;
-
-function TTgContext.GetHandled: Boolean;
-begin
-  Result := FHandled;
-end;
-
-procedure TTgContext.SetHandled(AValue: Boolean);
-begin
-  FHandled := AValue;
-end;
-
-function TTgContext.MessageText: string;
-begin
-  if FRaw.Kind = TTgUpdateType.Message then
-    Result := TTgJson.GetStr(FPayload, 'text')
-  else
-    Result := '';
-end;
 
 { TTgTextMatcher }
 
@@ -1920,123 +1159,6 @@ begin
   finally
     FLock.Leave;
   end;
-end;
-
-function TTgContext.SendText(const AText, AParseMode: string;
-  const AKeyboard: TTgReplyMarkup): ITgMessage;
-var
-  LChat: TTgChatId;
-  LOptions: TTgSendMessageOptions;
-  LMessage: TJSONObject;
-  LBusiness: string;
-begin
-  LChat := GetChatId;
-  if LChat.IsEmpty then
-    raise ETgError.Create(TgUpdatesText(TTgUpdatesText.NoChat));
-  LOptions := Default(TTgSendMessageOptions);
-  LMessage := MessageJson;
-  // Ответ — в то же бизнес-подключение и ту же тему форума.
-  LBusiness := TTgJson.GetStr(LMessage, 'business_connection_id');
-  if LBusiness <> '' then
-    LOptions.BusinessConnectionId := LBusiness;
-  if TTgJson.GetBool(LMessage, 'is_topic_message') and TTgJson.Has(LMessage, 'message_thread_id') then
-    LOptions.MessageThreadId := TTgJson.GetInt64(LMessage, 'message_thread_id');
-  if AParseMode <> '' then
-    LOptions.ParseMode := AParseMode;
-  if not AKeyboard.IsEmpty then
-    LOptions.ReplyMarkup := AKeyboard;
-  Result := FApi.SendMessage(LChat, AText, LOptions);
-end;
-
-function TTgContext.Reply(const AText: string): ITgMessage;
-begin
-  Result := SendText(AText, '', Default(TTgReplyMarkup));
-end;
-
-function TTgContext.Reply(const AText: string; const AKeyboard: TTgReplyMarkup): ITgMessage;
-begin
-  Result := SendText(AText, '', AKeyboard);
-end;
-
-function TTgContext.ReplyHtml(const AText: string): ITgMessage;
-begin
-  Result := SendText(AText, TTgParseMode.Html, Default(TTgReplyMarkup));
-end;
-
-function TTgContext.ReplyHtml(const AText: string; const AKeyboard: TTgReplyMarkup): ITgMessage;
-begin
-  Result := SendText(AText, TTgParseMode.Html, AKeyboard);
-end;
-
-function TTgContext.Answer(const AText: string; AShowAlert: Boolean): Boolean;
-var
-  LId: string;
-begin
-  if not IsCallback then
-    Exit(False);
-  LId := TTgJson.GetStr(FPayload, 'id');
-  // До вызова: при ошибке автоматический ответ не повторяет запрос.
-  FAnswered := True;
-  if AShowAlert then
-    Result := FApi.AnswerCallbackQuery(LId, AText, True)
-  else if AText <> '' then
-    Result := FApi.AnswerCallbackQuery(LId, AText)
-  else
-    Result := FApi.AnswerCallbackQuery(LId);
-end;
-
-/// <summary>400 «Bad Request: message is not modified…» от edit-метода.</summary>
-function IsMessageNotModified(AError: ETgApiError): Boolean;
-begin
-  Result := (AError.ErrorCode = 400) and
-    (Pos('message is not modified', LowerCase(AError.Description)) > 0);
-end;
-
-function TTgContext.EditText(const AText: string;
-  const AKeyboard: ITgInlineKeyboardMarkup): Boolean;
-var
-  LOptions: TTgEditMessageTextOptions;
-  LInlineId, LBusiness: string;
-  LMessage, LChat: TJSONObject;
-begin
-  if not IsCallback then
-    Exit(False);
-  LOptions := Default(TTgEditMessageTextOptions);
-  if Assigned(AKeyboard) then
-    LOptions.ReplyMarkup := AKeyboard;
-  try
-    LInlineId := TTgJson.GetStr(FPayload, 'inline_message_id');
-    if LInlineId <> '' then
-      Exit(FApi.EditInlineMessageText(LInlineId, AText, LOptions));
-    LMessage := TTgJson.GetObj(FPayload, 'message');
-    LChat := TTgJson.GetObj(LMessage, 'chat');
-    if not TTgJson.Has(LChat, 'id') or not TTgJson.Has(LMessage, 'message_id') then
-      Exit(False);
-    LBusiness := TTgJson.GetStr(LMessage, 'business_connection_id');
-    if LBusiness <> '' then
-      LOptions.BusinessConnectionId := LBusiness;
-    FApi.EditMessageText(TTgChatId.FromId(TTgJson.GetInt64(LChat, 'id')),
-      TTgJson.GetInt64(LMessage, 'message_id'), AText, LOptions);
-    Result := True;
-  except
-    // Повторное нажатие той же кнопки: текст и клавиатура не изменились —
-    // это не ошибка обработчика (только в хелпере, сырые методы Api — как есть).
-    on E: ETgApiError do
-      if IsMessageNotModified(E) then
-        Result := False
-      else
-        raise;
-  end;
-end;
-
-function TTgContext.Edit(const AText: string): Boolean;
-begin
-  Result := EditText(AText, nil);
-end;
-
-function TTgContext.Edit(const AText: string; const AKeyboard: ITgInlineKeyboardMarkup): Boolean;
-begin
-  Result := EditText(AText, AKeyboard);
 end;
 
 { TTgWebhookNotifyTransport }
@@ -3416,10 +2538,10 @@ begin
   if LName = '' then
     Exit;
   // username в Telegram без учёта регистра (латиница, цифры, '_').
-  if (LBot <> '') and not SameText(LBot, ResolveBotUserName(AContext.FCancel)) then
+  if (LBot <> '') and not SameText(LBot, ResolveBotUserName(AContext.GetCancel)) then
     Exit;
-  AContext.FCommand := AnsiLowerCase(LName);
-  AContext.FArgs := Trim(Copy(LText, LEnd, MaxInt));
+  AContext.SetCommand(AnsiLowerCase(LName));
+  AContext.SetArgs(Trim(Copy(LText, LEnd, MaxInt)));
   Result := True;
 end;
 
@@ -3435,20 +2557,20 @@ var
   // Вызов обработчика правила; True — обработано (обработчик не сбросил Handled).
   function Fire(const AHandler: TProc<ITgContext>; const AArgs: string): Boolean;
   begin
-    AContext.FArgs := AArgs;
-    AContext.FHandled := True;
+    AContext.SetArgs(AArgs);
+    AContext.SetHandled(True);
     AHandler(LRef);
-    Result := AContext.FHandled;
+    Result := AContext.GetHandled;
   end;
 
 begin
   LRef := AContext;
-  LCommandArgs := AContext.FArgs;
+  LCommandArgs := AContext.GetArgs;
   if AIsCommand then
   begin
     LFound := False;
     for LRoute in ARoutes.Lists[TTgRouteKind.Command] do
-      if LRoute.Key = AContext.FCommand then
+      if LRoute.Key = AContext.GetCommand then
       begin
         LFound := True;
         if Fire(LRoute.Handler, LCommandArgs) then
@@ -3485,10 +2607,10 @@ var
 
   function Fire(const AHandler: TProc<ITgContext>; const AArgs: string): Boolean;
   begin
-    AContext.FArgs := AArgs;
-    AContext.FHandled := True;
+    AContext.SetArgs(AArgs);
+    AContext.SetHandled(True);
     AHandler(LRef);
-    Result := AContext.FHandled;
+    Result := AContext.GetHandled;
   end;
 
 begin
@@ -3543,19 +2665,19 @@ begin
     if Assigned(LOnUpdate) then
       LOnUpdate(LRef);
     // OnUpdate может перехватить обновление (ACtx.Handled := True).
-    if not LContext.FHandled then
+    if not LContext.GetHandled then
     begin
       if AUpdate.Kind = TTgUpdateType.Message then
       begin
         RouteMessage(LContext, LRoutes, LIsCommand);
         // OnMessage — только если ни одно правило не обработало сообщение.
-        if not LContext.FHandled and Assigned(LOnMessage) then
+        if not LContext.GetHandled and Assigned(LOnMessage) then
           LOnMessage(LRef);
       end
       else if AUpdate.Kind = TTgUpdateType.CallbackQuery then
       begin
         RouteCallback(LContext, LRoutes);
-        if not LContext.FHandled and Assigned(LOnCallbackQuery) then
+        if not LContext.GetHandled and Assigned(LOnCallbackQuery) then
           LOnCallbackQuery(LRef);
       end;
     end;
