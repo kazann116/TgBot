@@ -10,7 +10,7 @@
     диспетчера TTgUpdateDispatcher, модуль TgBot.Updates.Dispatcher);
   - ITgUpdateSource / ITgWebhookReceiver / ITgPollTimer — контракты
     источников TTgLongPollSource (TgBot.Updates.Polling) и
-    TTgWebhookSource (TgBot.Updates);
+    TTgWebhookSource (TgBot.Updates.WebhookSource);
   - перечисления, константы по умолчанию, тексты (TgUpdatesText),
     TgWebhookHttpStatus, TgWaitEventPumping;
   - служебное для источников: TgCallTransport, TgInvokeQuietly,
@@ -307,7 +307,7 @@ function TgWaitEventPumping(AEvent: TEvent; AMs: Cardinal): Boolean;
 /// <summary>HTTP-код ответа на webhook-запрос: 200, 403, 400 или 503.</summary>
 function TgWebhookHttpStatus(AResult: TTgWebhookResult): Integer;
 
-{ Служебное (общее для источников TgBot.Updates.Polling и TgBot.Updates),
+{ Служебное (общее для источников TgBot.Updates.Polling и TgBot.Updates.WebhookSource),
   не часть публичного API. }
 
 /// <summary>
