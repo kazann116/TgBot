@@ -284,21 +284,32 @@ type
 {$I Generated\Gen.Aliases.inc}
 
   { Построители клавиатур (TgBot.Keyboards) и контекст обработчика (TgBot.Context) }
+  /// <summary>
+  ///   Построитель инлайн-клавиатуры (запись-значение); описание —
+  ///   TgBot.Keyboards.TTgInlineKeyboardBuilder.
+  /// </summary>
   TTgInlineKeyboardBuilder = TgBot.Keyboards.TTgInlineKeyboardBuilder;
+  /// <summary>
+  ///   Построитель обычной клавиатуры (запись-значение); описание —
+  ///   TgBot.Keyboards.TTgReplyKeyboardBuilder.
+  /// </summary>
   TTgReplyKeyboardBuilder = TgBot.Keyboards.TTgReplyKeyboardBuilder;
+  /// <summary>
+  ///   Фабрика клавиатур: Inline, Reply, Remove, ForceReply; описание и
+  ///   примеры — TgBot.Keyboards.TTgKeyboard.
+  /// </summary>
   TTgKeyboard = TgBot.Keyboards.TTgKeyboard;
+  /// <summary>
+  ///   Контекст обработчика TTgBot: обновление, Api, ответы, состояние
+  ///   диалога; описание — TgBot.Context.ITgContext.
+  /// </summary>
   ITgContext = TgBot.Context.ITgContext;
 
   { Бот (TgBot.Bot) }
 
   /// <summary>
-  ///   Состояние бота (TTgBot.State).
-  ///   Idle — не запущен (до Start, после Stop);
-  ///   Running — приём и обработка идут;
-  ///   Stopping — выполняется Stop (дренаж, итоговое подтверждение);
-  ///   Faulted — приём остановлен неустранимой ошибкой (401, 404, 409
-  ///   «webhook is active» без AutoDeleteWebhook…): уже принятые обновления
-  ///   дорабатываются, ресурсы держатся до Stop, Start или Free.
+  ///   Состояние бота (TTgBot.State): Idle, Running, Stopping, Faulted;
+  ///   описание — TgBot.Bot.Core.TTgBotState.
   /// </summary>
   TTgBotState = TgBot.Bot.TTgBotState;
   /// <summary>Способ получения обновлений (TTgBot.Mode): Polling (по умолчанию) или Webhook.</summary>

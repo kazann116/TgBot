@@ -53,7 +53,8 @@ type
   ///   HandleWebhook), раздача обработчикам
   ///   (TTgUpdateDispatcher: один чат — по порядку, разные — параллельно),
   ///   контекст ITgContext и состояние диалогов (StateStorage).
-  ///   Обычный класс (компонент — в фазе 6). Свойства задаются до Start.
+  ///   Обычный класс (компонент для формы — TTelegramBot, модуль
+  ///   TgBot.Component). Свойства задаются до Start.
   ///
   ///   Порядок обработки (маршрутизатор):
   ///   1) OnUpdate — для каждого обновления; ACtx.Handled := True прекращает
@@ -733,12 +734,8 @@ begin
   WarnIfFiltered(Assigned(LOnMessage), 'OnMessage', TTgUpdateType.Message);
   WarnIfFiltered(Assigned(LOnCallbackQuery), 'OnCallbackQuery', TTgUpdateType.CallbackQuery);
   LRoutes := FCore.GetRoutes;
-  WarnIfFiltered((Length(LRoutes.Lists[TTgRouteKind.Command]) > 0) or
-    (Length(LRoutes.Lists[TTgRouteKind.Text]) > 0) or (Length(LRoutes.Matches) > 0) or
-    Assigned(LRoutes.AnyText) or Assigned(LRoutes.UnknownCommand), 'Command/Text',
-    TTgUpdateType.Message);
-  WarnIfFiltered((Length(LRoutes.Lists[TTgRouteKind.Callback]) > 0) or
-    (Length(LRoutes.Lists[TTgRouteKind.CallbackPrefix]) > 0), 'Callback', TTgUpdateType.CallbackQuery);
+  WarnIfFiltered(LRoutes.HasMessageRules, 'Command/Text', TTgUpdateType.Message);
+  WarnIfFiltered(LRoutes.HasCallbackRules, 'Callback', TTgUpdateType.CallbackQuery);
 end;
 
 procedure TTgBot.PrepareCommands;
@@ -822,7 +819,7 @@ end;
 function TTgBot.Text(const AText: string; const AHandler: TProc<ITgContext>): TTgBot;
 begin
   CheckRouteKey(AText, 'Text');
-  FCore.SetRoute(TTgRouteKind.Text, AnsiLowerCase(AText), '', AHandler);
+  FCore.SetRoute(TTgRouteKind.Text, TTgRouter.TextKey(AText), '', AHandler);
   Result := Self;
 end;
 
