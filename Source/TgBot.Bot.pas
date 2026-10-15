@@ -113,10 +113,6 @@ type
     // обработчиками, правилами и состоянием; бот держит его этой ссылкой и
     // обращается к нему только через интерфейс.
     FCore: ITgBotCore;
-    // Кэш FCore.Api (не во владении): задаётся в Init и не меняется, пока
-    // жива ссылка FCore; обнуляется в Destroy до её отпускания. Свойство Api
-    // читает поле без вызова через интерфейс.
-    FApi: TTgApi;
     FSource: TTgLongPollSource;
     FSourceRef: ITgUpdateSource;
     FWebhookSource: TTgWebhookSource;
@@ -149,6 +145,8 @@ type
     FRunWake: TEvent;
     FSetMyCommandsOnStart: Boolean;
     procedure Init(AApi: TTgApi);
+    /// <summary>Клиент ядра (FCore.Api); nil — ядро уже отпущено (Destroy).</summary>
+    function GetApi: TTgApi;
     /// <summary>Проверки и настройка webhook-источника перед запуском (Mode = Webhook).</summary>
     procedure PrepareWebhook;
     procedure WarnFilteredHandlers;
@@ -271,7 +269,7 @@ type
     /// <summary>То же для тела в байтах UTF-8.</summary>
     function HandleWebhook(const ABody: TBytes; const ASecretHeader: string): TTgWebhookResult; overload;
     /// <summary>Клиент Bot API (владеет бот).</summary>
-    property Api: TTgApi read FApi;
+    property Api: TTgApi read GetApi;
     /// <summary>Источник long polling (тонкие настройки: Timer, JitterPercent, Offset…).</summary>
     property Source: TTgLongPollSource read FSource;
     /// <summary>
@@ -462,7 +460,6 @@ procedure TTgBot.Init(AApi: TTgApi);
 begin
   // Клиент переходит во владение ядра (если ядро не создано — освобождается).
   FCore := TgCreateBotCore(AApi);
-  FApi := FCore.Api;
   FRunWake := TEvent.Create(nil, False, False, '');
   FDelivery := TTgDelivery.Worker;
   FMaxParallel := TgDefaultMaxParallel;
@@ -472,7 +469,7 @@ begin
   FDrainTimeoutMs := TgDefaultDrainTimeoutMs;
   FSetMyCommandsOnStart := True;
   // Источник прерывается и отменой клиента (Api.Shutdown при Free бота).
-  FSource := TTgLongPollSource.Create(FApi.Transport, FApi.CancelToken);
+  FSource := TTgLongPollSource.Create(FCore.Api.Transport, FCore.Api.CancelToken);
   FSourceRef := FSource;
   FDispatcher := TTgUpdateDispatcher.Create(TgNewRawHandler(FCore));
   FDispatcherRef := FDispatcher;
@@ -482,8 +479,8 @@ begin
   FSource.OnError := TgNewSourceErrorHandler(FCore);
   // Webhook: setWebhook/deleteWebhook — через тот же транспорт, прерываются Free;
   // обёртка сообщает ядру об успешном setWebhook (OnWebhookRegistered).
-  FWebhookSource := TTgWebhookSource.Create(TgNewWebhookTransport(FApi.Transport, FCore),
-    FApi.CancelToken);
+  FWebhookSource := TTgWebhookSource.Create(TgNewWebhookTransport(FCore.Api.Transport, FCore),
+    FCore.Api.CancelToken);
   FWebhookSourceRef := FWebhookSource;
   FWebhookSource.OnError := TgNewSourceErrorHandler(FCore);
   FActiveSource := FSourceRef;
@@ -516,10 +513,17 @@ begin
   FWebhookSourceRef := nil;
   // Последняя ссылка на ядро (если обработчиков и контекстов нет) — клиент
   // освобождается здесь; иначе — с последним обработчиком/контекстом.
-  FApi := nil;
   FCore := nil;
   FreeAndNil(FRunWake);
   inherited Destroy;
+end;
+
+function TTgBot.GetApi: TTgApi;
+begin
+  if Assigned(FCore) then
+    Result := FCore.Api
+  else
+    Result := nil;
 end;
 
 function TTgBot.GetStateStorage: ITgStateStorage;
@@ -643,7 +647,7 @@ begin
   // Облачный Bot API принимает только HTTPS-адрес; Local Bot API server
   // (адрес Bot API транспорта задан и не облачный) — и HTTP.
   if not SameText(Copy(Trim(FWebhookUrl), 1, 8), 'https://') and
-    ((FApi.Settings.ApiUrl = '') or SameText(FApi.Settings.ApiUrl, TgDefaultApiUrl) or
+    ((FCore.Api.Settings.ApiUrl = '') or SameText(FCore.Api.Settings.ApiUrl, TgDefaultApiUrl) or
     not SameText(Copy(Trim(FWebhookUrl), 1, 7), 'http://')) then
     raise ETgError.Create(TgLangText(@SRuBotWebhookNotHttps, @SEnBotWebhookNotHttps));
   // Текст ошибки не содержит самого секрета.

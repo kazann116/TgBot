@@ -43,16 +43,18 @@ type
   ///   клиентом (TTgApi), хранилищем состояния, обработчиками, правилами
   ///   маршрутизатора, AutoAnswerCallbacks и состоянием бота (TTgBotState).
   ///   Держат его TTgBot, замыкания диспетчера/источника, каждый
-  ///   TTgContext и замыкание фоновой подготовки запуска (до её
-  ///   завершения); само ядро ни на кого из них не ссылается (нет циклов).
+  ///   контекст обработчика (как ITgApiOwner) и замыкание фоновой
+  ///   подготовки запуска (до её завершения); само ядро ни на кого из них
+  ///   не ссылается (нет циклов).
   ///   Поля — под внутренней блокировкой; обработчики вызываются со снимка
   ///   вне блокировки. Сеттеры освобождают прежнее значение (замыкание,
   ///   хранилище, массив правил) вне блокировки.
   ///   После Detach (Free бота) обработчики сброшены, OnError, OnFault и
   ///   автоответ не вызываются, клиент закрыт (вызовы — ETgCancelledError);
-  ///   клиент освобождается с последней ссылкой на ядро.
+  ///   клиент освобождается с последней ссылкой на ядро. Клиент — Api
+  ///   (ITgApiOwner; не меняется за жизнь ядра).
   /// </summary>
-  ITgBotCore = interface
+  ITgBotCore = interface(ITgApiOwner)
     ['{6B0C2E4A-3D51-4F8E-9A7B-2C1D5E8F9A30}']
     { Обновления и события источника }
 
@@ -101,7 +103,6 @@ type
     ///   ещё ≈100 мс. False — задача не завершилась (отпущена).
     /// </summary>
     function FinishStartJob(AWaitMs: Cardinal): Boolean;
-    function GetApi: TTgApi;
 
     { Настройки и обработчики }
 
@@ -143,8 +144,6 @@ type
     /// <summary>username бота (getMe); '' — ещё не получен.</summary>
     function GetBotUserName: string;
 
-    /// <summary>Клиент Bot API (во владении ядра; не меняется за его жизнь).</summary>
-    property Api: TTgApi read GetApi;
     /// <summary>Ядро отсоединено (бот уничтожен).</summary>
     property Detached: Boolean read GetDetached;
   end;
@@ -306,7 +305,7 @@ type
   ///   ссылка на ядро — у замыкания, и ядро (с клиентом) освобождается в
   ///   потоке пула по завершении задачи.
   /// </summary>
-  TTgBotCore = class(TInterfacedObject, ITgBotCore, ITgStartJobRunner)
+  TTgBotCore = class(TInterfacedObject, ITgBotCore, ITgApiOwner, ITgStartJobRunner)
   private
     FLock: TCriticalSection;
     FApi: TTgApi;
@@ -352,6 +351,8 @@ type
     /// </summary>
     constructor Create(AApi: TTgApi);
     destructor Destroy; override;
+    { ITgApiOwner }
+    function GetApi: TTgApi;
     { ITgBotCore }
     procedure HandleRaw(const AUpdate: ITgRawUpdate);
     procedure NotifyError(AError: Exception; const AContext: ITgContext);
@@ -365,7 +366,6 @@ type
     procedure SetState(AValue: TTgBotState);
     procedure BeginStartJob(ASetMyCommands: Boolean);
     function FinishStartJob(AWaitMs: Cardinal): Boolean;
-    function GetApi: TTgApi;
     function GetStateStorage: ITgStateStorage;
     procedure SetStateStorage(const AValue: ITgStateStorage);
     function GetAutoAnswerCallbacks: Boolean;
@@ -1389,8 +1389,7 @@ end;
 
 procedure TTgBotCore.HandleRaw(const AUpdate: ITgRawUpdate);
 var
-  LContext: TTgContext;
-  LRef: ITgContext;
+  LContext: ITgRoutableContext;
   LOnUpdate, LOnMessage, LOnCallbackQuery: TProc<ITgContext>;
   LStorage: ITgStateStorage;
   LAutoAnswer: Boolean;
@@ -1412,46 +1411,46 @@ begin
   finally
     FLock.Leave;
   end;
-  // Токен диспетчера — окружающий токен обработчика; контекст удерживает ядро.
-  LContext := TTgContext.Create(Self, FApi, AUpdate, TTgCancelScope.Current, LStorage);
-  LRef := LContext;
+  // Токен диспетчера — окружающий токен обработчика; контекст удерживает ядро
+  // (как владельца клиента, ITgApiOwner).
+  LContext := TgNewContext(Self, AUpdate, TTgCancelScope.Current, LStorage);
   try
     // Команда разбирается до OnUpdate: ACtx.Command доступен и в нём.
     LIsCommand := (AUpdate.Kind = TTgUpdateType.Message) and
       TTgRouter.ParseCommand(LContext, ResolveBotUserName);
     if Assigned(LOnUpdate) then
-      LOnUpdate(LRef);
+      LOnUpdate(LContext);
     // OnUpdate может перехватить обновление (ACtx.Handled := True).
-    if not LContext.GetHandled then
+    if not LContext.Handled then
     begin
       if AUpdate.Kind = TTgUpdateType.Message then
       begin
         TTgRouter.RouteMessage(LContext, LRoutes, LIsCommand);
         // OnMessage — только если ни одно правило не обработало сообщение.
-        if not LContext.GetHandled and Assigned(LOnMessage) then
-          LOnMessage(LRef);
+        if not LContext.Handled and Assigned(LOnMessage) then
+          LOnMessage(LContext);
       end
       else if AUpdate.Kind = TTgUpdateType.CallbackQuery then
       begin
         TTgRouter.RouteCallback(LContext, LRoutes);
-        if not LContext.GetHandled and Assigned(LOnCallbackQuery) then
-          LOnCallbackQuery(LRef);
+        if not LContext.Handled and Assigned(LOnCallbackQuery) then
+          LOnCallbackQuery(LContext);
       end;
     end;
   except
     on E: Exception do
-      NotifyError(E, LRef);
+      NotifyError(E, LContext);
   end;
   // Неотвеченное нажатие кнопки: иначе у пользователя «крутится» индикатор.
   // После Free бота (Detach) автоответ не отправляется.
   if LAutoAnswer and (AUpdate.Kind = TTgUpdateType.CallbackQuery) and
-    not LContext.Answered and not (Assigned(LRef.Cancel) and LRef.Cancel.IsCancelled) and
+    not LContext.Answered and not (Assigned(LContext.Cancel) and LContext.Cancel.IsCancelled) and
     not Detached then
     try
-      LRef.Answer;
+      LContext.Answer;
     except
       on E: Exception do
-        NotifyError(E, LRef);
+        NotifyError(E, LContext);
     end;
 end;
 
