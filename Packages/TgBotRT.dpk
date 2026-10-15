@@ -24,6 +24,8 @@ contains
   TgBot.Dto in '..\Source\TgBot.Dto.pas',
   TgBot.Core in '..\Source\TgBot.Core.pas',
   TgBot.Types in '..\Source\TgBot.Types.pas',
+  TgBot.Updates.Types in '..\Source\TgBot.Updates.Types.pas',
+  TgBot.Updates.Dispatcher in '..\Source\TgBot.Updates.Dispatcher.pas',
   TgBot.Updates in '..\Source\TgBot.Updates.pas',
   TgBot.State in '..\Source\TgBot.State.pas',
   TgBot.Keyboards in '..\Source\TgBot.Keyboards.pas',
