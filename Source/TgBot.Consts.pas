@@ -145,6 +145,38 @@ resourcestring
   SRuUpdNoRandom = 'Криптостойкий генератор случайных чисел ОС недоступен';
   SEnUpdNoRandom = 'The OS cryptographic random number generator is not available';
 
+  { Маршрутизатор: регистрация правил (TTgRouterText, TgRouterText из
+    TgBot.Router; те же тексты — у TTelegramBot). Подстановки: имя метода
+    регистрации (пустой ключ), имя команды как задано (недопустимая команда). }
+
+  SRuRouteEmptyKey = 'Пустой ключ правила маршрутизатора (%s)';
+  SEnRouteEmptyKey = 'Empty router rule key (%s)';
+  SRuRouteBadCommand = 'Недопустимое имя команды "%s": пробелы и "@" не допускаются';
+  SEnRouteBadCommand = 'Invalid command name "%s": spaces and "@" are not allowed';
+
+  { TTgBot: проверка параметров запуска (TgBot.Bot) }
+
+  SRuBotWebhookNotHttps = 'Режим Webhook: WebhookUrl должен начинаться с https:// ' +
+    '(Telegram принимает только HTTPS; http:// — только с Local Bot API server)';
+  SEnBotWebhookNotHttps = 'Webhook mode: WebhookUrl must start with https:// ' +
+    '(Telegram accepts HTTPS only; http:// is allowed only with a Local Bot API server)';
+
+  { Компонент TTelegramBot (TgBot.Component). Ключи правил и имена команд
+    проверяются текстами маршрутизатора (SRuRoute…). }
+
+  SRuCompBotActive = 'Нельзя менять свойства TTelegramBot, пока бот работает (Active = True)';
+  SEnCompBotActive = 'Cannot change TTelegramBot properties while the bot is running (Active = True)';
+  SRuCompNoWebhookPath = 'TTelegramBot: не задан путь webhook для Webhook.Server — ' +
+    'задайте Name компонента или Webhook.Path';
+  SEnCompNoWebhookPath = 'TTelegramBot: the webhook path for Webhook.Server is not set — ' +
+    'set the component Name or Webhook.Path';
+  SRuCompNoCertificate = 'TTelegramBot: файл сертификата Webhook.Certificate не найден: %s';
+  SEnCompNoCertificate = 'TTelegramBot: Webhook.Certificate file not found: %s';
+  SRuCompRunNotMain = 'TTelegramBot.Run с Delivery = Main можно вызывать только из главного потока';
+  SEnCompRunNotMain = 'TTelegramBot.Run with Delivery = Main must be called from the main thread';
+  SRuCompRunUnsupported = 'TTelegramBot.Run недоступен на этой платформе: используйте Active';
+  SEnCompRunUnsupported = 'TTelegramBot.Run is not available on this platform: use Active';
+
 implementation
 
 end.

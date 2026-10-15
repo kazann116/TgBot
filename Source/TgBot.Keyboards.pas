@@ -151,7 +151,8 @@ implementation
 
 uses
   System.SysUtils,
-  System.RTLConsts,
+  TgBot.Base,
+  TgBot.Consts,
   TgBot.Dto;
 
 { Построители клавиатур }
@@ -181,7 +182,7 @@ var
   LLast: Integer;
 begin
   if not Assigned(AButton) then
-    raise EArgumentNilException.CreateRes(@SArgumentNil);
+    raise EArgumentNilException.Create(TgLangTextFmt(@SRuArgNil, @SEnArgNil, ['AButton']));
   Result := Self;
   Result.FRows := Copy(FRows);
   if Length(Result.FRows) = 0 then
@@ -295,7 +296,7 @@ var
   LLast: Integer;
 begin
   if not Assigned(AButton) then
-    raise EArgumentNilException.CreateRes(@SArgumentNil);
+    raise EArgumentNilException.Create(TgLangTextFmt(@SRuArgNil, @SEnArgNil, ['AButton']));
   Result := Self;
   Result.FRows := Copy(FRows);
   if Length(Result.FRows) = 0 then
