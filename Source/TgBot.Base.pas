@@ -26,11 +26,11 @@ const
   /// <summary>Старший номер версии библиотеки.</summary>
   TgBotVersionMajor = 0;
   /// <summary>Младший номер версии библиотеки.</summary>
-  TgBotVersionMinor = 1;
+  TgBotVersionMinor = 2;
   /// <summary>Номер выпуска библиотеки.</summary>
   TgBotVersionRelease = 0;
   /// <summary>Версия библиотеки строкой.</summary>
-  TgBotVersion = '0.1.0';
+  TgBotVersion = '0.2.0';
   /// <summary>Значение заголовка User-Agent по умолчанию.</summary>
   TgBotUserAgent = TgBotLibName + '-Delphi/' + TgBotVersion;
 

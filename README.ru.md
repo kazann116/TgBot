@@ -22,7 +22,7 @@
 ## 1. Что это
 
 - **Telegram Bot API 10.3, весь API.** Все типы и методы сгенерированы по официальной спецификации генератором
-  `Tools\TgBotGen` (константа `TgBotApiVersion`). Версия библиотеки — `TgBotVersion` (сейчас 0.1.0).
+  `Tools\TgBotGen` (константа `TgBotApiVersion`). Версия библиотеки — `TgBotVersion` (сейчас 0.2.0).
 - **Платформы:** Win32, Win64, Linux64, Android (32 и 64 бит). iOS не поддерживается.
 - **Delphi 10.4 Sydney и новее.** Проверено на 10.4 и 12.
 - **Зависимости.** Ядро использует только RTL (`System.Net.HttpClient`, `System.JSON`, `System.Threading`).
@@ -38,6 +38,20 @@
 
 В `uses` обычно достаточно одного модуля `TgBot`: он реэкспортирует типы ядра. Для компонента добавьте
 `TgBot.Component`, для webhook-сервера — `TgBot.Webhook`.
+
+Карта модулей `Source` (для чтения исходников; кроме `TgBot`, `TgBot.Component` и `TgBot.Webhook` указывать их
+в `uses` не нужно):
+
+| Модуль | Что содержит |
+|---|---|
+| `TgBot` | фасад: реэкспорт публичных типов псевдонимами, константы версий |
+| `TgBot.Types` | сгенерированный слой Bot API (`Generated\Gen.*.inc`): интерфейсы `ITg*`, фабрики, Options, `TTgApi` |
+| `TgBot.Base`, `TgBot.Json`, `TgBot.Http`, `TgBot.Dto`, `TgBot.Core` | базовые типы и отмена, JSON, HTTP-транспорт, базы DTO, ядро клиента |
+| `TgBot.Keyboards`, `TgBot.Context` | клавиатуры `TTgKeyboard`, контекст обработчика `ITgContext` |
+| `TgBot.Bot`, `TgBot.Bot.Core`, `TgBot.Router` | бот `TTgBot`, его внутреннее ядро и маршрутизатор (служебные) |
+| `TgBot.Updates` | фасад приёма обновлений: `.Types` (общие типы), `.Dispatcher`, `.Polling` (long polling), `.WebhookSource` |
+| `TgBot.State` | хранилище состояния диалогов |
+| `TgBot.Component`, `TgBot.Webhook` | компонент `TTelegramBot`, webhook-сервер `TTgWebhookServer` (Indy) |
 
 ## 2. Установка
 
@@ -62,8 +76,8 @@
 ### Пути
 
 В **Library Path** (Tools → Options → Language → Delphi → Library) или в **Search Path** проекта добавьте
-**только папку `Source`**. Папку `Source\Generated` добавлять не нужно: `TgBot.pas` подключает
-`Generated\*.inc` относительно своего расположения.
+**только папку `Source`**. Папку `Source\Generated` добавлять не нужно: `TgBot.Types.pas` и `TgBot.pas`
+подключают `Generated\*.inc` относительно своего расположения.
 
 Без установки пакетов библиотеку можно использовать просто как исходники: укажите путь к `Source` и добавьте
 `TgBot` в `uses`.
