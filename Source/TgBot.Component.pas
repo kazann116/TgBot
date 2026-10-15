@@ -41,7 +41,8 @@ uses
   System.Classes,
   System.SyncObjs,
   System.Generics.Collections,
-  TgBot;
+  TgBot,
+  TgBot.Base;
 
 type
   /// <summary>Причина остановки бота (OnStop).</summary>
@@ -225,19 +226,15 @@ type
   [ComponentPlatformsAttribute(pidWin32 or pidWin64 or pidLinux64 or pidAndroid32Arm or pidAndroid64Arm)]
 {$ENDIF}
   TTelegramBot = class(TComponent)
-  private type
-    /// <summary>
-    ///   Связь замыканий бота с компонентом: Owner = nil после Destroy.
-    ///   Удерживается замыканиями и очередью главного потока.
-    /// </summary>
-    TLink = class(TInterfacedObject)
-    private
-      FOwner: TTelegramBot;
-    end;
   private
     FBot: TTgBot;
-    FLink: TLink;
-    FLinkRef: IInterface;
+    // Номер запуска: увеличивается при каждом создании бота (StartBot).
+    // Отложенные события (очередь главного потока) сверяют номер, а не
+    // указатель бота: новый TTgBot может занять адрес освобождённого.
+    FBotGeneration: Integer;
+    // Связь замыканий бота с компонентом: Owner = nil после Destroy.
+    // Удерживается замыканиями и очередью главного потока.
+    FLink: ITgOwnerLink;
     FTransport: ITgTransport;
     FToken: string;
     FTokenEnv: string;
@@ -322,9 +319,10 @@ type
     /// <summary>Применяет регистрацию к работающему боту и сохраняет для следующих запусков.</summary>
     procedure AddRegistration(const AProc: TProc<TTgBot>);
     procedure DispatchError(AError: Exception; const ACtx: ITgContext);
-    procedure DispatchFault(ABot: TTgBot; AError: Exception);
-    procedure FaultInMainThread(ABot: TTgBot; AError: Exception);
-    procedure DispatchWebhookRegistered(ABot: TTgBot);
+    /// <summary>AGeneration — номер запуска отказавшего бота (FBotGeneration).</summary>
+    procedure DispatchFault(AGeneration: Integer; AError: Exception);
+    procedure FaultInMainThread(AGeneration: Integer; AError: Exception);
+    procedure DispatchWebhookRegistered(AGeneration: Integer);
     /// <summary>Webhook.Server задан, а Path и Name пусты — ETgError.</summary>
     procedure CheckWebhookPath;
     /// <summary>Run продолжает ждать: бот есть и (Main) не освобождён после отказа / (Worker) не Faulted.</summary>
@@ -513,16 +511,18 @@ implementation
 uses
   System.Diagnostics,
   System.RegularExpressions,
-  TgBot.Base,
   TgBot.Consts;
 
 const
   CDefaultTokenEnv = 'TGBOT_TOKEN';
 
-/// <summary>Компонент по связи замыкания; nil — компонент уничтожен.</summary>
-function LinkOwner(const ALink: IInterface): TTelegramBot;
+/// <summary>
+///   Компонент по связи замыкания (атомарное чтение); nil — компонент
+///   уничтожен. Владелец связи — всегда TTelegramBot (TgNewOwnerLink(Self)).
+/// </summary>
+function LinkOwner(const ALink: ITgOwnerLink): TTelegramBot;
 begin
-  Result := TTelegramBot.TLink(ALink as TObject).FOwner;
+  Result := TTelegramBot(ALink.Owner);
 end;
 
 /// <summary>
@@ -584,7 +584,7 @@ end;
 
 { Обработчики внутреннего бота: захватывают только связь с компонентом }
 
-function NewUpdateHandler(const ALink: IInterface): TProc<ITgContext>;
+function NewUpdateHandler(const ALink: ITgOwnerLink): TProc<ITgContext>;
 begin
   Result :=
     procedure(ACtx: ITgContext)
@@ -606,7 +606,7 @@ begin
 end;
 
 /// <summary>AKind: 0 — OnMessage, 1 — OnCallbackQuery, 2 — OnCommand.</summary>
-function NewContextHandler(const ALink: IInterface; AKind: Integer): TProc<ITgContext>;
+function NewContextHandler(const ALink: ITgOwnerLink; AKind: Integer): TProc<ITgContext>;
 begin
   Result :=
     procedure(ACtx: ITgContext)
@@ -632,7 +632,7 @@ begin
 end;
 
 /// <summary>Элемент Commands: AEvent (снимок при запуске) или OnCommand компонента.</summary>
-function NewCommandHandler(const ALink: IInterface; const AEvent: TTgCommandEvent): TProc<ITgContext>;
+function NewCommandHandler(const ALink: ITgOwnerLink; const AEvent: TTgCommandEvent): TProc<ITgContext>;
 begin
   Result :=
     procedure(ACtx: ITgContext)
@@ -653,7 +653,7 @@ begin
     end;
 end;
 
-function NewErrorHandler(const ALink: IInterface): TProc<Exception, ITgContext>;
+function NewErrorHandler(const ALink: ITgOwnerLink): TProc<Exception, ITgContext>;
 begin
   Result :=
     procedure(AError: Exception; ACtx: ITgContext)
@@ -666,7 +666,8 @@ begin
     end;
 end;
 
-function NewFaultHandler(const ALink: IInterface; ABot: TTgBot): TProc<Exception>;
+/// <summary>AGeneration — номер запуска бота, которому назначается обработчик.</summary>
+function NewFaultHandler(const ALink: ITgOwnerLink; AGeneration: Integer): TProc<Exception>;
 begin
   Result :=
     procedure(AError: Exception)
@@ -675,11 +676,12 @@ begin
     begin
       LOwner := LinkOwner(ALink);
       if Assigned(LOwner) then
-        LOwner.DispatchFault(ABot, AError);
+        LOwner.DispatchFault(AGeneration, AError);
     end;
 end;
 
-function NewWebhookRegisteredHandler(const ALink: IInterface; ABot: TTgBot): TProc;
+/// <summary>AGeneration — номер запуска бота, которому назначается обработчик.</summary>
+function NewWebhookRegisteredHandler(const ALink: ITgOwnerLink; AGeneration: Integer): TProc;
 begin
   Result :=
     procedure
@@ -688,7 +690,7 @@ begin
     begin
       LOwner := LinkOwner(ALink);
       if Assigned(LOwner) then
-        LOwner.DispatchWebhookRegistered(ABot);
+        LOwner.DispatchWebhookRegistered(AGeneration);
     end;
 end;
 
@@ -981,9 +983,7 @@ end;
 constructor TTelegramBot.Create(AOwner: TComponent);
 begin
   inherited Create(AOwner);
-  FLink := TLink.Create;
-  FLinkRef := FLink;
-  FLink.FOwner := Self;
+  FLink := TgNewOwnerLink(Self);
   FTokenEnv := CDefaultTokenEnv;
   FDelivery := TTgDelivery.Main;
   FMaxParallel := TgDefaultMaxParallel;
@@ -1005,7 +1005,7 @@ begin
   // Сначала отцепить события: обработчик, вернувшийся позже (зависший
   // дольше Stop), и элементы очереди главного потока видят Owner = nil.
   if Assigned(FLink) then
-    FLink.FOwner := nil;
+    FLink.Clear;
   FStartPending := False;
   // Webhook: сервер больше не направляет запросы, HandleWebhook — Unavailable.
   if Assigned(FReceiverLock) then
@@ -1014,7 +1014,6 @@ begin
   // Free бота: Stop (не дольше таймаута), отсоединение ядра.
   FreeAndNil(FBot);
   FLink := nil;
-  FLinkRef := nil;
   FreeAndNil(FRegistrations);
   FreeAndNil(FWebhook);
   FreeAndNil(FReceiverLock);
@@ -1160,14 +1159,14 @@ end;
 
 procedure TTelegramBot.Loaded;
 var
-  LLink: IInterface;
+  LLink: ITgOwnerLink;
 begin
   inherited Loaded;
   if FStreamedActive and not (csDesigning in ComponentState) then
   begin
     FStreamedActive := False;
     FStartPending := True;
-    LLink := FLinkRef;
+    LLink := FLink;
     // ForceQueue — и из главного потока ставит в очередь, а не вызывает сразу.
     TThread.ForceQueue(nil,
       procedure
@@ -1263,16 +1262,17 @@ begin
   begin
     LCommand := TTgCommandItem(LItem);
     ABot.Command(LCommand.Names, Trim(LCommand.Description),
-      NewCommandHandler(FLinkRef, LCommand.OnExecute));
+      NewCommandHandler(FLink, LCommand.OnExecute));
   end;
   for LRegistration in FRegistrations do
     LRegistration(ABot);
   ApplyEvents(ABot);
   // Всегда: доставка ошибок и отказа (освобождение бота, OnStop).
-  ABot.OnError := NewErrorHandler(FLinkRef);
-  ABot.OnFault := NewFaultHandler(FLinkRef, ABot);
+  // Отложенные события отказа и регистрации webhook сверяют номер запуска.
+  ABot.OnError := NewErrorHandler(FLink);
+  ABot.OnFault := NewFaultHandler(FLink, FBotGeneration);
   // Всегда: событие можно назначить и после запуска.
-  ABot.OnWebhookRegistered := NewWebhookRegisteredHandler(FLinkRef, ABot);
+  ABot.OnWebhookRegistered := NewWebhookRegisteredHandler(FLink, FBotGeneration);
 end;
 
 procedure TTelegramBot.ApplyEvents(ABot: TTgBot);
@@ -1280,19 +1280,19 @@ begin
   // Только назначенные события: назначенный OnCommand/OnMessage меняет
   // маршрутизацию и предупреждения TTgBot (OnUnknownCommand, AllowedUpdates).
   if Assigned(FOnUpdate) then
-    ABot.OnUpdate := NewUpdateHandler(FLinkRef)
+    ABot.OnUpdate := NewUpdateHandler(FLink)
   else
     ABot.OnUpdate := nil;
   if Assigned(FOnMessage) then
-    ABot.OnMessage := NewContextHandler(FLinkRef, 0)
+    ABot.OnMessage := NewContextHandler(FLink, 0)
   else
     ABot.OnMessage := nil;
   if Assigned(FOnCallbackQuery) then
-    ABot.OnCallbackQuery := NewContextHandler(FLinkRef, 1)
+    ABot.OnCallbackQuery := NewContextHandler(FLink, 1)
   else
     ABot.OnCallbackQuery := nil;
   if Assigned(FOnCommand) then
-    ABot.OnUnknownCommand := NewContextHandler(FLinkRef, 2)
+    ABot.OnUnknownCommand := NewContextHandler(FLink, 2)
   else
     ABot.OnUnknownCommand := nil;
 end;
@@ -1320,6 +1320,8 @@ begin
     ReleaseBot(LBot);
   end;
   LBot := CreateBot;
+  // Новый номер запуска — до ConfigureBot: его захватывают обработчики бота.
+  Inc(FBotGeneration);
   try
     ConfigureBot(LBot);
     // Bot доступен событиям, вызванным уже во время Start (предупреждения).
@@ -1342,7 +1344,8 @@ end;
 procedure TTelegramBot.StopBot(AReason: TTgStopReason);
 var
   LBot: TTgBot;
-  LLink: IInterface;
+  LLink: ITgOwnerLink;
+  LGeneration: Integer;
 begin
   if not Assigned(FBot) or FStopping then
     Exit;
@@ -1350,14 +1353,17 @@ begin
   // в очередь главного потока (Active станет False после возврата).
   if TTgUpdateDispatcher.InHandler then
   begin
-    LLink := FLinkRef;
+    LLink := FLink;
+    LGeneration := FBotGeneration;
     TThread.ForceQueue(nil,
       procedure
       var
         LOwner: TTelegramBot;
       begin
         LOwner := LinkOwner(LLink);
-        if Assigned(LOwner) then
+        // Только тот же запуск: остановленный и перезапущенный за это время
+        // бот — уже другой (его указатель может совпасть с прежним).
+        if Assigned(LOwner) and (LOwner.FBotGeneration = LGeneration) then
           LOwner.StopBot(AReason);
       end);
     Exit;
@@ -1378,7 +1384,7 @@ end;
 procedure TTelegramBot.DispatchError(AError: Exception; const ACtx: ITgContext);
 var
   LCopy: Exception;
-  LLink: IInterface;
+  LLink: ITgOwnerLink;
 begin
   if not Assigned(FOnError) then
     Exit;
@@ -1392,7 +1398,7 @@ begin
   // Фоновый поток при Main: оригинал освободится после возврата — в очередь
   // уходит копия, она освобождается после обработчика.
   LCopy := CloneException(AError);
-  LLink := FLinkRef;
+  LLink := FLink;
   TThread.Queue(nil,
     procedure
     var
@@ -1408,10 +1414,10 @@ begin
     end);
 end;
 
-procedure TTelegramBot.DispatchFault(ABot: TTgBot; AError: Exception);
+procedure TTelegramBot.DispatchFault(AGeneration: Integer; AError: Exception);
 var
   LCopy: Exception;
-  LLink: IInterface;
+  LLink: ITgOwnerLink;
 begin
   // Для Run: завершение отказом (итог False).
   AtomicIncrement(FFaultCount);
@@ -1426,7 +1432,7 @@ begin
     Exit;
   end;
   LCopy := CloneException(AError);
-  LLink := FLinkRef;
+  LLink := FLink;
   // Очередь FIFO: после OnError(E, nil), поставленного источником раньше.
   TThread.Queue(nil,
     procedure
@@ -1436,29 +1442,30 @@ begin
       try
         LOwner := LinkOwner(LLink);
         if Assigned(LOwner) then
-          LOwner.FaultInMainThread(ABot, LCopy);
+          LOwner.FaultInMainThread(AGeneration, LCopy);
       finally
         LCopy.Free;
       end;
     end);
 end;
 
-procedure TTelegramBot.FaultInMainThread(ABot: TTgBot; AError: Exception);
+procedure TTelegramBot.FaultInMainThread(AGeneration: Integer; AError: Exception);
 begin
   try
     if Assigned(FOnFault) then
       FOnFault(Self, AError);
   finally
-    // Тот же бот и не остановлен/перезапущен в OnFault: освобождаем ресурсы.
-    if (FBot = ABot) and Assigned(FBot) and not FStopping and
+    // Тот же запуск (номер, а не указатель бота: новый бот может занять
+    // адрес прежнего) и не остановлен/перезапущен в OnFault: освобождаем ресурсы.
+    if (FBotGeneration = AGeneration) and Assigned(FBot) and not FStopping and
       (FBot.State = TTgBotState.Faulted) then
       StopBot(TTgStopReason.Fault);
   end;
 end;
 
-procedure TTelegramBot.DispatchWebhookRegistered(ABot: TTgBot);
+procedure TTelegramBot.DispatchWebhookRegistered(AGeneration: Integer);
 var
-  LLink: IInterface;
+  LLink: ITgOwnerLink;
   LEvent: TNotifyEvent;
 begin
   if FDelivery <> TTgDelivery.Main then
@@ -1469,7 +1476,7 @@ begin
       LEvent(Self);
     Exit;
   end;
-  LLink := FLinkRef;
+  LLink := FLink;
   // Очередь: после OnStart (он вызывается в главном потоке в конце запуска).
   TThread.Queue(nil,
     procedure
@@ -1477,9 +1484,11 @@ begin
       LOwner: TTelegramBot;
     begin
       LOwner := LinkOwner(LLink);
-      // Тот же, ещё работающий бот: остановленный/перезапущенный — без события.
-      if Assigned(LOwner) and (LOwner.FBot = ABot) and Assigned(ABot) and
-        (ABot.State = TTgBotState.Running) and Assigned(LOwner.FOnWebhookRegistered) then
+      // Тот же запуск, бот ещё работает: остановленный/перезапущенный — без
+      // события (сверяется номер запуска, а не указатель бота).
+      if Assigned(LOwner) and (LOwner.FBotGeneration = AGeneration) and
+        Assigned(LOwner.FBot) and (LOwner.FBot.State = TTgBotState.Running) and
+        Assigned(LOwner.FOnWebhookRegistered) then
         LOwner.FOnWebhookRegistered(LOwner);
     end);
 end;

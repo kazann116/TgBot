@@ -273,6 +273,24 @@ type
   end;
 
   /// <summary>
+  ///   Служебная связь замыканий и очереди главного потока с компонентом
+  ///   (TComponent — без счётчика ссылок): замыкания удерживают связь, а не
+  ///   компонент. Owner читается атомарно из любого потока; компонент
+  ///   вызывает Clear первым действием деструктора, после чего Owner = nil.
+  ///   Приведение Owner к классу компонента безопасно, пока выполняется
+  ///   код, уже получивший не-nil до Clear, и компонент ждёт его завершения
+  ///   (или такой код работает в главном потоке). Создаётся TgNewOwnerLink.
+  ///   В прикладном коде не нужна.
+  /// </summary>
+  ITgOwnerLink = interface
+    ['{9C23CB35-37BE-4871-82D0-7E5A33750D8C}']
+    /// <summary>Владелец связи; nil после Clear. Атомарное чтение.</summary>
+    function Owner: TObject;
+    /// <summary>Отцепляет владельца (атомарно); повторный вызов ничего не делает.</summary>
+    procedure Clear;
+  end;
+
+  /// <summary>
   ///   Окружающий токен отмены текущего потока. Вызовы клиента Bot API без
   ///   явного токена используют TTgCancelScope.Current. Области вложенные:
   ///   Leave восстанавливает предыдущий токен. Используйте строго парами
@@ -468,6 +486,11 @@ function TgLangText(ARu, AEn: PResStringRec): string;
 ///   Служебное (для модулей библиотеки): TgLangText с форматированием (Format).
 /// </summary>
 function TgLangTextFmt(ARu, AEn: PResStringRec; const AArgs: array of const): string;
+/// <summary>
+///   Служебное (для компонентов библиотеки): новая связь ITgOwnerLink с
+///   владельцем AOwner.
+/// </summary>
+function TgNewOwnerLink(AOwner: TObject): ITgOwnerLink;
 
 implementation
 
@@ -585,6 +608,20 @@ type
   public
     constructor Create(const ARegistry: ITgCancelRegistry; AId: Int64);
     destructor Destroy; override;
+  end;
+
+  /// <summary>
+  ///   Реализация ITgOwnerLink: владелец — указатель без счётчика ссылок,
+  ///   запись и чтение атомарные (Clear — из главного потока, Owner — из
+  ///   рабочих потоков обработчиков).
+  /// </summary>
+  TTgOwnerLink = class(TInterfacedObject, ITgOwnerLink)
+  private
+    FOwner: Pointer;
+  public
+    constructor Create(AOwner: TObject);
+    function Owner: TObject;
+    procedure Clear;
   end;
 
 threadvar
@@ -732,6 +769,29 @@ begin
   if Assigned(FRegistry) then
     FRegistry.Unregister(FId);
   inherited Destroy;
+end;
+
+{ TTgOwnerLink }
+
+constructor TTgOwnerLink.Create(AOwner: TObject);
+begin
+  inherited Create;
+  FOwner := Pointer(AOwner);
+end;
+
+function TTgOwnerLink.Owner: TObject;
+begin
+  Result := TObject(AtomicCmpExchange(FOwner, nil, nil));
+end;
+
+procedure TTgOwnerLink.Clear;
+begin
+  AtomicExchange(FOwner, nil);
+end;
+
+function TgNewOwnerLink(AOwner: TObject): ITgOwnerLink;
+begin
+  Result := TTgOwnerLink.Create(AOwner);
 end;
 
 { TTgCancellationSource }
