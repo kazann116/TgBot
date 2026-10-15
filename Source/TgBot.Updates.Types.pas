@@ -130,7 +130,7 @@ type
     /// </summary>
     Unavailable);
 
-  /// <summary>Тексты сообщений (служебное: источники, диспетчер, TgBot.Bot).</summary>
+  /// <summary>Тексты сообщений (служебное: источники, диспетчер, TgBot.Bot, TgBot.Context).</summary>
   TTgUpdatesText = (SourceRunning, DispatcherRunning, StopFromHandler, NoChat,
     RunNotMainThread, RunUnsupported, BotRunning, HandlerFiltered, WebhookUrlRequired,
     WebhookBadSecret, WebhookUnsupported);
@@ -293,7 +293,8 @@ type
   end;
 
 /// <summary>
-///   Локализованный текст (служебное: источники, диспетчер, TgBot.Bot);
+///   Локализованный текст (служебное: источники, диспетчер, TgBot.Bot,
+///   TgBot.Context);
 ///   язык — TgGetLanguage в момент вызова.
 /// </summary>
 function TgUpdatesText(AText: TTgUpdatesText): string;
@@ -325,7 +326,7 @@ implementation
 
 uses
   System.Classes,
-  System.Generics.Collections,
+  System.Generics.Collections, // inline TJSONObject.GetPair, иначе H2443
 {$IFDEF MSWINDOWS}
   Winapi.Windows,
 {$ENDIF}
