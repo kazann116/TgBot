@@ -23,6 +23,7 @@ uses
   System.Diagnostics,
   System.JSON,
   System.Threading,
+  System.TypInfo,
 {$IFDEF MSWINDOWS}
   Winapi.Windows,
   Winapi.Winsock2,
@@ -35,6 +36,12 @@ uses
   TgBot.Base,
   TgBot.Http,
   TgBot.Core,
+  // Тест текстов (5b-1): TTgJsonDto, TgUpdatesText, TgRouterText и пары
+  // TgBot.Consts — служебные модули; до фасада, чтобы не перекрывать его имена.
+  TgBot.Dto,
+  TgBot.Updates,
+  TgBot.Router,
+  TgBot.Consts,
   TgBot,
   TgBot.Component,
   TgBot.Webhook;
@@ -1117,6 +1124,8 @@ begin
   end;
   CheckEquals('10.3', TgBotApiVersion, 'TgBotApiVersion');
   Check(TgBotVersion <> '', 'TgBotVersion');
+  CheckEquals(Format('%d.%d.%d', [TgBotVersionMajor, TgBotVersionMinor, TgBotVersionRelease]),
+    TgBotVersion, 'TgBotVersion = Major.Minor.Release');
 end;
 
 { Фаза 4b: варианты методов и построители клавиатур }
@@ -7935,6 +7944,240 @@ begin
   end;
 end;
 
+{ 5b-1: DtoNotObject с именем поля; полнота текстов RU/EN }
+
+type
+  /// <summary>DTO с доступом к защищённым SetStr/AppendRow (тест DtoNotObject).</summary>
+  TTestDto = class(TTgJsonDto)
+  public
+    procedure PutStr(const AName, AValue: string);
+    procedure PutRow(const AName: string);
+  end;
+
+  /// <summary>Пара ресурсных строк TgBot.Consts (SRu…/SEn…).</summary>
+  TTextPair = record
+    Name: string;
+    Ru, En: PResStringRec;
+  end;
+
+const
+  // Пары TgBot.Consts, не покрытые TTgText, TTgUpdatesText и TTgRouterText
+  // (модули берут их через TgLangText напрямую). Новую такую пару — сюда.
+  CConstPairs: array[0..25] of TTextPair = (
+    (Name: 'ArgNil'; Ru: @SRuArgNil; En: @SEnArgNil),
+    (Name: 'ArgOutOfRange'; Ru: @SRuArgOutOfRange; En: @SEnArgOutOfRange),
+    (Name: 'JsonNotInteger'; Ru: @SRuJsonNotInteger; En: @SEnJsonNotInteger),
+    (Name: 'JsonIntegerRange'; Ru: @SRuJsonIntegerRange; En: @SEnJsonIntegerRange),
+    (Name: 'JsonNotFloat'; Ru: @SRuJsonNotFloat; En: @SEnJsonNotFloat),
+    (Name: 'JsonFloatInvalid'; Ru: @SRuJsonFloatInvalid; En: @SEnJsonFloatInvalid),
+    (Name: 'DtoNotObject'; Ru: @SRuDtoNotObject; En: @SEnDtoNotObject),
+    (Name: 'DtoFileUpload'; Ru: @SRuDtoFileUpload; En: @SEnDtoFileUpload),
+    (Name: 'DtoUnsupported'; Ru: @SRuDtoUnsupported; En: @SEnDtoUnsupported),
+    (Name: 'DtoEmptyItem'; Ru: @SRuDtoEmptyItem; En: @SEnDtoEmptyItem),
+    (Name: 'DtoNotJsonDto'; Ru: @SRuDtoNotJsonDto; En: @SEnDtoNotJsonDto),
+    (Name: 'UpdNoRandom'; Ru: @SRuUpdNoRandom; En: @SEnUpdNoRandom),
+    (Name: 'BotWebhookNotHttps'; Ru: @SRuBotWebhookNotHttps; En: @SEnBotWebhookNotHttps),
+    (Name: 'CompBotActive'; Ru: @SRuCompBotActive; En: @SEnCompBotActive),
+    (Name: 'CompNoWebhookPath'; Ru: @SRuCompNoWebhookPath; En: @SEnCompNoWebhookPath),
+    (Name: 'CompNoCertificate'; Ru: @SRuCompNoCertificate; En: @SEnCompNoCertificate),
+    (Name: 'CompRunNotMain'; Ru: @SRuCompRunNotMain; En: @SEnCompRunNotMain),
+    (Name: 'CompRunUnsupported'; Ru: @SRuCompRunUnsupported; En: @SEnCompRunUnsupported),
+    (Name: 'WhsServerActive'; Ru: @SRuWhsServerActive; En: @SEnWhsServerActive),
+    (Name: 'WhsBadPort'; Ru: @SRuWhsBadPort; En: @SEnWhsBadPort),
+    (Name: 'WhsBadBodySize'; Ru: @SRuWhsBadBodySize; En: @SEnWhsBadBodySize),
+    (Name: 'WhsBadConnections'; Ru: @SRuWhsBadConnections; En: @SEnWhsBadConnections),
+    (Name: 'WhsStartFailed'; Ru: @SRuWhsStartFailed; En: @SEnWhsStartFailed),
+    (Name: 'WhsPathTaken'; Ru: @SRuWhsPathTaken; En: @SEnWhsPathTaken),
+    (Name: 'WhsBadPath'; Ru: @SRuWhsBadPath; En: @SEnWhsBadPath),
+    (Name: 'WhsPublicUrlNotHttps'; Ru: @SRuWhsPublicUrlNotHttps; En: @SEnWhsPublicUrlNotHttps)
+  );
+
+{ TTestDto }
+
+procedure TTestDto.PutStr(const AName, AValue: string);
+begin
+  SetStr(AName, AValue);
+end;
+
+procedure TTestDto.PutRow(const AName: string);
+begin
+  AppendRow(AName, nil);
+end;
+
+/// <summary>Текст исключения класса AClass из AProc; иначе — описание того, что произошло.</summary>
+function RaisedText(const AProc: TProc; AClass: ExceptClass): string;
+begin
+  try
+    AProc();
+    Result := '<нет исключения>';
+  except
+    on E: Exception do
+      if E is AClass then
+        Result := E.Message
+      else
+        Result := '<' + E.ClassName + '> ' + E.Message;
+  end;
+end;
+
+procedure TestDtoNotObjectField;
+var
+  LDto: TTestDto;
+  LRef: ITgJsonObject;
+  LLanguage, LLang: TTgLanguage;
+  LText: string;
+begin
+  // DTO над JSON-массивом: FJson = nil, Set*/AppendRow → ETgError DtoNotObject.
+  LDto := TTestDto.CreateValue(TJSONArray.Create);
+  LRef := LDto;
+  LLanguage := TgGetLanguage;
+  try
+    for LLang := Low(TTgLanguage) to High(TTgLanguage) do
+    begin
+      TgSetLanguage(LLang);
+      LText := RaisedText(
+        procedure
+        begin
+          LDto.PutStr('field_x', 'значение');
+        end, ETgError);
+      Check(Contains('field_x', LText), 'SetStr: имя поля в сообщении — "' + LText + '"');
+      Check(not Contains(LDto.ClassName, LText), 'SetStr: имя класса не подставляется');
+      CheckEquals(TgLangTextFmt(@SRuDtoNotObject, @SEnDtoNotObject, ['field_x']), LText,
+        'SetStr: текст DtoNotObject');
+      LText := RaisedText(
+        procedure
+        begin
+          LDto.PutRow('rows_y');
+        end, ETgError);
+      CheckEquals(TgLangTextFmt(@SRuDtoNotObject, @SEnDtoNotObject, ['rows_y']), LText,
+        'AppendRow: текст DtoNotObject');
+    end;
+  finally
+    TgSetLanguage(LLanguage);
+  end;
+  CheckEquals('[]', LRef.AsJson, 'массив не изменён');
+  Check(LDto.GetRaw = nil, 'GetRaw = nil');
+end;
+
+/// <summary>
+///   Спецификаторы Format по порядку ('%s %d %.2f '), %% пропускается.
+///   AValid = False — неизвестный тип или обрыв в конце строки.
+/// </summary>
+function FormatSpecs(const AText: string; out AValid: Boolean): string;
+var
+  I, J: Integer;
+begin
+  Result := '';
+  AValid := True;
+  I := 1;
+  while I <= Length(AText) do
+  begin
+    if AText[I] <> '%' then
+    begin
+      Inc(I);
+      Continue;
+    end;
+    if (I < Length(AText)) and (AText[I + 1] = '%') then
+    begin
+      Inc(I, 2);
+      Continue;
+    end;
+    // %[индекс:][-][ширина][.точность]тип
+    J := I + 1;
+    while (J <= Length(AText)) and CharInSet(AText[J], ['0'..'9', ':', '-', '.', '*']) do
+      Inc(J);
+    if (J > Length(AText)) or not CharInSet(AText[J],
+      ['d', 'u', 'e', 'f', 'g', 'n', 'm', 'p', 's', 'x', 'D', 'U', 'E', 'F', 'G', 'N', 'M', 'P', 'S', 'X']) then
+      AValid := False;
+    Result := Result + Copy(AText, I, J - I + 1) + ' ';
+    I := J + 1;
+  end;
+end;
+
+function HasCyrillic(const AText: string): Boolean;
+var
+  LChar: Char;
+begin
+  for LChar in AText do
+    if (LChar >= #$0400) and (LChar <= #$04FF) then
+      Exit(True);
+  Result := False;
+end;
+
+/// <summary>
+///   8 проверок пары: оба текста непусты, RU ≠ EN, RU с кириллицей, EN без
+///   неё (пара не перепутана), спецификаторы допустимы и совпадают по порядку.
+/// </summary>
+procedure CheckTextPair(const AName, ARu, AEn: string);
+var
+  LRuSpecs, LEnSpecs: string;
+  LRuValid, LEnValid: Boolean;
+begin
+  Check(Trim(ARu) <> '', AName + ': RU пуст');
+  Check(Trim(AEn) <> '', AName + ': EN пуст');
+  Check(ARu <> AEn, AName + ': RU = EN — "' + ARu + '"');
+  Check(HasCyrillic(ARu), AName + ': RU без кириллицы — "' + ARu + '"');
+  Check(not HasCyrillic(AEn), AName + ': кириллица в EN — "' + AEn + '"');
+  LRuSpecs := FormatSpecs(ARu, LRuValid);
+  LEnSpecs := FormatSpecs(AEn, LEnValid);
+  Check(LRuValid, AName + ': недопустимый спецификатор в RU — "' + ARu + '"');
+  Check(LEnValid, AName + ': недопустимый спецификатор в EN — "' + AEn + '"');
+  CheckEquals(LRuSpecs, LEnSpecs, AName + ': спецификаторы RU/EN');
+end;
+
+procedure TestTextsComplete;
+var
+  LLanguage: TTgLanguage;
+  LText: TTgText;
+  LUpdText: TTgUpdatesText;
+  LRouteText: TTgRouterText;
+  LRu, LEn: string;
+  I: Integer;
+begin
+  LLanguage := TgGetLanguage;
+  try
+    for LText := Low(TTgText) to High(TTgText) do
+    begin
+      TgSetLanguage(TTgLanguage.Ru);
+      LRu := TgText(LText);
+      TgSetLanguage(TTgLanguage.En);
+      LEn := TgText(LText);
+      CheckTextPair('TTgText.' + GetEnumName(TypeInfo(TTgText), Ord(LText)), LRu, LEn);
+    end;
+    for LUpdText := Low(TTgUpdatesText) to High(TTgUpdatesText) do
+    begin
+      TgSetLanguage(TTgLanguage.Ru);
+      LRu := TgUpdatesText(LUpdText);
+      TgSetLanguage(TTgLanguage.En);
+      LEn := TgUpdatesText(LUpdText);
+      CheckTextPair('TTgUpdatesText.' + GetEnumName(TypeInfo(TTgUpdatesText), Ord(LUpdText)), LRu, LEn);
+    end;
+    for LRouteText := Low(TTgRouterText) to High(TTgRouterText) do
+    begin
+      TgSetLanguage(TTgLanguage.Ru);
+      LRu := TgRouterText(LRouteText);
+      TgSetLanguage(TTgLanguage.En);
+      LEn := TgRouterText(LRouteText);
+      CheckTextPair('TTgRouterText.' + GetEnumName(TypeInfo(TTgRouterText), Ord(LRouteText)), LRu, LEn);
+    end;
+    // Пары без перечислений: напрямую (LoadResString) и выбор языка в TgLangText.
+    for I := Low(CConstPairs) to High(CConstPairs) do
+    begin
+      LRu := LoadResString(CConstPairs[I].Ru);
+      LEn := LoadResString(CConstPairs[I].En);
+      CheckTextPair('Consts.' + CConstPairs[I].Name, LRu, LEn);
+      TgSetLanguage(TTgLanguage.Ru);
+      CheckEquals(LRu, TgLangText(CConstPairs[I].Ru, CConstPairs[I].En),
+        'Consts.' + CConstPairs[I].Name + ': TgLangText (Ru)');
+      TgSetLanguage(TTgLanguage.En);
+      CheckEquals(LEn, TgLangText(CConstPairs[I].Ru, CConstPairs[I].En),
+        'Consts.' + CConstPairs[I].Name + ': TgLangText (En)');
+    end;
+  finally
+    TgSetLanguage(LLanguage);
+  end;
+  Check(TgGetLanguage = LLanguage, 'язык восстановлен');
+end;
+
 procedure RunAll;
 begin
   Writeln('TgBot ', TgBotVersion, ' (Bot API ', TgBotApiVersion, ') — офлайн-тесты');
@@ -7958,6 +8201,10 @@ begin
   RunTest('Локаль с запятой, NaN/Infinity → ETgError', TestLocaleAndNaN);
   RunTest('Clone/Detach', TestCloneDetach);
   RunTest('Ядро: GetMe, CallJson, DownloadFile, язык, версия', TestCoreMisc);
+  RunTest('5b-1: DTO над JSON-массивом — DtoNotObject с именем поля (SetStr, AppendRow; RU/EN)',
+    TestDtoNotObjectField);
+  RunTest('5b-1: тексты TTgText/TTgUpdatesText/TTgRouterText и пары TgBot.Consts — ' +
+    'непусты, RU ≠ EN, спецификаторы совпадают', TestTextsComplete);
   RunTest('Варианты edit-методов: позиционные, inline → Boolean, chat_id любого вида', TestEditVariants);
   RunTest('Варианты answerCallbackQuery/sendMessage/sendPhoto/sendDocument', TestSendAndAnswerVariants);
   RunTest('Варианты: Async и Try', TestVariantsAsyncAndTry);

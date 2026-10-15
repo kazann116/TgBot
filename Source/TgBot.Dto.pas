@@ -113,7 +113,8 @@ type
     FValue: TJSONValue;
     FOwner: IInterface;
     FHolder: TTgJsonHolder;
-    function RequireJson: TJSONObject;
+    /// <summary>JSON-объект DTO; значение — не объект: ETgError с именем поля AName.</summary>
+    function RequireJson(const AName: string): TJSONObject;
   protected
     /// <summary>JSON-объект DTO или nil, если значение — не объект.</summary>
     FJson: TJSONObject;
@@ -419,10 +420,10 @@ begin
   Result := TTgJsonDtoClass(ClassType).Create(LCopy, nil);
 end;
 
-function TTgJsonDto.RequireJson: TJSONObject;
+function TTgJsonDto.RequireJson(const AName: string): TJSONObject;
 begin
   if not Assigned(FJson) then
-    raise ETgError.Create(TgLangTextFmt(@SRuDtoNotObject, @SEnDtoNotObject, [ClassName]));
+    raise ETgError.Create(TgLangTextFmt(@SRuDtoNotObject, @SEnDtoNotObject, [AName]));
   Result := FJson;
 end;
 
@@ -462,7 +463,7 @@ var
   LJson: TJSONObject;
 begin
   try
-    LJson := RequireJson;
+    LJson := RequireJson(AName);
     // Прежнее значение может читаться вложенными DTO — передаём держателю, не освобождаем.
     FHolder.Retire(LJson.RemovePair(AName));
   except
@@ -535,7 +536,7 @@ procedure TTgJsonDto.AppendRow(const AName: string; const ARow: TArray<IInterfac
 var
   LArray: TJSONArray;
 begin
-  LArray := TTgJson.GetArr(RequireJson, AName);
+  LArray := TTgJson.GetArr(RequireJson(AName), AName);
   if not Assigned(LArray) then
   begin
     LArray := TJSONArray.Create;
