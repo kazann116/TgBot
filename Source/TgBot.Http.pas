@@ -196,15 +196,27 @@ type
     function Reserve(const AChatKey: string): Integer;
   end;
 
+  /// <summary>
+  ///   Служебный: транспорт с настройками TTgHttpSettings (реализует
+  ///   TTgHttpTransport). Через него клиент получает настройки транспорта без
+  ///   приведения к классу. В прикладном коде не нужен.
+  /// </summary>
+  ITgHttpSettingsProvider = interface
+    ['{804B9679-6947-4414-8785-FE1C5499DF87}']
+    /// <summary>Настройки транспорта (копия записи).</summary>
+    function GetSettings: TTgHttpSettings;
+  end;
+
   /// <summary>Транспорт на System.Net.HttpClient. Настройки неизменяемы после создания.</summary>
-  TTgHttpTransport = class(TInterfacedObject, ITgTransport, ITgCancellableTransport)
+  TTgHttpTransport = class(TInterfacedObject, ITgTransport, ITgCancellableTransport,
+    ITgHttpSettingsProvider)
   private
     FSettings: TTgHttpSettings;
     // Защищает пул клиентов и замену FGlobalCancel.
     FPoolLock: TCriticalSection;
     FPool: TStack<THTTPClient>;
     // Глобальная отмена (устаревшие Cancel/ResetCancel); ResetCancel заменяет источник.
-    FGlobalCancel: ITgCancellation;
+    FGlobalCancel: ITgCancellationSource;
     FLimiter: TTgRateLimiter;
     function CreateClient: THTTPClient;
     function AcquireClient: THTTPClient;
@@ -213,7 +225,11 @@ type
     function ChatKeyFor(const AMethod: string; AParams: TTgParams): string;
     procedure FillMultipart(AForm: TMultipartFormData; AParams: TTgParams;
       AOwnedStreams: TObjectList<TStream>);
+    /// <summary>Текущий источник глобальной отмены (под FPoolLock).</summary>
+    function GlobalCancelSource: ITgCancellationSource;
     function GlobalCancel: ITgCancellation;
+    { ITgHttpSettingsProvider }
+    function GetSettings: TTgHttpSettings;
     /// <summary>Токен ожиданий: операция (ACancel) или глобальная отмена.</summary>
     function WaitTokenFor(const ACancel: ITgCancellation): ITgCancellation;
     procedure WaitInterruptible(AMs: Integer; const AToken: ITgCancellation);
@@ -623,7 +639,7 @@ begin
     SetLength(FSettings.ApiUrl, Length(FSettings.ApiUrl) - 1);
   FPoolLock := TCriticalSection.Create;
   FPool := TStack<THTTPClient>.Create;
-  FGlobalCancel := TTgCancellationSource.Create;
+  FGlobalCancel := TTgCancellationSource.New;
   FLimiter := TTgRateLimiter.Create(FSettings.GlobalRatePerSec, FSettings.PerChatIntervalMs);
 end;
 
@@ -930,7 +946,7 @@ begin
     Result := NetworkErrorFrom(AMethod, AError);
 end;
 
-function TTgHttpTransport.GlobalCancel: ITgCancellation;
+function TTgHttpTransport.GlobalCancelSource: ITgCancellationSource;
 begin
   FPoolLock.Enter;
   try
@@ -938,6 +954,16 @@ begin
   finally
     FPoolLock.Leave;
   end;
+end;
+
+function TTgHttpTransport.GlobalCancel: ITgCancellation;
+begin
+  Result := GlobalCancelSource;
+end;
+
+function TTgHttpTransport.GetSettings: TTgHttpSettings;
+begin
+  Result := FSettings;
 end;
 
 function TTgHttpTransport.WaitTokenFor(const ACancel: ITgCancellation): ITgCancellation;
@@ -1092,7 +1118,8 @@ end;
 procedure TTgHttpTransport.Cancel;
 begin
   // Источник одноразовый: отменяем текущий, ResetCancel заменит его новым.
-  (GlobalCancel as TTgCancellationSource).Cancel;
+  // Отмена — вне FPoolLock: колбэки подписчиков не выполняются под блокировкой.
+  GlobalCancelSource.Cancel;
 end;
 
 procedure TTgHttpTransport.ResetCancel;
@@ -1100,7 +1127,7 @@ begin
   FPoolLock.Enter;
   try
     if FGlobalCancel.IsCancelled then
-      FGlobalCancel := TTgCancellationSource.Create;
+      FGlobalCancel := TTgCancellationSource.New;
   finally
     FPoolLock.Leave;
   end;

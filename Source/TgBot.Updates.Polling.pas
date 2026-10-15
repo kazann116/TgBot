@@ -194,10 +194,8 @@ type
     FWake: TEvent;
     FDone: TEvent;
     FTransport: ITgTransport;
-    FPollSource: TTgCancellationSource;
-    FPollToken: ITgCancellation;
-    FFinalSource: TTgCancellationSource;
-    FFinalToken: ITgCancellation;
+    FPollCancel: ITgCancellationSource;
+    FFinalCancel: ITgCancellationSource;
     FSink: ITgUpdateSink;
     FTimer: ITgPollTimer;
     // Настройки (неизменны после создания).
@@ -306,10 +304,8 @@ begin
   FDone := TEvent.Create(nil, True, False, '');
   FPending := TList<Int64>.Create;
   FTransport := ATransport;
-  FPollSource := TTgCancellationSource.Create(AParentCancel);
-  FPollToken := FPollSource;
-  FFinalSource := TTgCancellationSource.Create(AParentCancel);
-  FFinalToken := FFinalSource;
+  FPollCancel := TTgCancellationSource.New(AParentCancel);
+  FFinalCancel := TTgCancellationSource.New(AParentCancel);
   FSink := ASink;
   FTimer := ASource.FTimer;
   if not Assigned(FTimer) then
@@ -340,8 +336,8 @@ begin
   FreeAndNil(FDone);
   FreeAndNil(FWake);
   FreeAndNil(FLock);
-  FPollToken := nil;
-  FFinalToken := nil;
+  FPollCancel := nil;
+  FFinalCancel := nil;
   inherited Destroy;
 end;
 
@@ -382,7 +378,7 @@ end;
 function TTgPollCore.Pause(AMs: Cardinal): Boolean;
 begin
   // True — продолжать; False — пауза прервана остановкой.
-  Result := not FTimer.Sleep(AMs, FPollToken) and not IsStopRequested;
+  Result := not FTimer.Sleep(AMs, FPollCancel) and not IsStopRequested;
 end;
 
 function TTgPollCore.Fetch(AOffset: Int64; ATimeoutSec, ALimit: Integer;
@@ -419,7 +415,7 @@ begin
   try
     if ADropPending then
       LParams.Add('drop_pending_updates', True);
-    TgCallTransport(FTransport, 'deleteWebhook', LParams, FPollToken).Free;
+    TgCallTransport(FTransport, 'deleteWebhook', LParams, FPollCancel).Free;
   finally
     LParams.Free;
   end;
@@ -482,7 +478,7 @@ begin
     FLock.Leave;
   end;
   try
-    LArray := Fetch(LOffset, FTimeoutSec, FLimit, FPollToken);
+    LArray := Fetch(LOffset, FTimeoutSec, FLimit, FPollCancel);
   except
     on E: Exception do
       Exit(HandleFailure(E));
@@ -542,7 +538,7 @@ begin
     end;
     // Не принятые приёмником обновления остаются необработанными (итоговый offset).
     for I := 0 to LUpdates.Count - 1 do
-      if not FSink.Post(LUpdates[I], FPollToken) then
+      if not FSink.Post(LUpdates[I], FPollCancel) then
         Exit(False);
     Result := True;
   finally
@@ -678,7 +674,7 @@ begin
     finally
       FLock.Leave;
     end;
-    if LEmpty or (LLeft <= 0) or FFinalToken.IsCancelled then
+    if LEmpty or (LLeft <= 0) or FFinalCancel.IsCancelled then
       Break;
     FWake.WaitFor(Cardinal(Min(LLeft, 100)));
   end;
@@ -693,10 +689,10 @@ begin
   finally
     FLock.Leave;
   end;
-  if not LNeed or FFinalToken.IsCancelled then
+  if not LNeed or FFinalCancel.IsCancelled then
     Exit;
   try
-    Fetch(LAck, 0, 1, FFinalToken).Free;
+    Fetch(LAck, 0, 1, FFinalCancel).Free;
     FLock.Enter;
     try
       FConfirmedOffset := Max(FConfirmedOffset, LAck);
@@ -760,13 +756,13 @@ begin
   finally
     FLock.Leave;
   end;
-  FPollSource.Cancel;
+  FPollCancel.Cancel;
   FWake.SetEvent;
 end;
 
 procedure TTgPollCore.CancelFinal;
 begin
-  FFinalSource.Cancel;
+  FFinalCancel.Cancel;
   FWake.SetEvent;
 end;
 
