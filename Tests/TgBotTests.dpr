@@ -45,6 +45,8 @@ uses
   TgBot.Updates,
   TgBot.Router,
   TgBot.Consts,
+  // Владение, фаза 3: служебные ITgApiOwner/ITgRoutableContext (проверки Supports).
+  TgBot.Context,
 {$IFDEF TGBOT_TESTHOOKS}
   // Счётчики живых ядер и задач подготовки (TgTestLiveBotCores/TgTestLiveStartJobs).
   TgBot.Bot.Core,
@@ -4737,14 +4739,28 @@ var
   LBot: TTgBot;
   LSaved: ITgContext;
   LGot: TEvent;
-  LApi: TTgApi;
+  LApi, LBotApi: TTgApi;
+{$IFDEF TGBOT_TESTHOOKS}
+  LCores0: Integer;
+{$ENDIF}
 begin
+{$IFDEF TGBOT_TESTHOOKS}
+  // Ядра прежних тестов, отпущенные в чужих потоках, успевают освободиться.
+  WaitUntil(
+    function: Boolean
+    begin
+      Result := TgTestLiveBotCores = 0;
+    end, 2000);
+  LCores0 := TgTestLiveBotCores;
+{$ENDIF}
   LGot := TEvent.Create(nil, True, False, '');
   try
     LTransport := TScriptCancellableTransport.Create(SingleMessageScript('сохранить'));
     LTransportRef := LTransport;
     LBot := TTgBot.Create(LTransportRef);
     try
+      LBotApi := LBot.Api;
+      Check(Assigned(LBotApi), 'TTgBot.Api — клиент ядра');
       LBot.OnMessage :=
         procedure(ACtx: ITgContext)
         begin
@@ -4764,8 +4780,16 @@ begin
     CheckEquals('сохранить', LSaved.Text, 'ACtx.Text после Free бота');
     CheckEquals('100:7', LSaved.StateKey, 'ACtx.StateKey после Free бота');
     CheckEquals('v', LSaved.State['k'], 'хранилище состояния живо вместе с контекстом');
+{$IFDEF TGBOT_TESTHOOKS}
+    CheckEquals(LCores0 + 1, TgTestLiveBotCores, 'после Free бота ядро удерживает только контекст');
+{$ENDIF}
+    // Контекст держит ядро как владельца клиента (ITgApiOwner) и не выдаёт его;
+    // ITgRoutableContext — служебная сторона контекста (ядро и маршрутизатор).
+    Check(not Supports(LSaved, ITgApiOwner), 'контекст не выдаёт владельца клиента (ITgApiOwner)');
+    Check(Supports(LSaved, ITgRoutableContext), 'контекст поддерживает служебный ITgRoutableContext');
     LApi := LSaved.Api;
     Check(Assigned(LApi), 'ACtx.Api после Free бота');
+    Check(LApi = LBotApi, 'ACtx.Api — тот же клиент, что TTgBot.Api (через ITgApiOwner ядра)');
     Check(LApi.CancelToken.IsCancelled, 'клиент закрыт (Shutdown)');
     Check(Raises(
       procedure
@@ -4780,9 +4804,88 @@ begin
     Check(LTransport.RefCount > 1, 'контекст удерживает клиент (транспорт)');
     LSaved := nil;
     CheckEquals(1, LTransport.RefCount, 'последний контекст освободил ядро и клиент');
+{$IFDEF TGBOT_TESTHOOKS}
+    CheckEquals(LCores0, TgTestLiveBotCores, 'ядро освобождено вместе с последним контекстом');
+{$ENDIF}
     CheckEquals(0, LTransport.Count('sendMessage'), 'sendMessage не отправлялся');
   finally
     LGot.Free;
+  end;
+end;
+
+{ Владение, фаза 3: снимок хранилища состояния в контексте }
+
+procedure TestContextStateStorageSnapshot;
+var
+  LTransport: TScriptCancellableTransport;
+  LTransportRef: ITgTransport;
+  LBot: TTgBot;
+  LStorageA, LStorageB: ITgStateStorage;
+  LSecondDone: TEvent;
+  LFirstSeen, LSecondSeen, LValue: string;
+begin
+  LStorageA := TTgMemoryStateStorage.Create;
+  LStorageB := TTgMemoryStateStorage.Create;
+  LFirstSeen := '?';
+  LSecondSeen := '?';
+  LSecondDone := TEvent.Create(nil, True, False, '');
+  try
+    // Два сообщения одного чата в одном пакете: диспетчер обрабатывает их
+    // строго по порядку — второе начинается после возврата первого
+    // обработчика (который сменил хранилище); далее — итоговое
+    // подтверждение и ожидание отмены.
+    LTransport := TScriptCancellableTransport.Create(
+      function(const AMethod: string; AParams: TTgParams): TJSONValue
+      begin
+        if AMethod = 'getUpdates' then
+        begin
+          if not TTgJson.Has(AParams.Json, 'offset') then
+            Exit(Batch([MsgUpdate(1, 100, 7, 'первое'), MsgUpdate(2, 100, 7, 'второе')]));
+          if TTgJson.GetInt(AParams.Json, 'timeout') = 0 then
+            Exit(TJSONArray.Create);
+          Exit(HangUntilCancelled);
+        end;
+        Result := TJSONTrue.Create;
+      end);
+    LTransportRef := LTransport;
+    LBot := TTgBot.Create(LTransportRef);
+    try
+      LBot.StateStorage := LStorageA;
+      LBot.OnMessage :=
+        procedure(ACtx: ITgContext)
+        begin
+          if ACtx.Text = 'первое' then
+          begin
+            ACtx.State['k'] := 'a';
+            // Смена на ходу: текущий контекст продолжает работать со снимком A.
+            LBot.StateStorage := LStorageB;
+            LFirstSeen := ACtx.State['k'];
+            ACtx.State['k2'] := 'x';
+          end
+          else
+          begin
+            LSecondSeen := ACtx.State['k'];
+            ACtx.State['k3'] := 'y';
+            LSecondDone.SetEvent;
+          end;
+        end;
+      LBot.Start;
+      Check(LSecondDone.WaitFor(5000) = TWaitResult.wrSignaled, 'оба сообщения обработаны');
+      Check(LBot.Stop, 'Stop = True');
+      Check(LBot.StateStorage = LStorageB, 'StateStorage бота — новое хранилище');
+    finally
+      LBot.Free;
+    end;
+    CheckEquals('a', LFirstSeen, 'после смены StateStorage контекст читает свой снимок (A)');
+    Check(LStorageA.TryGet('100:7', 'k2', LValue) and (LValue = 'x'),
+      'запись после смены StateStorage — в снимок контекста (A)');
+    Check(not LStorageB.TryGet('100:7', 'k2', LValue), 'новое хранилище (B) не получило запись старого контекста');
+    CheckEquals('', LSecondSeen, 'следующее обновление — с новым хранилищем (B)');
+    Check(LStorageB.TryGet('100:7', 'k3', LValue) and (LValue = 'y'), 'следующее обновление пишет в B');
+    Check(not LStorageA.TryGet('100:7', 'k3', LValue), 'A не получило запись следующего обновления');
+    CheckEquals(1, LTransport.RefCount, 'бот отпустил транспорт');
+  finally
+    LSecondDone.Free;
   end;
 end;
 
@@ -9120,8 +9223,11 @@ begin
   RunTest('TTgApi.Shutdown: идемпотентен, Call → ETgCancelledError, Async → AOnError', TestApiShutdown);
   RunTest('TTgBot.Free при зависшем обработчике: быстро, Api → ETgCancelledError, без OnError',
     TestBotFreeWithHangingHandler);
-  RunTest('ITgContext переживает TTgBot: Text/State/Api, вызовы → ETgCancelledError',
+  RunTest('ITgContext переживает TTgBot: Text/State/Api, вызовы → ETgCancelledError ' +
+    '(владение, фаза 3: Api через ITgApiOwner ядра, ядро освобождается с контекстом)',
     TestBotContextOutlivesBot);
+  RunTest('Владение, фаза 3: смена StateStorage на ходу — контекст работает со своим снимком',
+    TestContextStateStorageSnapshot);
   RunTest('TTgBot: OnMessage переназначается на ходу 10000 раз', TestBotHandlerSwap);
   RunTest('Free диспетчера при зависшем обработчике (без Stop и после Stop = False) < 100 мс',
     TestDispatcherFreeNonBlocking);

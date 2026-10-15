@@ -2,12 +2,13 @@
 
 {
   TgBot — контекст обработчика обновления: интерфейс ITgContext и его
-  реализация TTgContext (ответы Reply/ReplyHtml/Answer/Edit, состояние
-  диалога, поля маршрутизатора Command/Args/Handled).
+  реализация (ответы Reply/ReplyHtml/Answer/Edit, состояние диалога, поля
+  маршрутизатора Command/Args/Handled).
 
   Указывать этот модуль в uses не нужно: TgBot реэкспортирует ITgContext
-  псевдонимом. TTgContext — служебный класс (создаёт ядро TTgBot), не
-  часть публичного API библиотеки.
+  псевдонимом. ITgApiOwner, ITgRoutableContext и фабрика TgNewContext —
+  служебные (ими пользуются ядро TTgBot и маршрутизатор), не часть
+  публичного API библиотеки; класс реализации — в implementation.
 }
 
 {$SCOPEDENUMS ON}
@@ -15,7 +16,6 @@
 interface
 
 uses
-  System.JSON,
   TgBot.Base,
   TgBot.Types,
   TgBot.Updates,
@@ -135,19 +135,65 @@ type
   end;
 
   /// <summary>
-  ///   Реализация ITgContext. Поля читаются из сырого JSON обновления;
-  ///   типизированные объекты (Update, From, Message) разделяют этот JSON и
-  ///   удерживают обновление. FCoreKeepAlive удерживает ядро бота, пока жив
-  ///   контекст (ядро через это поле не вызывается): клиент FApi действителен,
-  ///   пока жив контекст, даже после Free бота.
-  ///   Служебное: создаёт ядро бота (TgBot.Bot.Core), Command и Args
-  ///   заполняет маршрутизатор (TTgRouter, TgBot.Router); не часть
-  ///   публичного API библиотеки.
+  ///   Служебное: владелец клиента Bot API (ядро бота, TgBot.Bot.Core).
+  ///   Контекст обработчика удерживает владельца этой ссылкой: клиент
+  ///   действителен, пока жив контекст, даже после Free бота (вызовы
+  ///   клиента тогда — ETgCancelledError). Не часть публичного API
+  ///   библиотеки.
   /// </summary>
-  TTgContext = class(TInterfacedObject, ITgContext)
+  ITgApiOwner = interface
+    ['{5FA06BA5-E929-437A-9A85-0E178027B7E3}']
+    function GetApi: TTgApi;
+    /// <summary>Клиент Bot API (во владении; не меняется за жизнь владельца).</summary>
+    property Api: TTgApi read GetApi;
+  end;
+
+  /// <summary>
+  ///   Служебное: контекст со стороны ядра бота и маршрутизатора (TTgRouter,
+  ///   TgBot.Router) — заполнение Command/Args, текст для разбора команды,
+  ///   признак ответа на нажатие для автоответа. Обработчики получают
+  ///   ITgContext; не часть публичного API библиотеки.
+  /// </summary>
+  ITgRoutableContext = interface(ITgContext)
+    ['{E951376C-E55F-40D3-8686-8F94D6F820E8}']
+    /// <summary>Ключ разобранной команды (TTgRouter.ParseCommand по вызову ядра).</summary>
+    procedure SetCommand(const AValue: string);
+    /// <summary>Аргументы сработавшего правила (TTgRouter по вызову ядра).</summary>
+    procedure SetArgs(const AValue: string);
+    /// <summary>Поле text сообщения вида message ('' — нет текста или другой вид).</summary>
+    function MessageText: string;
+    function GetAnswered: Boolean;
+    /// <summary>Вызван Answer (для автоматического ответа на callback_query).</summary>
+    property Answered: Boolean read GetAnswered;
+  end;
+
+/// <summary>
+///   Служебное (вызывает ядро бота): контекст обновления ARaw. AApiOwner —
+///   владелец клиента (удерживается контекстом); ACancel — токен
+///   обработчика; AStorage — снимок хранилища состояния на начало обработки
+///   (смена StateStorage на ходу этот контекст не затрагивает).
+/// </summary>
+function TgNewContext(const AApiOwner: ITgApiOwner; const ARaw: ITgRawUpdate;
+  const ACancel: ITgCancellation; const AStorage: ITgStateStorage): ITgRoutableContext;
+
+implementation
+
+uses
+  System.SysUtils,
+  System.JSON,
+  TgBot.Json;
+
+type
+  /// <summary>
+  ///   Реализация ITgContext и ITgRoutableContext. Поля читаются из сырого
+  ///   JSON обновления; типизированные объекты (Update, From, Message)
+  ///   разделяют этот JSON и удерживают обновление. FApiOwner удерживает
+  ///   владельца клиента (ядро бота), пока жив контекст: Api действителен,
+  ///   пока жив контекст, даже после Free бота.
+  /// </summary>
+  TTgContext = class(TInterfacedObject, ITgContext, ITgRoutableContext)
   private
-    FCoreKeepAlive: IInterface;
-    FApi: TTgApi;
+    FApiOwner: ITgApiOwner;
     FRaw: ITgRawUpdate;
     FCancel: ITgCancellation;
     FStorage: ITgStateStorage;
@@ -165,8 +211,8 @@ type
     function SendText(const AText, AParseMode: string; const AKeyboard: TTgReplyMarkup): ITgMessage;
     function EditText(const AText: string; const AKeyboard: ITgInlineKeyboardMarkup): Boolean;
   public
-    /// <summary>ACore — ссылка на ядро, владеющее AApi (удерживается контекстом).</summary>
-    constructor Create(const ACore: IInterface; AApi: TTgApi; const ARaw: ITgRawUpdate;
+    /// <summary>AApiOwner — владелец клиента (удерживается контекстом).</summary>
+    constructor Create(const AApiOwner: ITgApiOwner; const ARaw: ITgRawUpdate;
       const ACancel: ITgCancellation; const AStorage: ITgStateStorage);
     function GetUpdate: ITgUpdate;
     function GetRaw: ITgRawUpdate;
@@ -193,21 +239,12 @@ type
     function GetArgs: string;
     function GetHandled: Boolean;
     procedure SetHandled(AValue: Boolean);
-    /// <summary>Служебное (TTgRouter.ParseCommand по вызову ядра): ключ разобранной команды.</summary>
+    { ITgRoutableContext }
     procedure SetCommand(const AValue: string);
-    /// <summary>Служебное (TTgRouter по вызову ядра): аргументы сработавшего правила.</summary>
     procedure SetArgs(const AValue: string);
-    /// <summary>Поле text сообщения вида message ('' — нет текста или другой вид).</summary>
     function MessageText: string;
-    /// <summary>Вызван Answer (для автоматического ответа на callback_query).</summary>
-    property Answered: Boolean read FAnswered;
+    function GetAnswered: Boolean;
   end;
-
-implementation
-
-uses
-  System.SysUtils,
-  TgBot.Json;
 
 const
   // Виды обновлений, полезная нагрузка которых — сообщение.
@@ -224,12 +261,19 @@ begin
     Result := '';
 end;
 
-constructor TTgContext.Create(const ACore: IInterface; AApi: TTgApi; const ARaw: ITgRawUpdate;
+function TgNewContext(const AApiOwner: ITgApiOwner; const ARaw: ITgRawUpdate;
+  const ACancel: ITgCancellation; const AStorage: ITgStateStorage): ITgRoutableContext;
+begin
+  Result := TTgContext.Create(AApiOwner, ARaw, ACancel, AStorage);
+end;
+
+{ TTgContext }
+
+constructor TTgContext.Create(const AApiOwner: ITgApiOwner; const ARaw: ITgRawUpdate;
   const ACancel: ITgCancellation; const AStorage: ITgStateStorage);
 begin
   inherited Create;
-  FCoreKeepAlive := ACore;
-  FApi := AApi;
+  FApiOwner := AApiOwner;
   FRaw := ARaw;
   FCancel := ACancel;
   FStorage := AStorage;
@@ -291,7 +335,7 @@ end;
 
 function TTgContext.GetApi: TTgApi;
 begin
-  Result := FApi;
+  Result := FApiOwner.Api;
 end;
 
 function TTgContext.GetCancel: ITgCancellation;
@@ -416,6 +460,11 @@ begin
     Result := '';
 end;
 
+function TTgContext.GetAnswered: Boolean;
+begin
+  Result := FAnswered;
+end;
+
 function TTgContext.SendText(const AText, AParseMode: string;
   const AKeyboard: TTgReplyMarkup): ITgMessage;
 var
@@ -439,7 +488,7 @@ begin
     LOptions.ParseMode := AParseMode;
   if not AKeyboard.IsEmpty then
     LOptions.ReplyMarkup := AKeyboard;
-  Result := FApi.SendMessage(LChat, AText, LOptions);
+  Result := FApiOwner.Api.SendMessage(LChat, AText, LOptions);
 end;
 
 function TTgContext.Reply(const AText: string): ITgMessage;
@@ -472,11 +521,11 @@ begin
   // До вызова: при ошибке автоматический ответ не повторяет запрос.
   FAnswered := True;
   if AShowAlert then
-    Result := FApi.AnswerCallbackQuery(LId, AText, True)
+    Result := FApiOwner.Api.AnswerCallbackQuery(LId, AText, True)
   else if AText <> '' then
-    Result := FApi.AnswerCallbackQuery(LId, AText)
+    Result := FApiOwner.Api.AnswerCallbackQuery(LId, AText)
   else
-    Result := FApi.AnswerCallbackQuery(LId);
+    Result := FApiOwner.Api.AnswerCallbackQuery(LId);
 end;
 
 /// <summary>400 «Bad Request: message is not modified…» от edit-метода.</summary>
@@ -501,7 +550,7 @@ begin
   try
     LInlineId := TTgJson.GetStr(FPayload, 'inline_message_id');
     if LInlineId <> '' then
-      Exit(FApi.EditInlineMessageText(LInlineId, AText, LOptions));
+      Exit(FApiOwner.Api.EditInlineMessageText(LInlineId, AText, LOptions));
     LMessage := TTgJson.GetObj(FPayload, 'message');
     LChat := TTgJson.GetObj(LMessage, 'chat');
     if not TTgJson.Has(LChat, 'id') or not TTgJson.Has(LMessage, 'message_id') then
@@ -509,7 +558,7 @@ begin
     LBusiness := TTgJson.GetStr(LMessage, 'business_connection_id');
     if LBusiness <> '' then
       LOptions.BusinessConnectionId := LBusiness;
-    FApi.EditMessageText(TTgChatId.FromId(TTgJson.GetInt64(LChat, 'id')),
+    FApiOwner.Api.EditMessageText(TTgChatId.FromId(TTgJson.GetInt64(LChat, 'id')),
       TTgJson.GetInt64(LMessage, 'message_id'), AText, LOptions);
     Result := True;
   except

@@ -110,10 +110,9 @@ type
   private
     /// <summary>
     ///   Вызов обработчика правила с аргументами AArgs; True — обработано
-    ///   (обработчик не сбросил Handled). ARef — интерфейсная ссылка на
-    ///   AContext, удерживаемая вызывающим.
+    ///   (обработчик не сбросил Handled).
     /// </summary>
-    class function Fire(AContext: TTgContext; const ARef: ITgContext;
+    class function Fire(const AContext: ITgRoutableContext;
       const AHandler: TProc<ITgContext>; const AArgs: string): Boolean; static;
   public
     /// <summary>
@@ -132,13 +131,13 @@ type
     ///   AResolveBotUserName — вызывается только для '/cmd@бот');
     ///   результат — сообщение является такой командой.
     /// </summary>
-    class function ParseCommand(AContext: TTgContext;
+    class function ParseCommand(const AContext: ITgRoutableContext;
       const AResolveBotUserName: TTgBotUserNameResolver): Boolean; static;
     /// <summary>Правила message (итог — AContext.Handled).</summary>
-    class procedure RouteMessage(AContext: TTgContext; const ARoutes: TTgRoutes;
+    class procedure RouteMessage(const AContext: ITgRoutableContext; const ARoutes: TTgRoutes;
       AIsCommand: Boolean); static;
     /// <summary>Правила callback_query.</summary>
-    class procedure RouteCallback(AContext: TTgContext; const ARoutes: TTgRoutes); static;
+    class procedure RouteCallback(const AContext: ITgRoutableContext; const ARoutes: TTgRoutes); static;
   end;
 
 /// <summary>Текст TTgRouterText на текущем языке библиотеки (TgGetLanguage).</summary>
@@ -253,12 +252,12 @@ end;
 
 { TTgRouter }
 
-class function TTgRouter.Fire(AContext: TTgContext; const ARef: ITgContext;
+class function TTgRouter.Fire(const AContext: ITgRoutableContext;
   const AHandler: TProc<ITgContext>; const AArgs: string): Boolean;
 begin
   AContext.SetArgs(AArgs);
   AContext.SetHandled(True);
-  AHandler(ARef);
+  AHandler(AContext);
   Result := AContext.GetHandled;
 end;
 
@@ -272,7 +271,7 @@ begin
   Result := AnsiLowerCase(AText);
 end;
 
-class function TTgRouter.ParseCommand(AContext: TTgContext;
+class function TTgRouter.ParseCommand(const AContext: ITgRoutableContext;
   const AResolveBotUserName: TTgBotUserNameResolver): Boolean;
 var
   LText, LToken, LName, LBot: string;
@@ -308,16 +307,14 @@ begin
   Result := True;
 end;
 
-class procedure TTgRouter.RouteMessage(AContext: TTgContext; const ARoutes: TTgRoutes;
+class procedure TTgRouter.RouteMessage(const AContext: ITgRoutableContext; const ARoutes: TTgRoutes;
   AIsCommand: Boolean);
 var
-  LRef: ITgContext;
   LText, LLower, LCommandArgs, LArgs: string;
   LRoute: TTgRoute;
   LMatch: TTgMatchRoute;
   LFound: Boolean;
 begin
-  LRef := AContext;
   LCommandArgs := AContext.GetArgs;
   if AIsCommand then
   begin
@@ -326,12 +323,12 @@ begin
       if LRoute.Key = AContext.GetCommand then
       begin
         LFound := True;
-        if Fire(AContext, LRef, LRoute.Handler, LCommandArgs) then
+        if Fire(AContext, LRoute.Handler, LCommandArgs) then
           Exit;
         Break;
       end;
     if not LFound and Assigned(ARoutes.UnknownCommand) and
-      Fire(AContext, LRef, ARoutes.UnknownCommand, LCommandArgs) then
+      Fire(AContext, ARoutes.UnknownCommand, LCommandArgs) then
       Exit;
   end;
   LText := AContext.MessageText;
@@ -341,37 +338,35 @@ begin
   for LRoute in ARoutes.Lists[TTgRouteKind.Text] do
     if LRoute.Key = LLower then
     begin
-      if Fire(AContext, LRef, LRoute.Handler, LCommandArgs) then
+      if Fire(AContext, LRoute.Handler, LCommandArgs) then
         Exit;
       Break;
     end;
   for LMatch in ARoutes.Matches do
-    if LMatch.Matcher.TryMatch(LText, LArgs) and Fire(AContext, LRef, LMatch.Handler, LArgs) then
+    if LMatch.Matcher.TryMatch(LText, LArgs) and Fire(AContext, LMatch.Handler, LArgs) then
       Exit;
   if Assigned(ARoutes.AnyText) then
-    Fire(AContext, LRef, ARoutes.AnyText, LCommandArgs);
+    Fire(AContext, ARoutes.AnyText, LCommandArgs);
 end;
 
-class procedure TTgRouter.RouteCallback(AContext: TTgContext; const ARoutes: TTgRoutes);
+class procedure TTgRouter.RouteCallback(const AContext: ITgRoutableContext; const ARoutes: TTgRoutes);
 var
-  LRef: ITgContext;
   LData: string;
   LRoute: TTgRoute;
 begin
-  LRef := AContext;
   LData := AContext.GetData;
   if LData = '' then
     Exit;
   for LRoute in ARoutes.Lists[TTgRouteKind.Callback] do
     if LRoute.Key = LData then
     begin
-      if Fire(AContext, LRef, LRoute.Handler, '') then
+      if Fire(AContext, LRoute.Handler, '') then
         Exit;
       Break;
     end;
   for LRoute in ARoutes.Lists[TTgRouteKind.CallbackPrefix] do
     if (Copy(LData, 1, Length(LRoute.Key)) = LRoute.Key) and
-      Fire(AContext, LRef, LRoute.Handler, Copy(LData, Length(LRoute.Key) + 1, MaxInt)) then
+      Fire(AContext, LRoute.Handler, Copy(LData, Length(LRoute.Key) + 1, MaxInt)) then
       Exit;
 end;
 
