@@ -20,7 +20,6 @@ interface
 
 uses
   System.SysUtils,
-  System.Classes,
   System.Generics.Collections,
   System.JSON,
   TgBot.Base,
