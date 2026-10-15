@@ -58,10 +58,8 @@ $Script:SumsName = 'SHA256SUMS.txt'
 $Script:SkipDirs = @('Bin', 'Dcu', 'Lib', 'Dist', '__history', '__recovery', 'Win32', 'Win64', 'Linux64',
     'Android', 'Android64', 'Debug', 'Release', 'Out')
 
-# Файлы, которые сознательно не входят в дистрибутив.
-$Script:Excluded = @{
-    'Source\TgBot.Api.pas' = 'устаревший ручной клиент фазы 1, в пакеты не входит, никем не используется'
-}
+# Файлы, которые сознательно не входят в дистрибутив (формат: 'Source\Файл.pas' = 'причина').
+$Script:Excluded = @{}
 
 function Write-Step {
     param([string]$Message)
