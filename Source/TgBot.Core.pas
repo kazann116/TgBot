@@ -94,12 +94,13 @@ type
     FTransport: ITgTransport;
     FOwnsTransport: Boolean;
     FSettings: TTgHttpSettings;
-    FCancelSource: TTgCancellationSource;
-    FCancelToken: ITgCancellation;
+    // Источник токена клиента: отменяется в Shutdown, наружу — как ITgCancellation.
+    FCancel: ITgCancellationSource;
     FGate: ITgAsyncGate;
     FPool: TThreadPool;
     FShutdownTimeoutMs: Cardinal;
     function GetThreadPool: TThreadPool;
+    function GetCancelToken: ITgCancellation;
     /// <summary>Коробка владения параметрами; при ошибке создания AParams освобождается.</summary>
     class function NewParamsBox(AParams: TTgParams): ITgParamsBox; static;
     /// <summary>Новый открытый шлюз Async-вызовов.</summary>
@@ -193,11 +194,12 @@ type
     property OwnsTransport: Boolean read FOwnsTransport;
     /// <summary>
     ///   Настройки HTTP-транспорта (содержат токен). Для внешнего транспорта,
-    ///   не являющегося TTgHttpTransport, — пустая запись.
+    ///   не являющегося TTgHttpTransport (без ITgHttpSettingsProvider), —
+    ///   пустая запись.
     /// </summary>
     property Settings: TTgHttpSettings read FSettings;
     /// <summary>Токен клиента: отменяется в начале деструктора.</summary>
-    property CancelToken: ITgCancellation read FCancelToken;
+    property CancelToken: ITgCancellation read GetCancelToken;
     /// <summary>Пул потоков Async: пул пользователя или общий пул библиотеки.</summary>
     property ThreadPool: TThreadPool read GetThreadPool;
     /// <summary>
@@ -401,7 +403,7 @@ end;
 
 constructor TTgApiCore.Create(const ATransport: ITgTransport; APool: TThreadPool);
 var
-  LObject: TObject;
+  LProvider: ITgHttpSettingsProvider;
 begin
   inherited Create;
   if not Assigned(ATransport) then
@@ -409,12 +411,11 @@ begin
   FTransport := ATransport;
   FPool := APool;
   FShutdownTimeoutMs := TgDefaultShutdownTimeoutMs;
-  FCancelSource := TTgCancellationSource.Create;
-  FCancelToken := FCancelSource;
+  FCancel := TTgCancellationSource.New;
   FGate := NewAsyncGate;
-  LObject := ATransport as TObject;
-  if LObject is TTgHttpTransport then
-    FSettings := TTgHttpTransport(LObject).Settings;
+  // Настройки есть только у HTTP-транспорта библиотеки; у чужого — пустая запись.
+  if Supports(ATransport, ITgHttpSettingsProvider, LProvider) then
+    FSettings := LProvider.GetSettings;
 end;
 
 procedure TTgApiCore.Shutdown;
@@ -424,8 +425,8 @@ begin
     FGate.Close;
   // 2. Прерываем вызовы этого клиента. Транспорт (в т.ч. общий) не отменяем:
   //    другие клиенты на нём продолжают работать.
-  if Assigned(FCancelSource) then
-    FCancelSource.Cancel;
+  if Assigned(FCancel) then
+    FCancel.Cancel;
 end;
 
 destructor TTgApiCore.Destroy;
@@ -439,8 +440,7 @@ begin
   FGate := nil;
   FTransport := nil;
   // Источник живёт, пока на токен ссылаются незавершённые задачи.
-  FCancelSource := nil;
-  FCancelToken := nil;
+  FCancel := nil;
   inherited Destroy;
 end;
 
@@ -454,6 +454,11 @@ begin
   Result := FPool;
   if not Assigned(Result) then
     Result := TgBotThreadPool;
+end;
+
+function TTgApiCore.GetCancelToken: ITgCancellation;
+begin
+  Result := FCancel;
 end;
 
 function TTgApiCore.Call(const AMethod: string; AParams: TTgParams): TJSONValue;
@@ -471,7 +476,7 @@ var
 begin
   // Локальные копии: после вызова транспорта поля клиента не читаются.
   LTransport := FTransport;
-  LToken := TTgCancellationSource.Linked(ACancel, FCancelToken);
+  LToken := TTgCancellationSource.Linked(ACancel, FCancel);
   // Клиент закрыт (Shutdown) или токен уже отменён — транспорт не вызывается.
   LToken.ThrowIfCancelled;
   if Supports(LTransport, ITgCancellableTransport, LCancellable) then
@@ -516,7 +521,7 @@ var
   LScope: TTgCancelScope;
 begin
   LTransport := FTransport;
-  LToken := TTgCancellationSource.Linked(ACancel, FCancelToken);
+  LToken := TTgCancellationSource.Linked(ACancel, FCancel);
   LToken.ThrowIfCancelled;
   if Supports(LTransport, ITgCancellableTransport, LCancellable) then
   begin
@@ -573,7 +578,7 @@ var
 begin
   // Задача захватывает шлюз и токен, но не Self: клиент может быть уже уничтожен.
   LGate := FGate;
-  LToken := FCancelToken;
+  LToken := FCancel;
   Result := TTask.Run(
     procedure
     var

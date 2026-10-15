@@ -169,8 +169,7 @@ type
     FWorkers: Integer;
     FAllExited: TEvent;
     FIdle: TEvent;
-    FCancelSource: TTgCancellationSource;
-    FCancel: ITgCancellation;
+    FCancel: ITgCancellationSource;
     FDelivery: TTgDelivery;
     FHandler: TTgRawHandler;
     FOnError: TTgRawErrorHandler;
@@ -388,8 +387,7 @@ begin
   FReady := TQueue<TTgLane>.Create;
   FAllExited := TEvent.Create(nil, True, True, '');
   FIdle := TEvent.Create(nil, True, True, '');
-  FCancelSource := TTgCancellationSource.Create;
-  FCancel := FCancelSource;
+  FCancel := TTgCancellationSource.New;
   FCapacity := Max(ADispatcher.FQueueCapacity, 1);
   FDelivery := ADispatcher.FDelivery;
   FHandler := ADispatcher.FHandler;
@@ -649,7 +647,7 @@ begin
   finally
     TMonitor.Exit(FLock);
   end;
-  FCancelSource.Cancel;
+  FCancel.Cancel;
 end;
 
 function TTgDispatchCore.Stopping: Boolean;

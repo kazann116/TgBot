@@ -276,11 +276,9 @@ type
     FDone: TEvent;
     FTransport: ITgTransport;
     // Отмена setWebhook/deleteWebhook (по истечении бюджета Stop, Free клиента).
-    FCallSource: TTgCancellationSource;
-    FCallToken: ITgCancellation;
+    FCallCancel: ITgCancellationSource;
     // Отмена ожидания места в очереди (сразу при Stop).
-    FPostSource: TTgCancellationSource;
-    FPostToken: ITgCancellation;
+    FPostCancel: ITgCancellationSource;
     FSink: ITgUpdateSink;
     // Настройки (неизменны после создания).
     FUrl: string;
@@ -364,10 +362,8 @@ begin
   FWake := TEvent.Create(nil, False, False, '');
   FDone := TEvent.Create(nil, True, False, '');
   FTransport := ASource.FTransport;
-  FCallSource := TTgCancellationSource.Create(ASource.FParentCancel);
-  FCallToken := FCallSource;
-  FPostSource := TTgCancellationSource.Create(ASource.FParentCancel);
-  FPostToken := FPostSource;
+  FCallCancel := TTgCancellationSource.New(ASource.FParentCancel);
+  FPostCancel := TTgCancellationSource.New(ASource.FParentCancel);
   FSink := ASink;
   FUrl := Trim(ASource.FUrl);
   FSecret := ASource.FSecretToken;
@@ -390,8 +386,8 @@ begin
   FreeAndNil(FDone);
   FreeAndNil(FWake);
   FreeAndNil(FLock);
-  FCallToken := nil;
-  FPostToken := nil;
+  FCallCancel := nil;
+  FPostCancel := nil;
   inherited Destroy;
 end;
 
@@ -424,7 +420,7 @@ begin
       LParams.Add('drop_pending_updates', True);
     if FSecret <> '' then
       LParams.Add('secret_token', FSecret);
-    TgCallTransport(FTransport, 'setWebhook', LParams, FCallToken).Free;
+    TgCallTransport(FTransport, 'setWebhook', LParams, FCallCancel).Free;
   finally
     LParams.Free;
   end;
@@ -436,7 +432,7 @@ var
 begin
   LParams := TTgParams.Create;
   try
-    TgCallTransport(FTransport, 'deleteWebhook', LParams, FCallToken).Free;
+    TgCallTransport(FTransport, 'deleteWebhook', LParams, FCallCancel).Free;
   finally
     LParams.Free;
   end;
@@ -491,7 +487,7 @@ begin
       finally
         FLock.Leave;
       end;
-      if LDelete and not FCallToken.IsCancelled then
+      if LDelete and not FCallCancel.IsCancelled then
         try
           DeleteWebhook;
         except
@@ -530,13 +526,13 @@ begin
     FLock.Leave;
   end;
   // Accept, ждущие места в очереди, освобождаются сразу.
-  FPostSource.Cancel;
+  FPostCancel.Cancel;
   FWake.SetEvent;
 end;
 
 procedure TTgWebhookCore.CancelCalls;
 begin
-  FCallSource.Cancel;
+  FCallCancel.Cancel;
   FWake.SetEvent;
 end;
 
@@ -585,9 +581,9 @@ begin
     Exit(False);
   // Поток HTTP-сервера не висит на полной очереди: ждём не дольше PostTimeoutMs.
   if Supports(LSink, ITgTimedUpdateSink, LTimed) then
-    Result := LTimed.TryPost(AUpdate, FPostToken, FPostTimeoutMs)
+    Result := LTimed.TryPost(AUpdate, FPostCancel, FPostTimeoutMs)
   else
-    Result := LSink.Post(AUpdate, FPostToken);
+    Result := LSink.Post(AUpdate, FPostCancel);
 end;
 
 function TTgWebhookCore.GetMaxBodySize: Integer;
