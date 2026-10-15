@@ -188,29 +188,8 @@ type
 implementation
 
 uses
-  System.Math;
-
-type
-  TJsonText = (NotInteger, IntegerRange, NotFloat, FloatInvalid);
-
-const
-  CJsonTexts: array[TTgLanguage, TJsonText] of string = (
-    ('Поле «%s»: значение %s не является целым числом в диапазоне Int64',
-     'Поле «%s»: значение %s вне диапазона Integer',
-     'Поле «%s»: значение %s не представимо вещественным числом',
-     'Параметр «%s»: недопустимое вещественное значение (NaN или бесконечность)'),
-    ('Field "%s": value %s is not an integer within the Int64 range',
-     'Field "%s": value %s is out of the Integer range',
-     'Field "%s": value %s cannot be represented as a floating-point number',
-     'Parameter "%s": invalid floating-point value (NaN or infinity)'));
-
-function JsonError(AText: TJsonText; const AName, AValue: string): ETgError;
-begin
-  if AText = TJsonText.FloatInvalid then
-    Result := ETgError.Create(Format(CJsonTexts[TgGetLanguage, AText], [AName]))
-  else
-    Result := ETgError.Create(Format(CJsonTexts[TgGetLanguage, AText], [AName, AValue]));
-end;
+  System.Math,
+  TgBot.Consts;
 
 { TTgJson }
 
@@ -274,7 +253,8 @@ begin
   begin
     LText := AValue.ToJSON;
     if not TryStrToInt64(LText, Result) then
-      raise JsonError(TJsonText.NotInteger, AName, LText);
+      raise ETgError.Create(TgLangTextFmt(@SRuJsonNotInteger, @SEnJsonNotInteger,
+        [AName, LText]));
   end
   else if not ((AValue is TJSONString) and TryStrToInt64(AValue.Value, Result)) then
     Result := ADefault;
@@ -287,7 +267,8 @@ var
 begin
   LValue := ToInt64(AValue, AName, ADefault);
   if (LValue < Low(Integer)) or (LValue > High(Integer)) then
-    raise JsonError(TJsonText.IntegerRange, AName, IntToStr(LValue));
+    raise ETgError.Create(TgLangTextFmt(@SRuJsonIntegerRange, @SEnJsonIntegerRange,
+      [AName, IntToStr(LValue)]));
   Result := Integer(LValue);
 end;
 
@@ -301,7 +282,8 @@ begin
   LText := AValue.ToJSON;
   if not TryStrToFloat(LText, Result, TFormatSettings.Invariant) or IsNan(Result) or
     IsInfinite(Result) then
-    raise JsonError(TJsonText.NotFloat, AName, LText);
+    raise ETgError.Create(TgLangTextFmt(@SRuJsonNotFloat, @SEnJsonNotFloat,
+      [AName, LText]));
 end;
 
 class function TTgJson.FloatNumber(AValue: Double; const AName: string): TJSONNumber;
@@ -310,7 +292,8 @@ var
   LBack: Double;
 begin
   if IsNan(AValue) or IsInfinite(AValue) then
-    raise JsonError(TJsonText.FloatInvalid, AName, '');
+    raise ETgError.Create(TgLangTextFmt(@SRuJsonFloatInvalid, @SEnJsonFloatInvalid,
+      [AName]));
   // Кратчайшая запись (15 знаков), если она восстанавливает значение точно,
   // иначе 17 знаков. Инвариантная локаль: разделитель всегда '.'.
   LText := FloatToStrF(AValue, ffGeneral, 15, 0, TFormatSettings.Invariant);

@@ -88,6 +88,31 @@ resourcestring
   SRuArgOutOfRange = 'Параметр %s = %d вне допустимого диапазона (минимум %d)';
   SEnArgOutOfRange = 'Parameter %s = %d is out of range (minimum %d)';
 
+  { JSON: чтение чисел и запись параметров (TTgJson, TgBot.Json).
+    Подстановки: имя поля/параметра, затем JSON-текст значения. }
+
+  SRuJsonNotInteger = 'Поле «%s»: значение %s не является целым числом в диапазоне Int64';
+  SEnJsonNotInteger = 'Field "%s": value %s is not an integer within the Int64 range';
+  SRuJsonIntegerRange = 'Поле «%s»: значение %s вне диапазона Integer';
+  SEnJsonIntegerRange = 'Field "%s": value %s is out of the Integer range';
+  SRuJsonNotFloat = 'Поле «%s»: значение %s не представимо вещественным числом';
+  SEnJsonNotFloat = 'Field "%s": value %s cannot be represented as a floating-point number';
+  SRuJsonFloatInvalid = 'Параметр «%s»: недопустимое вещественное значение (NaN или бесконечность)';
+  SEnJsonFloatInvalid = 'Parameter "%s": invalid floating-point value (NaN or infinity)';
+
+  { DTO: объекты поверх JSON и сериализация (TgBot.Dto) }
+
+  SRuDtoNotObject = 'Значение не является JSON-объектом (поле %s)';
+  SEnDtoNotObject = 'The value is not a JSON object (field %s)';
+  SRuDtoFileUpload = 'Поле %s: загрузка файла невозможна вне параметров метода';
+  SEnDtoFileUpload = 'Field %s: file upload is not possible outside method parameters';
+  SRuDtoUnsupported = 'Объект типа %s не поддерживает сериализацию';
+  SEnDtoUnsupported = 'Object of type %s does not support serialization';
+  SRuDtoEmptyItem = 'Элемент %d массива «%s» не задан (nil или пустое объединение)';
+  SEnDtoEmptyItem = 'Item %d of array "%s" is not set (nil or empty union)';
+  SRuDtoNotJsonDto = 'Объект типа %s не является DTO поверх JSON (ITgJsonObject)';
+  SEnDtoNotJsonDto = 'Object of type %s is not a JSON-based DTO (ITgJsonObject)';
+
 implementation
 
 end.
