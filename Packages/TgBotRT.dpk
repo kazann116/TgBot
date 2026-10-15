@@ -29,6 +29,8 @@ contains
   TgBot.Keyboards in '..\Source\TgBot.Keyboards.pas',
   TgBot.Context in '..\Source\TgBot.Context.pas',
   TgBot.Router in '..\Source\TgBot.Router.pas',
+  TgBot.Bot.Core in '..\Source\TgBot.Bot.Core.pas',
+  TgBot.Bot in '..\Source\TgBot.Bot.pas',
   TgBot in '..\Source\TgBot.pas',
   TgBot.Component in '..\Source\TgBot.Component.pas';
 
