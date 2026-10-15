@@ -42,8 +42,9 @@ type
   ///   Ядро TTgBot со счётчиком ссылок (создаёт TgCreateBotCore): владеет
   ///   клиентом (TTgApi), хранилищем состояния, обработчиками, правилами
   ///   маршрутизатора, AutoAnswerCallbacks и состоянием бота (TTgBotState).
-  ///   Держат его TTgBot, замыкания диспетчера/источника и каждый
-  ///   TTgContext; само ядро ни на кого из них не ссылается (нет циклов).
+  ///   Держат его TTgBot, замыкания диспетчера/источника, каждый
+  ///   TTgContext и замыкание фоновой подготовки запуска (до её
+  ///   завершения); само ядро ни на кого из них не ссылается (нет циклов).
   ///   Поля — под внутренней блокировкой; обработчики вызываются со снимка
   ///   вне блокировки. Сеттеры освобождают прежнее значение (замыкание,
   ///   хранилище, массив правил) вне блокировки.
@@ -161,6 +162,16 @@ function TgCreateBotCore(AApi: TTgApi): ITgBotCore;
 /// </summary>
 function TgInFaultNotify: Boolean;
 
+{$IFDEF TGBOT_TESTHOOKS}
+/// <summary>
+///   Только для тестов (символ TGBOT_TESTHOOKS; в пакетах и приложениях не
+///   определяется): число живых экземпляров ядра.
+/// </summary>
+function TgTestLiveBotCores: Integer;
+/// <summary>Только для тестов: число живых задач фоновой подготовки запуска.</summary>
+function TgTestLiveStartJobs: Integer;
+{$ENDIF}
+
 { Фабрики обработчиков. Отдельные функции: замыкание захватывает только
   интерфейс ядра (без кадра вызывающего метода и Self бота). }
 
@@ -197,31 +208,64 @@ uses
 type
   /// <summary>
   ///   Фоновая подготовка запуска (getMe и setMyCommands в TgBotThreadPool):
-  ///   Start не ждёт сеть. Done выставляется по завершении задачи; CancelSource
-  ///   отменяет её запросы (Stop по истечении ожидания, Free бота — через
-  ///   отмену клиента, с которой токен связан).
+  ///   Start не ждёт сеть. Живёт по счётчику ссылок; держат её ядро (текущая
+  ///   задача), замыкание пула (NewStartJobProc) и ждущие её Stop/обработчики.
+  ///   Сама задача не ссылается ни на ядро, ни на бота.
   /// </summary>
-  TTgStartJob = class(TInterfacedObject)
+  ITgStartJob = interface
+    ['{AB0FB763-FF8C-477D-8759-D16BFFCF9674}']
+    /// <summary>
+    ///   Токен задачи: окружающий токен её запросов. Связан с токеном
+    ///   клиента — Free бота (Api.Shutdown) отменяет и задачу.
+    /// </summary>
+    function GetToken: ITgCancellation;
+    /// <summary>Отменяет запросы задачи (Stop по истечении ожидания).</summary>
+    procedure Cancel;
+    /// <summary>
+    ///   getMe завершён (успешно или нет). Выставляется до OnError задачи:
+    ///   обработчик '/cmd@бот' в главном потоке не ждёт OnError с
+    ///   TThread.Synchronize.
+    /// </summary>
+    procedure NameResolved;
+    /// <summary>Задача завершена: выставляет и NameResolved. Идемпотентно.</summary>
+    procedure Finish;
+    /// <summary>Ждёт NameResolved не дольше AMs; True — дождался.</summary>
+    function WaitName(AMs: Cardinal): Boolean;
+    /// <summary>
+    ///   Ждёт Finish не дольше AMs; APump (только главный поток) — ожидание с
+    ///   CheckSynchronize, чтобы TThread.Synchronize в OnError задачи не зависал.
+    /// </summary>
+    function WaitDone(AMs: Cardinal; APump: Boolean): Boolean;
+    property Token: ITgCancellation read GetToken;
+  end;
+
+  /// <summary>Реализация ITgStartJob (описание — у интерфейса).</summary>
+  TTgStartJob = class(TInterfacedObject, ITgStartJob)
   private
+    // Ручной сброс: ждать могут Stop и несколько обработчиков сразу.
     FDone: TEvent;
-    // getMe завершён (успешно или нет) — до вызова OnError задачи: обработчик
-    // '/cmd@бот' в главном потоке не ждёт OnError с TThread.Synchronize.
     FNameDone: TEvent;
-    FCancelSource: TTgCancellationSource;
-    FCancel: ITgCancellation;
+    FCancel: ITgCancellationSource;
   public
     constructor Create(const AParent: ITgCancellation);
     destructor Destroy; override;
-    /// <summary>
-    ///   Ждёт завершения не дольше AMs; APump (только главный поток) —
-    ///   ожидание с CheckSynchronize, чтобы TThread.Synchronize в OnError
-    ///   задачи не зависал.
-    /// </summary>
+    { ITgStartJob }
+    function GetToken: ITgCancellation;
+    procedure Cancel;
+    procedure NameResolved;
+    procedure Finish;
+    function WaitName(AMs: Cardinal): Boolean;
     function WaitDone(AMs: Cardinal; APump: Boolean): Boolean;
-    property Done: TEvent read FDone;
-    property NameDone: TEvent read FNameDone;
-    property CancelSource: TTgCancellationSource read FCancelSource;
-    property Cancel: ITgCancellation read FCancel;
+  end;
+
+  /// <summary>
+  ///   Исполнитель задачи подготовки (реализует ядро). Замыкание пула держит
+  ///   ядро только через этот интерфейс — без Self и кадра BeginStartJob.
+  /// </summary>
+  ITgStartJobRunner = interface
+    ['{C106818E-C890-4C64-A1CE-EC65FF517AD7}']
+    /// <summary>Тело задачи AJob (поток пула): getMe, затем меню AMenu.</summary>
+    procedure RunStartJob(const AJob: ITgStartJob; const AMenu: TArray<ITgBotCommand>);
   end;
 
   /// <summary>
@@ -253,8 +297,16 @@ type
       const ACancel: ITgCancellation);
   end;
 
-  /// <summary>Реализация ITgBotCore (описание — у интерфейса). Поля под FLock.</summary>
-  TTgBotCore = class(TInterfacedObject, ITgBotCore)
+  /// <summary>
+  ///   Реализация ITgBotCore (описание — у интерфейса). Поля под FLock.
+  ///   Владение задачей подготовки — однонаправленное: ядро держит задачу
+  ///   (FStartJob), замыкание пула держит ядро (ITgStartJobRunner) и задачу,
+  ///   задача не держит никого — цикла нет. Пока задача выполняется, ядро
+  ///   живо; после Free бота с отпущенной задачей (Stop = False) последняя
+  ///   ссылка на ядро — у замыкания, и ядро (с клиентом) освобождается в
+  ///   потоке пула по завершении задачи.
+  /// </summary>
+  TTgBotCore = class(TInterfacedObject, ITgBotCore, ITgStartJobRunner)
   private
     FLock: TCriticalSection;
     FApi: TTgApi;
@@ -273,9 +325,8 @@ type
     FGeneration: Integer;
     FRoutes: TTgRoutes;
     FBotUserName: string;
-    // Фоновая подготовка текущего запуска (nil — нет); FStartJobRef удерживает.
-    FStartJob: TTgStartJob;
-    FStartJobRef: IInterface;
+    // Фоновая подготовка текущего запуска (nil — нет).
+    FStartJob: ITgStartJob;
     procedure SetBotUserName(const AValue: string);
     /// <summary>
     ///   username бота; '' — ждёт фоновую подготовку запуска (её getMe), затем
@@ -283,16 +334,16 @@ type
     ///   ACancel — токен обработчика: его отмена прерывает ожидание.
     /// </summary>
     function ResolveBotUserName(const ACancel: ITgCancellation): string;
-    /// <summary>Снимок текущей задачи подготовки (AJobRef удерживает её).</summary>
-    function CurrentStartJob(out AJobRef: IInterface): TTgStartJob;
-    /// <summary>Тело задачи подготовки (поток пула): getMe, затем меню AMenu.</summary>
-    procedure RunStartJob(AJob: TTgStartJob; const AMenu: TArray<ITgBotCommand>);
+    /// <summary>Снимок текущей задачи подготовки (под блокировкой; nil — нет).</summary>
+    function CurrentStartJob: ITgStartJob;
+    /// <summary>ITgStartJobRunner: тело задачи подготовки (поток пула).</summary>
+    procedure RunStartJob(const AJob: ITgStartJob; const AMenu: TArray<ITgBotCommand>);
     /// <summary>
     ///   Задача подготовки ещё актуальна: не отменена, бот не отсоединён и
     ///   не Faulted. После отказа задача не шлёт новых запросов и не
     ///   сообщает ошибки.
     /// </summary>
-    function StartJobActive(AJob: TTgStartJob): Boolean;
+    function StartJobActive(const AJob: ITgStartJob): Boolean;
   public
     /// <summary>
     ///   AApi переходит во владение ядра. Присваивается последним: если
@@ -354,6 +405,22 @@ function TgInFaultNotify: Boolean;
 begin
   Result := GTgInFaultNotify;
 end;
+
+{$IFDEF TGBOT_TESTHOOKS}
+var
+  GTgLiveBotCores: Integer;
+  GTgLiveStartJobs: Integer;
+
+function TgTestLiveBotCores: Integer;
+begin
+  Result := AtomicCmpExchange(GTgLiveBotCores, 0, 0);
+end;
+
+function TgTestLiveStartJobs: Integer;
+begin
+  Result := AtomicCmpExchange(GTgLiveStartJobs, 0, 0);
+end;
+{$ENDIF}
 
 { TTgWebhookNotifyTransport }
 
@@ -473,20 +540,49 @@ end;
 constructor TTgStartJob.Create(const AParent: ITgCancellation);
 begin
   inherited Create;
-  // Ручной сброс: ждать могут Stop и несколько обработчиков сразу.
+{$IFDEF TGBOT_TESTHOOKS}
+  AtomicIncrement(GTgLiveStartJobs);
+{$ENDIF}
   FDone := TEvent.Create(nil, True, False, '');
   FNameDone := TEvent.Create(nil, True, False, '');
-  FCancelSource := TTgCancellationSource.Create(AParent);
-  FCancel := FCancelSource;
+  FCancel := TTgCancellationSource.New(AParent);
 end;
 
 destructor TTgStartJob.Destroy;
 begin
-  FCancelSource := nil;
   FCancel := nil;
   FreeAndNil(FNameDone);
   FreeAndNil(FDone);
+{$IFDEF TGBOT_TESTHOOKS}
+  AtomicDecrement(GTgLiveStartJobs);
+{$ENDIF}
   inherited Destroy;
+end;
+
+function TTgStartJob.GetToken: ITgCancellation;
+begin
+  Result := FCancel;
+end;
+
+procedure TTgStartJob.Cancel;
+begin
+  FCancel.Cancel;
+end;
+
+procedure TTgStartJob.NameResolved;
+begin
+  FNameDone.SetEvent;
+end;
+
+procedure TTgStartJob.Finish;
+begin
+  FNameDone.SetEvent;
+  FDone.SetEvent;
+end;
+
+function TTgStartJob.WaitName(AMs: Cardinal): Boolean;
+begin
+  Result := FNameDone.WaitFor(AMs) = wrSignaled;
 end;
 
 function TTgStartJob.WaitDone(AMs: Cardinal; APump: Boolean): Boolean;
@@ -507,11 +603,35 @@ begin
   until False;
 end;
 
+/// <summary>
+///   Замыкание задачи подготовки для пула: ARunner.RunStartJob(AJob, AMenu),
+///   затем AJob.Finish (и при исключении). Отдельная функция: замыкание
+///   захватывает только интерфейсы ARunner и AJob и массив AMenu (его не
+///   меняют) — без Self ядра и кадра BeginStartJob. Держит ядро до своего
+///   освобождения пулом; задача ядро не держит (цикла нет).
+/// </summary>
+function NewStartJobProc(const ARunner: ITgStartJobRunner; const AJob: ITgStartJob;
+  const AMenu: TArray<ITgBotCommand>): TProc;
+begin
+  Result :=
+    procedure
+    begin
+      try
+        ARunner.RunStartJob(AJob, AMenu);
+      finally
+        AJob.Finish;
+      end;
+    end;
+end;
+
 { TTgBotCore }
 
 constructor TTgBotCore.Create(AApi: TTgApi);
 begin
   inherited Create;
+{$IFDEF TGBOT_TESTHOOKS}
+  AtomicIncrement(GTgLiveBotCores);
+{$ENDIF}
   FLock := TCriticalSection.Create;
   FStateStorage := TTgMemoryStateStorage.Create;
   FAutoAnswerCallbacks := True;
@@ -530,12 +650,16 @@ begin
   FOnWebhookRegistered := nil;
   FRoutes := Default(TTgRoutes);
   FStateStorage := nil;
-  // До клиента: токен задачи связан с токеном отмены клиента.
+  // До клиента: токен задачи связан с токеном отмены клиента. Деструктор
+  // может выполняться в потоке пула (последнюю ссылку отпустило замыкание
+  // задачи после Free бота) — задача к этому моменту завершена.
   FStartJob := nil;
-  FStartJobRef := nil;
   // Последняя ссылка на ядро: никто больше не обращается к клиенту.
   FreeAndNil(FApi);
   FreeAndNil(FLock);
+{$IFDEF TGBOT_TESTHOOKS}
+  AtomicDecrement(GTgLiveBotCores);
+{$ENDIF}
   inherited Destroy;
 end;
 
@@ -1088,12 +1212,11 @@ begin
   end;
 end;
 
-function TTgBotCore.CurrentStartJob(out AJobRef: IInterface): TTgStartJob;
+function TTgBotCore.CurrentStartJob: ITgStartJob;
 begin
   FLock.Enter;
   try
     Result := FStartJob;
-    AJobRef := FStartJobRef;
   finally
     FLock.Leave;
   end;
@@ -1103,8 +1226,7 @@ function TTgBotCore.ResolveBotUserName(const ACancel: ITgCancellation): string;
 var
   LUser: ITgUser;
   LError: TTgErrorInfo;
-  LJob: TTgStartJob;
-  LJobRef: IInterface;
+  LJob: ITgStartJob;
 begin
   Result := GetBotUserName;
   if Result <> '' then
@@ -1112,10 +1234,10 @@ begin
   // getMe фоновой подготовки ещё идёт: ждём его, а не шлём второй запрос.
   // Без подкачки очереди: обработчик может выполняться в главном потоке
   // (Delivery = Main), вложенный CheckSynchronize нарушил бы порядок.
-  // Ждём только getMe (NameDone), не OnError и не setMyCommands.
-  LJob := CurrentStartJob(LJobRef);
+  // Ждём только getMe (NameResolved), не OnError и не setMyCommands.
+  LJob := CurrentStartJob;
   if Assigned(LJob) then
-    while LJob.NameDone.WaitFor(50) <> wrSignaled do
+    while not LJob.WaitName(50) do
       if Detached or (Assigned(ACancel) and ACancel.IsCancelled) then
         Exit;
   Result := GetBotUserName;
@@ -1138,9 +1260,9 @@ begin
     (ETgApiError(AError).ErrorCode = 404));
 end;
 
-function TTgBotCore.StartJobActive(AJob: TTgStartJob): Boolean;
+function TTgBotCore.StartJobActive(const AJob: ITgStartJob): Boolean;
 begin
-  if AJob.Cancel.IsCancelled then
+  if AJob.Token.IsCancelled then
     Exit(False);
   FLock.Enter;
   try
@@ -1153,7 +1275,7 @@ begin
   end;
 end;
 
-procedure TTgBotCore.RunStartJob(AJob: TTgStartJob; const AMenu: TArray<ITgBotCommand>);
+procedure TTgBotCore.RunStartJob(const AJob: ITgStartJob; const AMenu: TArray<ITgBotCommand>);
 var
   LScope: TTgCancelScope;
   LError: Exception;
@@ -1161,7 +1283,7 @@ var
 begin
   LTokenFailed := False;
   // Токен задачи — окружающий: Stop/Free прерывают зависшие запросы.
-  LScope := TTgCancelScope.Enter(AJob.Cancel);
+  LScope := TTgCancelScope.Enter(AJob.Token);
   try
     // Один раз за жизнь бота: username не меняется (кэш переживает Stop/Start).
     if (GetBotUserName = '') and StartJobActive(AJob) then
@@ -1170,14 +1292,14 @@ begin
       try
         SetBotUserName(FApi.GetMe.Username);
       except
-        // Исключение забирается: OnError — после NameDone (см. TTgStartJob).
+        // Исключение забирается: OnError — после NameResolved (см. ITgStartJob).
         on E: Exception do
           if IsTokenFailure(E) then
             LTokenFailed := True
           else if StartJobActive(AJob) then
             LError := Exception(AcquireExceptionObject);
       end;
-      AJob.NameDone.SetEvent;
+      AJob.NameResolved;
       if Assigned(LError) then
         try
           // Пока шёл перенос, бот мог перейти в Faulted или остановиться.
@@ -1187,7 +1309,7 @@ begin
           LError.Free;
         end;
     end;
-    AJob.NameDone.SetEvent;
+    AJob.NameResolved;
     // Неверный токен — меню бессмысленно; после отказа/Stop — тоже.
     if (Length(AMenu) > 0) and not LTokenFailed and StartJobActive(AJob) then
       try
@@ -1207,9 +1329,7 @@ var
   LRoutes: TTgRoutes;
   LRoute: TTgRoute;
   LMenu: TArray<ITgBotCommand>;
-  LJob: TTgStartJob;
-  LJobRef, LOldRef, LCoreRef: IInterface;
-  LSelf: TTgBotCore;
+  LJob, LOld: ITgStartJob;
 begin
   LRoutes := GetRoutes;
   // Без команд getMe не нужен; команды, добавленные на ходу, получат
@@ -1224,60 +1344,44 @@ begin
   if (GetBotUserName <> '') and (Length(LMenu) = 0) then
     Exit;
   LJob := TTgStartJob.Create(FApi.CancelToken);
-  LJobRef := LJob;
   FLock.Enter;
   try
-    LOldRef := FStartJobRef;
+    // Прежняя задача (если Stop её не снял) отпускается при выходе — вне блокировки.
+    LOld := FStartJob;
     FStartJob := LJob;
-    FStartJobRef := LJobRef;
   finally
     FLock.Leave;
   end;
-  // Задача удерживает ядро (клиент) и себя до завершения.
-  LCoreRef := Self;
-  LSelf := Self;
+  // Замыкание удерживает ядро (клиент) и задачу до своего завершения.
   try
-    TTask.Run(
-      procedure
-      begin
-        try
-          if Assigned(LCoreRef) and Assigned(LJobRef) then
-            LSelf.RunStartJob(LJob, LMenu);
-        finally
-          LJob.NameDone.SetEvent;
-          LJob.Done.SetEvent;
-        end;
-      end, TgBotThreadPool);
+    TTask.Run(NewStartJobProc(Self, LJob, LMenu), TgBotThreadPool);
   except
-    LJob.NameDone.SetEvent;
-    LJob.Done.SetEvent;
+    LJob.Finish;
     raise;
   end;
 end;
 
 function TTgBotCore.FinishStartJob(AWaitMs: Cardinal): Boolean;
 var
-  LJob: TTgStartJob;
-  LJobRef: IInterface;
+  LJob: ITgStartJob;
   LPump: Boolean;
 begin
-  LJob := CurrentStartJob(LJobRef);
+  LJob := CurrentStartJob;
   if not Assigned(LJob) then
     Exit(True);
   LPump := TThread.CurrentThread.ThreadID = MainThreadID;
   Result := LJob.WaitDone(AWaitMs, LPump);
   if not Result then
   begin
-    LJob.CancelSource.Cancel;
+    LJob.Cancel;
     Result := LJob.WaitDone(100, LPump);
   end;
   FLock.Enter;
   try
+    // Перезапуск мог заместить задачу: снимаем только ту, которую ждали.
+    // LJob удерживает её — освобождение при выходе, вне блокировки.
     if FStartJob = LJob then
-    begin
       FStartJob := nil;
-      FStartJobRef := nil;
-    end;
   finally
     FLock.Leave;
   end;

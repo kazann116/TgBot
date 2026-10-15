@@ -9,6 +9,9 @@
   выводятся отчётом менеджера памяти при завершении (Windows).
 
   Сборка (из папки Tests): dcc64 -B -U..\Source TgBotTests.dpr
+  С -DTGBOT_TESTHOOKS тесты владения дополнительно проверяют счётчики живых
+  ядер и задач подготовки (хуки TgBot.Bot.Core); без символа эти проверки
+  пропускаются, остаются косвенные (транспорт отпущен) и отчёт об утечках.
 }
 
 {$APPTYPE CONSOLE}
@@ -42,6 +45,10 @@ uses
   TgBot.Updates,
   TgBot.Router,
   TgBot.Consts,
+{$IFDEF TGBOT_TESTHOOKS}
+  // Счётчики живых ядер и задач подготовки (TgTestLiveBotCores/TgTestLiveStartJobs).
+  TgBot.Bot.Core,
+{$ENDIF}
   TgBot,
   TgBot.Component,
   TgBot.Webhook;
@@ -7991,6 +7998,531 @@ begin
   end;
 end;
 
+{ Владение, фаза 2: фоновая подготовка запуска (ITgStartJob) }
+
+var
+  // Замеры OWN2, мс.
+  GOwnFreeCancellableMs: Int64 = -1;
+  GOwnFreePlainMs: Int64 = -1;
+  GOwnChurnMs: Int64 = -1;
+
+/// <summary>
+///   Живые ядра ботов (хук TGBOT_TESTHOOKS модуля TgBot.Bot.Core); без
+///   хуков -1.
+/// </summary>
+function LiveBotCores: Integer;
+begin
+{$IFDEF TGBOT_TESTHOOKS}
+  Result := TgTestLiveBotCores;
+{$ELSE}
+  Result := -1;
+{$ENDIF}
+end;
+
+/// <summary>Живые задачи фоновой подготовки (хук TGBOT_TESTHOOKS); без хуков -1.</summary>
+function LiveStartJobs: Integer;
+begin
+{$IFDEF TGBOT_TESTHOOKS}
+  Result := TgTestLiveStartJobs;
+{$ELSE}
+  Result := -1;
+{$ENDIF}
+end;
+
+/// <summary>
+///   Ждёт, пока живых ядер и задач подготовки станет не больше ACores и
+///   AJobs (обычно — значений до теста). Без хуков — сразу True.
+/// </summary>
+function WaitLiveAtMost(ACores, AJobs, ATimeoutMs: Integer): Boolean;
+begin
+{$IFDEF TGBOT_TESTHOOKS}
+  Result := WaitUntil(
+    function: Boolean
+    begin
+      Result := (TgTestLiveBotCores <= ACores) and (TgTestLiveStartJobs <= AJobs);
+    end, ATimeoutMs);
+{$ELSE}
+  Result := True;
+{$ENDIF}
+end;
+
+/// <summary>Ответ getMe с username AName.</summary>
+function BotUserJson(const AName: string): TJSONValue;
+begin
+  Result := JsonOf('{"id":42,"is_bot":true,"first_name":"B","username":"' + AName + '"}');
+end;
+
+/// <summary>getMe, висящий до отмены окружающего токена (не дольше 30 с), затем — @AName.</summary>
+function HangGetMe(const AName: string): TJSONValue;
+var
+  LToken: ITgCancellation;
+begin
+  LToken := TTgCancelScope.Current;
+  if Assigned(LToken) then
+  begin
+    LToken.WaitFor(30000);
+    LToken.ThrowIfCancelled;
+  end;
+  Result := BotUserJson(AName);
+end;
+
+/// <summary>getUpdates без обновлений: итоговое подтверждение (timeout = 0) — пусто, приём висит до отмены.</summary>
+function IdleUpdates(AParams: TTgParams): TJSONValue;
+begin
+  if TTgJson.GetInt(AParams.Json, 'timeout') = 0 then
+    Exit(TJSONArray.Create);
+  Result := HangUntilCancelled;
+end;
+
+/// <summary>
+///   TTgBot с командой (getMe и меню — в фоне), getMe висит: ACancellable —
+///   транспорт с токенами, getMe ждёт отмены; иначе — транспорт без токенов,
+///   getMe ждёт события (неотменяемо) и отпускается после Free. Free без
+///   Stop: ждёт задачу TgDefaultBotStopTimeoutMs, затем отменяет её.
+/// </summary>
+procedure RunFreeWithHangingGetMe(ACancellable: Boolean; out AFreeMs: Int64);
+var
+  LTransport: TScriptTransport;
+  LTransportRef: ITgTransport;
+  LHandler: TFakeHandler;
+  LBot: TTgBot;
+  LGate: TEvent;
+  LErrors: TTextLog;
+  LEntered, LBaseCores, LBaseJobs: Integer;
+  LWatch: TStopwatch;
+  LReleased: Boolean;
+  LWhat: string;
+begin
+  if ACancellable then
+    LWhat := 'отменяемый транспорт'
+  else
+    LWhat := 'неотменяемый транспорт';
+  LBaseCores := LiveBotCores;
+  LBaseJobs := LiveStartJobs;
+  LEntered := 0;
+  LReleased := False;
+  AFreeMs := -1;
+  LGate := TEvent.Create(nil, True, False, '');
+  LErrors := TTextLog.Create;
+  try
+    LHandler :=
+      function(const AMethod: string; AParams: TTgParams): TJSONValue
+      begin
+        if AMethod = 'getUpdates' then
+          Exit(IdleUpdates(AParams));
+        if AMethod = 'getMe' then
+        begin
+          TInterlocked.Increment(LEntered);
+          if ACancellable then
+            Exit(HangGetMe('LateBot'));
+          LGate.WaitFor(30000);
+          Exit(BotUserJson('LateBot'));
+        end;
+        Result := TJSONTrue.Create;
+      end;
+    if ACancellable then
+      LTransport := TScriptCancellableTransport.Create(LHandler)
+    else
+      LTransport := TScriptTransport.Create(LHandler);
+    LTransportRef := LTransport;
+    LBot := TTgBot.Create(LTransportRef);
+    try
+      LBot.Command('start', 'Запуск',
+        procedure(ACtx: ITgContext)
+        begin
+        end);
+      LBot.OnError :=
+        procedure(AError: Exception; ACtx: ITgContext)
+        begin
+          LErrors.Add(AError.ClassName + ': ' + AError.Message);
+        end;
+      LBot.Start;
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := TInterlocked.CompareExchange(LEntered, 0, 0) > 0;
+        end, 5000), LWhat + ': getMe фоновой подготовки начат');
+    finally
+      LWatch := TStopwatch.StartNew;
+      LBot.Free;
+      AFreeMs := LWatch.ElapsedMilliseconds;
+    end;
+    Check(AFreeMs < TgDefaultBotStopTimeoutMs + 1500,
+      Format('%s: Free при висящем getMe — в бюджете Stop (%d мс)', [LWhat, AFreeMs]));
+    if not ACancellable then
+    begin
+      // Задача отпущена (Stop = False): замыкание пула держит ядро, ядро —
+      // задачу; бот уже освобождён.
+      Check(LTransport.RefCount > 1, LWhat + ': пока getMe висит, ядро (клиент) живо');
+{$IFDEF TGBOT_TESTHOOKS}
+      Check(TgTestLiveBotCores > LBaseCores, LWhat + ': ядро живо до завершения задачи (счётчик)');
+      Check(TgTestLiveStartJobs > LBaseJobs, LWhat + ': задача жива до завершения (счётчик)');
+{$ENDIF}
+      LGate.SetEvent;
+    end;
+    LReleased := WaitTransportReleased(LTransport, 5000);
+    Check(LReleased, LWhat + ': ядро и клиент освобождены (неотменяемый — в потоке пула)');
+    Check(WaitLiveAtMost(LBaseCores, LBaseJobs, 5000),
+      LWhat + ': живых ядер и задач подготовки — как до теста');
+    CheckEquals(0, LTransport.Count('setMyCommands'), LWhat + ': меню отменённой задачи не отправлялось');
+    CheckEquals(0, LErrors.Count, LWhat + ': OnError не вызывался: ' + LErrors.Text);
+  finally
+    LGate.SetEvent;
+    LErrors.Free;
+    // Не дождались освобождения — событие может быть ещё нужно транспорту.
+    if LReleased then
+      LGate.Free;
+  end;
+end;
+
+procedure TestStartJobFreeHangingGetMe;
+begin
+  RunFreeWithHangingGetMe(True, GOwnFreeCancellableMs);
+  RunFreeWithHangingGetMe(False, GOwnFreePlainMs);
+end;
+
+procedure TestStartJobRestartLateReply;
+var
+  LTransport: TScriptTransport;
+  LTransportRef: ITgTransport;
+  LBot: TTgBot;
+  LGetMeGate, LSetGate: TEvent;
+  LErrors: TTextLog;
+  LGetMeCalls, LGetMeLate, LSetCalls, LSetLate, LBaseCores, LBaseJobs: Integer;
+  LMenus: TArray<string>;
+  LReleased: Boolean;
+begin
+  LBaseCores := LiveBotCores;
+  LBaseJobs := LiveStartJobs;
+  LGetMeCalls := 0;
+  LGetMeLate := 0;
+  LSetCalls := 0;
+  LSetLate := 0;
+  LReleased := False;
+  LGetMeGate := TEvent.Create(nil, True, False, '');
+  LSetGate := TEvent.Create(nil, True, False, '');
+  LErrors := TTextLog.Create;
+  try
+    // Без токенов: зависший запрос не прерывается и отвечает поздно.
+    LTransport := TScriptTransport.Create(
+      function(const AMethod: string; AParams: TTgParams): TJSONValue
+      begin
+        if AMethod = 'getUpdates' then
+          Exit(IdleUpdates(AParams));
+        if AMethod = 'getMe' then
+        begin
+          // Первый getMe (задача запуска 1) висит и отвечает чужим именем.
+          if TInterlocked.Increment(LGetMeCalls) = 1 then
+          begin
+            LGetMeGate.WaitFor(30000);
+            Result := BotUserJson('LateBot');
+            TInterlocked.Increment(LGetMeLate);
+            Exit;
+          end;
+          Exit(BotUserJson('NewBot'));
+        end;
+        if AMethod = 'setMyCommands' then
+        begin
+          // Первое меню (задача запуска 2) висит и отвечает поздно.
+          if TInterlocked.Increment(LSetCalls) = 1 then
+          begin
+            LSetGate.WaitFor(30000);
+            TInterlocked.Increment(LSetLate);
+          end;
+          Exit(TJSONTrue.Create);
+        end;
+        Result := TJSONTrue.Create;
+      end);
+    LTransportRef := LTransport;
+    LBot := TTgBot.Create(LTransportRef);
+    try
+      LBot.OnError :=
+        procedure(AError: Exception; ACtx: ITgContext)
+        begin
+          LErrors.Add(AError.ClassName + ': ' + AError.Message);
+        end;
+      LBot.Command('a', 'Команда A',
+        procedure(ACtx: ITgContext)
+        begin
+        end);
+      // Запуск 1: getMe висит; Stop с малым ожиданием отпускает задачу.
+      LBot.Start;
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := TInterlocked.CompareExchange(LGetMeCalls, 0, 0) >= 1;
+        end, 5000), 'запуск 1: getMe начат');
+      Check(not LBot.Stop(50), 'запуск 1: Stop(50) = False — задача отпущена (getMe висит)');
+      // Запуск 2 сразу: своя задача — свой getMe; меню висит.
+      LBot.Start;
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := TInterlocked.CompareExchange(LSetCalls, 0, 0) >= 1;
+        end, 5000), 'запуск 2: getMe выполнен, setMyCommands начат');
+      CheckEquals('NewBot', LBot.BotUserName, 'запуск 2: username из getMe новой задачи');
+      // Поздний getMe задачи 1: она отменена — username не меняется, OnError нет.
+      LGetMeGate.SetEvent;
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := TInterlocked.CompareExchange(LGetMeLate, 0, 0) = 1;
+        end, 5000), 'поздний getMe задачи 1 вернулся');
+      Check(WaitLiveAtMost(LBaseCores + 1, LBaseJobs + 1, 5000),
+        'задача 1 освобождена после позднего ответа (жива только задача 2)');
+      TThread.Sleep(100);
+      CheckEquals('NewBot', LBot.BotUserName, 'поздний getMe старой задачи не трогает username');
+      Check(not LBot.Stop(50), 'запуск 2: Stop(50) = False — задача отпущена (меню висит)');
+      // Запуск 3: другое меню; username из кэша — только setMyCommands.
+      LBot.Command('a', nil);
+      LBot.Command('b', 'Команда B',
+        procedure(ACtx: ITgContext)
+        begin
+        end);
+      LBot.Start;
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := TInterlocked.CompareExchange(LSetCalls, 0, 0) >= 2;
+        end, 5000), 'запуск 3: setMyCommands нового меню');
+      // Поздний ответ меню задачи 2 — после меню задачи 3.
+      LSetGate.SetEvent;
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := TInterlocked.CompareExchange(LSetLate, 0, 0) = 1;
+        end, 5000), 'поздний setMyCommands задачи 2 вернулся');
+      Check(WaitLiveAtMost(LBaseCores + 1, LBaseJobs + 1, 5000),
+        'задача 2 освобождена после позднего ответа');
+      TThread.Sleep(100);
+      Check(LBot.Stop, 'запуск 3: Stop = True — задача 3 завершена, поздние ответы её не задели');
+      CheckEquals('NewBot', LBot.BotUserName, 'username после всех поздних ответов');
+    finally
+      LBot.Free;
+    end;
+    LReleased := WaitTransportReleased(LTransport, 5000);
+    Check(LReleased, 'ядро и клиент освобождены');
+    Check(WaitLiveAtMost(LBaseCores, LBaseJobs, 5000), 'живых ядер и задач подготовки — как до теста');
+    CheckEquals(2, LTransport.Count('getMe'), 'getMe: задача 1 (поздний) и задача 2; задача 3 — из кэша');
+    LMenus := LTransport.Calls('setMyCommands');
+    CheckEquals(2, Length(LMenus), 'setMyCommands: задача 2 (поздний) и задача 3');
+    if Length(LMenus) = 2 then
+    begin
+      CheckEquals('a', JsonAt(LMenus[0], 'commands[0].command'), 'меню задачи 2: a');
+      CheckEquals('b', JsonAt(LMenus[1], 'commands[0].command'), 'меню задачи 3: b');
+      CheckEquals('', JsonAt(LMenus[1], 'commands[1].command'), 'меню задачи 3: только b');
+    end;
+    CheckEquals(0, LErrors.Count, 'поздние ответы отменённых задач — без OnError: ' + LErrors.Text);
+  finally
+    LGetMeGate.SetEvent;
+    LSetGate.SetEvent;
+    LErrors.Free;
+    if LReleased then
+    begin
+      LSetGate.Free;
+      LGetMeGate.Free;
+    end;
+  end;
+end;
+
+procedure TestStartJobHandlerWaitsName;
+var
+  LTransport: TScriptCancellableTransport;
+  LTransportRef: ITgTransport;
+  LBot: TTgBot;
+  LLog: TTextLog;
+  LGetMe, LBaseCores, LBaseJobs: Integer;
+  LReleased: Boolean;
+begin
+  LBaseCores := LiveBotCores;
+  LBaseJobs := LiveStartJobs;
+  LGetMe := 0;
+  LReleased := False;
+  LLog := TTextLog.Create;
+  try
+    LTransport := TScriptCancellableTransport.Create(
+      function(const AMethod: string; AParams: TTgParams): TJSONValue
+      begin
+        if AMethod = 'getUpdates' then
+        begin
+          if TTgJson.GetInt(AParams.Json, 'timeout') = 0 then
+            Exit(TJSONArray.Create);
+          if not TTgJson.Has(AParams.Json, 'offset') then
+            Exit(Batch([MsgUpdate(1, 100, 7, '/start@ThisBot')]));
+          Exit(HangUntilCancelled);
+        end;
+        if AMethod = 'getMe' then
+        begin
+          // И getMe задачи, и ленивый getMe обработчика висят до отмены.
+          TInterlocked.Increment(LGetMe);
+          Exit(HangGetMe('ThisBot'));
+        end;
+        Result := TJSONTrue.Create;
+      end);
+    LTransportRef := LTransport;
+    LBot := TTgBot.Create(LTransportRef);
+    try
+      LBot.Command('start', 'Запуск',
+        procedure(ACtx: ITgContext)
+        begin
+          LLog.Add('routed');
+        end);
+      LBot.OnUpdate :=
+        procedure(ACtx: ITgContext)
+        begin
+          LLog.Add('upd ' + ACtx.Text);
+        end;
+      LBot.OnError :=
+        procedure(AError: Exception; ACtx: ITgContext)
+        begin
+          LLog.Add('error ' + AError.ClassName);
+        end;
+      LBot.Start;
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := (LTransport.Count('getUpdates') >= 2) and
+            (TInterlocked.CompareExchange(LGetMe, 0, 0) >= 1);
+        end, 5000), 'пакет принят, getMe задачи висит');
+      // Обработчик '/start@ThisBot' ждёт username (getMe задачи): OnUpdate — после разбора команды.
+      TThread.Sleep(100);
+      Check(not LLog.Has('upd /start@ThisBot'), 'обработчик ждёт username');
+      // Stop параллельно ожиданию: отмена задачи по таймауту, затем — обработчика.
+      LBot.Stop(200);
+    finally
+      // Free сразу: обработчик может ещё выполняться (ядро отсоединяется).
+      LBot.Free;
+    end;
+    LReleased := WaitTransportReleased(LTransport, 5000);
+    Check(LReleased, 'обработчик вышел: ядро и клиент освобождены');
+    Check(WaitLiveAtMost(LBaseCores, LBaseJobs, 5000), 'живых ядер и задач подготовки — как до теста');
+    Check(not LLog.Has('routed'), 'username не получен — /start@ThisBot не маршрутизирована: ' + LLog.Text);
+    Check(not Contains('error', LLog.Text), 'отмена ожидания — без OnError: ' + LLog.Text);
+  finally
+    // Не дождались освобождения — журнал может быть ещё нужен обработчику.
+    if LReleased then
+      LLog.Free;
+  end;
+end;
+
+/// <summary>
+///   Транспорт цикла Start/Stop/Free: getMe отвечает через ADelayMs мс
+///   (ACancellable — ожидание прерывается токеном), меню — True.
+/// </summary>
+function ChurnScript(ADelayMs: Integer; ACancellable: Boolean): TFakeHandler;
+begin
+  Result :=
+    function(const AMethod: string; AParams: TTgParams): TJSONValue
+    var
+      LToken: ITgCancellation;
+    begin
+      if AMethod = 'getUpdates' then
+        Exit(IdleUpdates(AParams));
+      if AMethod = 'getMe' then
+      begin
+        LToken := TTgCancelScope.Current;
+        if ACancellable and Assigned(LToken) then
+        begin
+          LToken.WaitFor(ADelayMs);
+          LToken.ThrowIfCancelled;
+        end
+        else
+          TThread.Sleep(ADelayMs);
+        Exit(BotUserJson('ThisBot'));
+      end;
+      Result := TJSONTrue.Create;
+    end;
+end;
+
+procedure TestStartJobChurn;
+const
+  CCycles = 200;
+var
+  LTransports: TArray<TScriptTransport>;
+  LRefs: TArray<ITgTransport>;
+  LBot: TTgBot;
+  LErrors: TTextLog;
+  LSeed: Int64;
+  LDelay, I, LBaseCores, LBaseJobs: Integer;
+  LWatch: TStopwatch;
+  LEmpty: TProc<ITgContext>;
+  LOnError: TProc<Exception, ITgContext>;
+  LReleased: Boolean;
+begin
+  LBaseCores := LiveBotCores;
+  LBaseJobs := LiveStartJobs;
+  LReleased := False;
+  LErrors := TTextLog.Create;
+  try
+    SetLength(LTransports, CCycles);
+    SetLength(LRefs, CCycles);
+    LEmpty :=
+      procedure(ACtx: ITgContext)
+      begin
+      end;
+    LOnError :=
+      procedure(AError: Exception; ACtx: ITgContext)
+      begin
+        LErrors.Add(AError.ClassName + ': ' + AError.Message);
+      end;
+    // Детерминированные «случайные» задержки (ЛКГ): прогон воспроизводим.
+    LSeed := 20261015;
+    LWatch := TStopwatch.StartNew;
+    for I := 0 to CCycles - 1 do
+    begin
+      LSeed := (LSeed * 1103515245 + 12345) mod 2147483648;
+      LDelay := (LSeed shr 16) mod 51;
+      if Odd(I div 4) then
+        LTransports[I] := TScriptTransport.Create(ChurnScript(LDelay, False))
+      else
+        LTransports[I] := TScriptCancellableTransport.Create(ChurnScript(LDelay, True));
+      LRefs[I] := LTransports[I];
+      LBot := TTgBot.Create(LRefs[I]);
+      try
+        LBot.OnError := LOnError;
+        LBot.Command('start', 'Запуск', LEmpty);
+        LBot.Start;
+        case I mod 4 of
+          // Stop с малым ожиданием: задача может быть отменена на getMe.
+          1: LBot.Stop(10);
+          // Перезапуск: вторая задача — только меню (username в кэше).
+          2:
+            begin
+              LBot.Stop;
+              LBot.Start;
+            end;
+          // Free посреди getMe.
+          3: TThread.Sleep(LDelay div 2);
+        end;
+      finally
+        // 0: Free сразу после Start (Stop внутри Free).
+        LBot.Free;
+      end;
+    end;
+    GOwnChurnMs := LWatch.ElapsedMilliseconds;
+    LReleased := WaitUntil(
+      function: Boolean
+      var
+        J: Integer;
+      begin
+        for J := 0 to High(LTransports) do
+          if LTransports[J].RefCount <> 1 then
+            Exit(False);
+        Result := True;
+      end, 10000);
+    Check(LReleased, Format('%d циклов: все ядра и клиенты освобождены', [CCycles]));
+    Check(WaitLiveAtMost(LBaseCores, LBaseJobs, 5000), 'живых ядер и задач подготовки — как до теста');
+    Check(GOwnChurnMs < 60000, Format('%d циклов Start/Stop/Free за %d мс (< 60 с)', [CCycles, GOwnChurnMs]));
+    CheckEquals(0, LErrors.Count, 'без OnError: ' + LErrors.Text);
+  finally
+    LOnError := nil;
+    LEmpty := nil;
+    LRefs := nil;
+    if LReleased then
+      LErrors.Free;
+  end;
+end;
+
 procedure TestComponentStartJobFault;
 var
   LEvents: TComponentEvents;
@@ -8634,6 +9166,14 @@ begin
     TestWebhookUrlAndPathChecks);
   RunTest('6E2: 401 при getMe/setMyCommands/setWebhook — один OnError и один OnFault; тишина после Faulted',
     TestStartJobAfterFault);
+  RunTest('Владение, фаза 2: Free при висящем getMe (отменяемый и неотменяемый транспорт) — ' +
+    'в бюджете, ядро освобождается после задачи', TestStartJobFreeHangingGetMe);
+  RunTest('Владение, фаза 2: Stop(50) при висящих getMe/setMyCommands, сразу Start — ' +
+    'поздние ответы старых задач не трогают новую', TestStartJobRestartLateReply);
+  RunTest('Владение, фаза 2: обработчик /cmd@бот ждёт username, Stop и Free — выход без AV',
+    TestStartJobHandlerWaitsName);
+  RunTest('Владение, фаза 2: 200 циклов Start/Stop/Free, getMe 0–50 мс — без утечек',
+    TestStartJobChurn);
   RunTest('6E2: компонент, 401 с командами — один OnError, один OnFault, OnStop(Fault)',
     TestComponentStartJobFault);
   RunTest('6E2: OnWebhookRegistered — TTgBot в фоне, компонент OnStart → событие в главном потоке',
@@ -8674,6 +9214,10 @@ begin
     [GServerPostMs, GServer413Ms]));
   Writeln(Format('Замеры 6E2, мс: TTelegramBot.Run после RequestStop (Main) = %d, (Worker) = %d; ' +
     'Run при отказе = %d', [GCompRunStopMs, GCompRunWorkerStopMs, GCompRunFaultMs]));
+  Writeln(Format('Замеры OWN2, мс: Free при висящем getMe (отменяемый) = %d, (неотменяемый) = %d; ' +
+    '200 циклов Start/Stop/Free = %d; счётчики живых объектов: %s',
+    [GOwnFreeCancellableMs, GOwnFreePlainMs, GOwnChurnMs,
+    {$IFDEF TGBOT_TESTHOOKS}'включены'{$ELSE}'выключены (без TGBOT_TESTHOOKS)'{$ENDIF}]));
   Writeln(Format('Тестов: %d, не прошло: %d; проверок: %d, ошибок: %d',
     [GTests, GTestsFailed, GPassed + GFailed, GFailed]));
   if GFailed > 0 then
