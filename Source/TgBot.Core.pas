@@ -224,7 +224,8 @@ procedure TgSetAsyncPoolSize(AMaxThreads: Integer);
 implementation
 
 uses
-  System.Math;
+  System.Math,
+  TgBot.Consts;
 
 type
   /// <summary>Реализация ITgParamsBox.</summary>
@@ -285,7 +286,8 @@ var
   LPool: TThreadPool;
 begin
   if AMaxThreads < 1 then
-    raise EArgumentOutOfRangeException.CreateFmt('AMaxThreads = %d', [AMaxThreads]);
+    raise EArgumentOutOfRangeException.Create(
+      TgLangTextFmt(@SRuArgOutOfRange, @SEnArgOutOfRange, ['AMaxThreads', AMaxThreads, 1]));
   LPool := TgBotThreadPool;
   // Минимум пула не может превышать максимум.
   if LPool.MinWorkerThreads > AMaxThreads then

@@ -99,6 +99,7 @@
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
         <DCCReference Include="rtl.dcp"/>
+        <DCCReference Include="..\Source\TgBot.Consts.pas"/>
         <DCCReference Include="..\Source\TgBot.Base.pas"/>
         <DCCReference Include="..\Source\TgBot.Json.pas"/>
         <DCCReference Include="..\Source\TgBot.Http.pas"/>
