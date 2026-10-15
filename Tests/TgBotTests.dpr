@@ -1564,6 +1564,138 @@ begin
   Result := AToken as TTgCancellationSource;
 end;
 
+type
+  /// <summary>Зонд колбэка отмены: число вызовов; живые зонды считаются в GCancelProbeLive.</summary>
+  ICancelProbe = interface
+    procedure Hit;
+    function Calls: Integer;
+  end;
+
+  TCancelProbe = class(TInterfacedObject, ICancelProbe)
+  private
+    FCalls: Integer;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure Hit;
+    function Calls: Integer;
+  end;
+
+  /// <summary>
+  ///   Сценарий «кнопка Cancel»: обычный объект (ручной Free) хранит источник
+  ///   только как ITgCancellationSource и отменяет его из другого метода.
+  /// </summary>
+  TCancelButtonOwner = class
+  private
+    FSource: ITgCancellationSource;
+    FRegistration: IInterface;
+    FWorker: TThread;
+    FWorkerSawCancel: ICancelProbe;
+    FCallbackProbe: ICancelProbe;
+  public
+    destructor Destroy; override;
+    /// <summary>Создаёт источник и поток, ждущий отмены токена.</summary>
+    procedure StartWork;
+    /// <summary>«Нажатие кнопки»: отмена через поле-интерфейс.</summary>
+    procedure CancelClick;
+    /// <summary>Дожидается завершения рабочего потока.</summary>
+    procedure WaitWorker;
+    property WorkerSawCancel: ICancelProbe read FWorkerSawCancel;
+    property CallbackProbe: ICancelProbe read FCallbackProbe;
+  end;
+
+var
+  GCancelProbeLive: Integer = 0;
+
+constructor TCancelProbe.Create;
+begin
+  inherited Create;
+  TInterlocked.Increment(GCancelProbeLive);
+end;
+
+destructor TCancelProbe.Destroy;
+begin
+  TInterlocked.Decrement(GCancelProbeLive);
+  inherited Destroy;
+end;
+
+procedure TCancelProbe.Hit;
+begin
+  TInterlocked.Increment(FCalls);
+end;
+
+function TCancelProbe.Calls: Integer;
+begin
+  Result := TInterlocked.CompareExchange(FCalls, 0, 0);
+end;
+
+/// <summary>Колбэк отмены, захватывающий только зонд.</summary>
+function ProbeCallback(const AProbe: ICancelProbe): TProc;
+begin
+  Result :=
+    procedure
+    begin
+      AProbe.Hit;
+    end;
+end;
+
+/// <summary>
+///   Подписывает зонд на отмену. Отдельная функция: временный TProc
+///   освобождается при выходе из неё, а не в конце вызывающего теста.
+/// </summary>
+function RegisterProbe(const AToken: ITgCancellation; const AProbe: ICancelProbe): IInterface;
+begin
+  Result := AToken.Register(ProbeCallback(AProbe));
+end;
+
+{ TCancelButtonOwner }
+
+destructor TCancelButtonOwner.Destroy;
+begin
+  CancelClick;
+  WaitWorker;
+  FRegistration := nil;
+  FSource := nil;
+  inherited Destroy;
+end;
+
+procedure TCancelButtonOwner.StartWork;
+var
+  LToken: ITgCancellation;
+  LSaw: ICancelProbe;
+begin
+  FSource := TTgCancellationSource.New;
+  FWorkerSawCancel := TCancelProbe.Create;
+  FCallbackProbe := TCancelProbe.Create;
+  FRegistration := RegisterProbe(FSource, FCallbackProbe);
+  // Потоку — только токен (без права отмены) и зонд; Self не захватывается.
+  LToken := FSource;
+  LSaw := FWorkerSawCancel;
+  FWorker := TThread.CreateAnonymousThread(
+    procedure
+    begin
+      if LToken.WaitFor(10000) then
+        LSaw.Hit;
+    end);
+  FWorker.FreeOnTerminate := False;
+  FWorker.Start;
+end;
+
+procedure TCancelButtonOwner.CancelClick;
+begin
+  if Assigned(FSource) then
+    FSource.Cancel;
+end;
+
+procedure TCancelButtonOwner.WaitWorker;
+begin
+  if Assigned(FWorker) then
+  begin
+    FWorker.WaitFor;
+    FreeAndNil(FWorker);
+  end;
+end;
+
 /// <summary>Обработчик подменного транспорта: висит до отмены окружающего токена.</summary>
 function HangingHandler(const AHang: PInteger; const AEntered: PInteger): TFakeHandler;
 begin
@@ -1724,6 +1856,223 @@ begin
   GWaitWakeMs := LWatch.ElapsedMilliseconds;
   Check(GWaitWakeMs < 150, Format('WaitFor проснулся < 100 мс после Cancel (всего %d мс, Cancel через 50 мс)',
     [GWaitWakeMs]));
+end;
+
+procedure TestCancellationSourceOwnership;
+const
+  CStressThreads = 4;
+  CStressIterations = 10000;
+var
+  LSource, LParent, LChild, A, B, LNext, LOld: ITgCancellationSource;
+  LToken, LLinked: ITgCancellation;
+  LReg, LReg2: IInterface;
+  LProbe, LProbe2: ICancelProbe;
+  LLiveBefore: Integer;
+  LLock: TCriticalSection;
+  LCurrent: ITgCancellationSource;
+  LThreads: array[0..CStressThreads - 1] of TThread;
+  LDone, LErrors, LNilWithoutCall, LCancels: Integer;
+  LFirstError: string;
+  LOwner: TCancelButtonOwner;
+  LWatch: TStopwatch;
+  I: Integer;
+begin
+  LLiveBefore := TInterlocked.CompareExchange(GCancelProbeLive, 0, 0);
+
+  // New + Cancel через интерфейс.
+  LSource := TTgCancellationSource.New;
+  LToken := LSource;
+  Check(Supports(LToken, ITgCancellationSource), 'New: токен поддерживает ITgCancellationSource');
+  LProbe := TCancelProbe.Create;
+  LReg := RegisterProbe(LSource, LProbe);
+  Check(Assigned(LReg), 'New: Register до отмены возвращает подписку');
+  Check(not LToken.IsCancelled, 'New: новый источник не отменён');
+  LSource.Cancel;
+  LSource.Cancel;
+  CheckEquals(1, LProbe.Calls, 'ITgCancellationSource.Cancel идемпотентен: колбэк вызван один раз');
+  Check(LToken.IsCancelled and LToken.WaitFor(0), 'ITgCancellationSource.Cancel: токен отменён');
+  LReg := nil;
+
+  // Register после отмены — колбэк сразу, подписки нет.
+  LProbe := TCancelProbe.Create;
+  LReg := RegisterProbe(LSource, LProbe);
+  CheckEquals(1, LProbe.Calls, 'New: Register после отмены вызывает колбэк сразу');
+  Check(not Assigned(LReg), 'New: Register после отмены возвращает nil');
+
+  // Отписка: освобождение подписки снимает только её колбэк.
+  LSource := TTgCancellationSource.New;
+  LProbe := TCancelProbe.Create;
+  LProbe2 := TCancelProbe.Create;
+  LReg := RegisterProbe(LSource, LProbe);
+  LReg2 := RegisterProbe(LSource, LProbe2);
+  LReg := nil;
+  LSource.Cancel;
+  CheckEquals(0, LProbe.Calls, 'отписанный колбэк не вызывается');
+  CheckEquals(1, LProbe2.Calls, 'оставшийся колбэк вызван');
+  // Отписка после отмены — без последствий.
+  LReg2 := nil;
+
+  // Связанный источник: отмена родителя отменяет ребёнка и его подписчиков.
+  LParent := TTgCancellationSource.New;
+  LChild := TTgCancellationSource.New(LParent);
+  LProbe := TCancelProbe.Create;
+  LReg := RegisterProbe(LChild, LProbe);
+  LParent.Cancel;
+  Check(LChild.IsCancelled, 'New(AParent): отмена родителя отменяет ребёнка');
+  CheckEquals(1, LProbe.Calls, 'New(AParent): подписчик ребёнка вызван');
+  LReg := nil;
+  LChild := TTgCancellationSource.New(LParent);
+  Check(LChild.IsCancelled, 'New(AParent): ребёнок отменённого родителя отменён сразу');
+  LParent := TTgCancellationSource.New;
+  LChild := TTgCancellationSource.New(LParent);
+  LChild.Cancel;
+  Check(not LParent.IsCancelled, 'New(AParent): отмена ребёнка не отменяет родителя');
+  // Ребёнок переживает ссылку на родителя (родителя держит подписка ребёнка).
+  LParent := TTgCancellationSource.New;
+  LChild := TTgCancellationSource.New(LParent);
+  LParent := nil;
+  Check(not LChild.IsCancelled, 'New(AParent): ребёнок после освобождения ссылки на родителя');
+  LChild.Cancel;
+  Check(LChild.IsCancelled, 'New(AParent): ребёнок без ссылки на родителя отменяется сам');
+  LToken := nil;
+
+  // Linked с источниками-интерфейсами.
+  A := TTgCancellationSource.New;
+  B := TTgCancellationSource.New;
+  LLinked := TTgCancellationSource.Linked(A, B);
+  Check(Supports(LLinked, ITgCancellationSource), 'Linked(A, B) — новый источник');
+  A.Cancel;
+  Check(LLinked.IsCancelled, 'Linked(A, B) отменён вместе с A');
+  Check(not B.IsCancelled, 'Linked(A, B): B не затронут');
+  LLinked := nil;
+  A := nil;
+  B := nil;
+  LParent := nil;
+  LChild := nil;
+  LSource := nil;
+  LProbe := nil;
+  LProbe2 := nil;
+
+  // Без циклов ссылок: подписка переживает ссылку на источник, затем всё освобождается.
+  LSource := TTgCancellationSource.New;
+  LProbe := TCancelProbe.Create;
+  LReg := RegisterProbe(LSource, LProbe);
+  LSource := nil;
+  LProbe := nil;
+  LReg := nil;
+  CheckEquals(LLiveBefore, TInterlocked.CompareExchange(GCancelProbeLive, 0, 0),
+    'источник, подписка и колбэк освобождены (нет циклов ссылок)');
+
+  // Стресс: Register/отписка из 4 потоков параллельно с Cancel.
+  for I := 0 to High(LThreads) do
+    LThreads[I] := nil;
+  LDone := 0;
+  LErrors := 0;
+  LNilWithoutCall := 0;
+  LCancels := 0;
+  LFirstError := '';
+  LLock := TCriticalSection.Create;
+  try
+    LCurrent := TTgCancellationSource.New;
+    try
+      for I := 0 to High(LThreads) do
+      begin
+        LThreads[I] := TThread.CreateAnonymousThread(
+          procedure
+          var
+            N: Integer;
+            LSrc: ITgCancellationSource;
+            LP: ICancelProbe;
+            LR: IInterface;
+            LKept: TArray<IInterface>;
+          begin
+            try
+              for N := 1 to CStressIterations do
+              begin
+                LLock.Enter;
+                try
+                  LSrc := LCurrent;
+                finally
+                  LLock.Leave;
+                end;
+                LP := TCancelProbe.Create;
+                LR := RegisterProbe(LSrc, LP);
+                // nil — только если отмена уже была: колбэк обязан быть вызван.
+                if not Assigned(LR) and (LP.Calls <> 1) then
+                  TInterlocked.Increment(LNilWithoutCall);
+                // Часть подписок отпускается позже — возможно, после Cancel.
+                if N mod 4 = 0 then
+                  LKept := LKept + [LR];
+                LR := nil;
+                if Length(LKept) >= 64 then
+                  LKept := nil;
+              end;
+              LKept := nil;
+              LP := nil;
+              LSrc := nil;
+            except
+              on E: Exception do
+                if TInterlocked.Increment(LErrors) = 1 then
+                  LFirstError := E.ClassName + ': ' + E.Message;
+            end;
+            TInterlocked.Increment(LDone);
+          end);
+        LThreads[I].FreeOnTerminate := False;
+      end;
+      for I := 0 to High(LThreads) do
+        LThreads[I].Start;
+      while TInterlocked.CompareExchange(LDone, 0, 0) < CStressThreads do
+      begin
+        LNext := TTgCancellationSource.New;
+        LLock.Enter;
+        try
+          LOld := LCurrent;
+          LCurrent := LNext;
+        finally
+          LLock.Leave;
+        end;
+        LNext := nil;
+        LOld.Cancel;
+        LOld := nil;
+        Inc(LCancels);
+        TThread.Yield;
+      end;
+    finally
+      for I := 0 to High(LThreads) do
+        LThreads[I].Free;
+    end;
+    LCurrent.Cancel;
+    LCurrent := nil;
+  finally
+    LLock.Free;
+  end;
+  CheckEquals(0, LErrors, 'стресс: исключений в потоках нет (' + LFirstError + ')');
+  CheckEquals(0, LNilWithoutCall, 'стресс: Register вернул nil только с уже вызванным колбэком');
+  Check(LCancels > 0, 'стресс: Cancel выполнялся параллельно с подписками');
+  CheckEquals(LLiveBefore, TInterlocked.CompareExchange(GCancelProbeLive, 0, 0),
+    Format('стресс: %d x %d подписок и %d отмен — все колбэки освобождены',
+    [CStressThreads, CStressIterations, LCancels]));
+
+  // Сценарий «кнопка Cancel»: источник только в поле-интерфейсе, отмена из другого метода.
+  LOwner := TCancelButtonOwner.Create;
+  try
+    LOwner.StartWork;
+    TThread.Sleep(30);
+    CheckEquals(0, LOwner.WorkerSawCancel.Calls, 'кнопка Cancel: до нажатия работа идёт');
+    LWatch := TStopwatch.StartNew;
+    LOwner.CancelClick;
+    LOwner.WaitWorker;
+    Check(LWatch.ElapsedMilliseconds < 5000,
+      Format('кнопка Cancel: поток завершён после отмены (%d мс)', [LWatch.ElapsedMilliseconds]));
+    CheckEquals(1, LOwner.WorkerSawCancel.Calls, 'кнопка Cancel: рабочий поток увидел отмену');
+    CheckEquals(1, LOwner.CallbackProbe.Calls, 'кнопка Cancel: подписчик вызван');
+    LOwner.CancelClick;
+    CheckEquals(1, LOwner.CallbackProbe.Calls, 'кнопка Cancel: повторное нажатие ничего не делает');
+  finally
+    LOwner.Free;
+  end;
+  CheckEquals(LLiveBefore, TInterlocked.CompareExchange(GCancelProbeLive, 0, 0),
+    'кнопка Cancel: после Free владельца всё освобождено');
 end;
 
 procedure TestCancelScope;
@@ -8210,6 +8559,8 @@ begin
   RunTest('Варианты: Async и Try', TestVariantsAsyncAndTry);
   RunTest('Построители клавиатур: Inline, Reply, Remove, ForceReply, TgRow → JSON', TestKeyboardBuilders);
   RunTest('Токены отмены: Cancel, Register, отписка, связанные, Linked, WaitFor', TestCancellationTokens);
+  RunTest('Владение: ITgCancellationSource — New, Cancel, связанные, отписка, ' +
+    'стресс 4 потока x 10000, кнопка Cancel', TestCancellationSourceOwnership);
   RunTest('TTgCancelScope: вложенность и разные потоки', TestCancelScope);
   RunTest('Call: окружающий и явный токен, транспорт без токенов', TestCallCancellation);
   RunTest('HTTP-транспорт: retry_after и лимитёр прерываются токеном; Cancel/ResetCancel',

@@ -229,7 +229,12 @@ type
 
   /// <summary>Токен отмены операции (nil — без отмены).</summary>
   ITgCancellation = TgBot.Base.ITgCancellation;
-  /// <summary>Источник отмены: Cancel, связанные токены (Linked).</summary>
+  /// <summary>
+  ///   Источник отмены как интерфейс (токен + Cancel): создаётся через
+  ///   TTgCancellationSource.New, хранить только как ITgCancellationSource.
+  /// </summary>
+  ITgCancellationSource = TgBot.Base.ITgCancellationSource;
+  /// <summary>Источник отмены: New, Cancel, связанные токены (Linked).</summary>
   TTgCancellationSource = TgBot.Base.TTgCancellationSource;
   /// <summary>Окружающий токен отмены потока (Enter/Leave).</summary>
   TTgCancelScope = TgBot.Base.TTgCancelScope;
