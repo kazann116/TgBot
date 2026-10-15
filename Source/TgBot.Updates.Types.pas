@@ -9,9 +9,12 @@
   - ITgUpdateSink / ITgTimedUpdateSink — приёмник обновлений (очередь
     диспетчера TTgUpdateDispatcher, модуль TgBot.Updates.Dispatcher);
   - ITgUpdateSource / ITgWebhookReceiver / ITgPollTimer — контракты
-    источников TTgLongPollSource и TTgWebhookSource (TgBot.Updates);
+    источников TTgLongPollSource (TgBot.Updates.Polling) и
+    TTgWebhookSource (TgBot.Updates);
   - перечисления, константы по умолчанию, тексты (TgUpdatesText),
     TgWebhookHttpStatus, TgWaitEventPumping;
+  - служебное для источников: TgCallTransport, TgInvokeQuietly,
+    TgFinalGraceMs, TgDestroyGraceMs;
   - TTgShutdownSignal — Ctrl+C / закрытие консоли (Windows),
     SIGINT/SIGTERM (Linux, macOS) для консольных ботов.
 
@@ -28,7 +31,9 @@ uses
   System.SyncObjs,
   System.Diagnostics,
   System.JSON,
-  TgBot.Base;
+  TgBot.Base,
+  TgBot.Json,
+  TgBot.Http;
 
 const
   /// <summary>Таймаут long polling (параметр timeout getUpdates) по умолчанию, с.</summary>
@@ -65,6 +70,11 @@ const
   ///   состояние они держат сами (служебное).
   /// </summary>
   TgDestroyGraceMs = 30;
+  /// <summary>
+  ///   Сколько Stop источника ждёт поток после отмены итогового запроса
+  ///   (long polling) или setWebhook/deleteWebhook, мс (служебное).
+  /// </summary>
+  TgFinalGraceMs = 100;
 
 type
   /// <summary>Состояние источника обновлений.</summary>
@@ -297,6 +307,20 @@ function TgWaitEventPumping(AEvent: TEvent; AMs: Cardinal): Boolean;
 /// <summary>HTTP-код ответа на webhook-запрос: 200, 403, 400 или 503.</summary>
 function TgWebhookHttpStatus(AResult: TTgWebhookResult): Integer;
 
+{ Служебное (общее для источников TgBot.Updates.Polling и TgBot.Updates),
+  не часть публичного API. }
+
+/// <summary>
+///   Вызов метода Bot API через транспорт с токеном отмены (как
+///   TTgApiCore.Call, но без клиента: потоки держат только счётчиковые ссылки).
+///   Служебное.
+/// </summary>
+function TgCallTransport(const ATransport: ITgTransport; const AMethod: string;
+  AParams: TTgParams; const AToken: ITgCancellation): TJSONValue;
+
+/// <summary>Вызывает колбэк, поглощая его исключения (служебное).</summary>
+procedure TgInvokeQuietly(const AProc: TProc);
+
 implementation
 
 uses
@@ -308,8 +332,7 @@ uses
 {$IF defined(POSIX) and not defined(ANDROID)}
   Posix.Signal,
 {$IFEND}
-  System.Math,
-  TgBot.Json;
+  System.Math;
 
 resourcestring
   SRuSourceRunning = 'Источник обновлений уже запущен';
@@ -395,6 +418,38 @@ begin
       if Assigned(ApplicationHandleException) then
         ApplicationHandleException(nil);
     end;
+  end;
+end;
+
+function TgCallTransport(const ATransport: ITgTransport; const AMethod: string;
+  AParams: TTgParams; const AToken: ITgCancellation): TJSONValue;
+var
+  LCancellable: ITgCancellableTransport;
+  LScope: TTgCancelScope;
+begin
+  if Supports(ATransport, ITgCancellableTransport, LCancellable) then
+    Exit(LCancellable.ExecuteEx(AMethod, AParams, AToken));
+  // Транспорт без токенов: проверки до и после; токен доступен ему как окружающий.
+  AToken.ThrowIfCancelled;
+  LScope := TTgCancelScope.Enter(AToken);
+  try
+    Result := ATransport.Execute(AMethod, AParams);
+  finally
+    LScope.Leave;
+  end;
+  if AToken.IsCancelled then
+  begin
+    FreeAndNil(Result);
+    raise ETgCancelledError.Create(TgText(TTgText.Cancelled));
+  end;
+end;
+
+procedure TgInvokeQuietly(const AProc: TProc);
+begin
+  try
+    AProc();
+  except
+    // Исключения пользовательских событий не прерывают работу потоков.
   end;
 end;
 
