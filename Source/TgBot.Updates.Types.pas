@@ -333,54 +333,29 @@ uses
 {$IF defined(POSIX) and not defined(ANDROID)}
   Posix.Signal,
 {$IFEND}
-  System.Math;
-
-resourcestring
-  SRuSourceRunning = 'Источник обновлений уже запущен';
-  SEnSourceRunning = 'Update source is already running';
-  SRuDispatcherRunning = 'Диспетчер обновлений уже запущен';
-  SEnDispatcherRunning = 'Update dispatcher is already running';
-  SRuStopFromHandler = 'Нельзя ждать остановки бота из обработчика обновления: ' +
-    'используйте RequestStop';
-  SEnStopFromHandler = 'Cannot wait for the bot to stop from an update handler: ' +
-    'use RequestStop';
-  SRuNoChat = 'В обновлении нет чата для ответа';
-  SEnNoChat = 'The update has no chat to reply to';
-  SRuRunNotMainThread = 'Run с Delivery = Main можно вызывать только из главного потока';
-  SEnRunNotMainThread = 'Run with Delivery = Main must be called from the main thread';
-  SRuRunUnsupported = 'Run недоступен на этой платформе: используйте Start и Stop';
-  SEnRunUnsupported = 'Run is not available on this platform: use Start and Stop';
-  SRuBotRunning = 'Бот уже запущен';
-  SEnBotRunning = 'The bot is already running';
-  SRuHandlerFiltered = 'Назначен %s, но AllowedUpdates не содержит "%s": ' +
-    'такие обновления сервер присылать не будет';
-  SEnHandlerFiltered = '%s is assigned, but AllowedUpdates does not include "%s": ' +
-    'the server will not send such updates';
-  SRuWebhookUrlRequired = 'Режим Webhook: не задан WebhookUrl (внешний HTTPS-адрес бота)';
-  SEnWebhookUrlRequired = 'Webhook mode: WebhookUrl (the public HTTPS address of the bot) is not set';
-  SRuWebhookBadSecret = 'Недопустимый секрет webhook: нужно 1–256 символов A-Z, a-z, 0-9, "_" и "-"';
-  SEnWebhookBadSecret = 'Invalid webhook secret: 1-256 characters A-Z, a-z, 0-9, "_" and "-" are required';
-  SRuWebhookUnsupported = 'Режим Webhook недоступен на этой платформе: используйте Polling';
-  SEnWebhookUnsupported = 'Webhook mode is not available on this platform: use Polling';
+  System.Math,
+  TgBot.Consts;
 
 const
+  // Тексты TTgUpdatesText: пары ресурсных строк TgBot.Consts (SRuUpd…, SEnUpd…).
   CUpdatesTexts: array[TTgUpdatesText, TTgLanguage] of PResStringRec = (
-    (@SRuSourceRunning, @SEnSourceRunning),
-    (@SRuDispatcherRunning, @SEnDispatcherRunning),
-    (@SRuStopFromHandler, @SEnStopFromHandler),
-    (@SRuNoChat, @SEnNoChat),
-    (@SRuRunNotMainThread, @SEnRunNotMainThread),
-    (@SRuRunUnsupported, @SEnRunUnsupported),
-    (@SRuBotRunning, @SEnBotRunning),
-    (@SRuHandlerFiltered, @SEnHandlerFiltered),
-    (@SRuWebhookUrlRequired, @SEnWebhookUrlRequired),
-    (@SRuWebhookBadSecret, @SEnWebhookBadSecret),
-    (@SRuWebhookUnsupported, @SEnWebhookUnsupported)
+    (@SRuUpdSourceRunning, @SEnUpdSourceRunning),
+    (@SRuUpdDispatcherRunning, @SEnUpdDispatcherRunning),
+    (@SRuUpdStopFromHandler, @SEnUpdStopFromHandler),
+    (@SRuUpdNoChat, @SEnUpdNoChat),
+    (@SRuUpdRunNotMainThread, @SEnUpdRunNotMainThread),
+    (@SRuUpdRunUnsupported, @SEnUpdRunUnsupported),
+    (@SRuUpdBotRunning, @SEnUpdBotRunning),
+    (@SRuUpdHandlerFiltered, @SEnUpdHandlerFiltered),
+    (@SRuUpdWebhookUrlRequired, @SEnUpdWebhookUrlRequired),
+    (@SRuUpdWebhookBadSecret, @SEnUpdWebhookBadSecret),
+    (@SRuUpdWebhookUnsupported, @SEnUpdWebhookUnsupported)
   );
 
 function TgUpdatesText(AText: TTgUpdatesText): string;
 begin
-  Result := LoadResString(CUpdatesTexts[AText, TgGetLanguage]);
+  Result := TgLangText(CUpdatesTexts[AText, TTgLanguage.Ru],
+    CUpdatesTexts[AText, TTgLanguage.En]);
 end;
 
 function TgWebhookHttpStatus(AResult: TTgWebhookResult): Integer;
@@ -462,7 +437,7 @@ begin
   FJson := AJson;
   inherited Create;
   if not Assigned(FJson) then
-    raise EArgumentNilException.Create('AJson');
+    raise EArgumentNilException.Create(TgLangTextFmt(@SRuArgNil, @SEnArgNil, ['AJson']));
   FUpdateId := TTgJson.GetInt64(FJson, 'update_id');
   FKind := KindOf(FJson);
   try

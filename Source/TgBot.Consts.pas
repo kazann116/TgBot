@@ -113,6 +113,38 @@ resourcestring
   SRuDtoNotJsonDto = 'Объект типа %s не является DTO поверх JSON (ITgJsonObject)';
   SEnDtoNotJsonDto = 'Object of type %s is not a JSON-based DTO (ITgJsonObject)';
 
+  { Обновления: источники, диспетчер, TTgBot, контекст (TTgUpdatesText,
+    TgUpdatesText из TgBot.Updates.Types; webhook-источник). }
+
+  SRuUpdSourceRunning = 'Источник обновлений уже запущен';
+  SEnUpdSourceRunning = 'Update source is already running';
+  SRuUpdDispatcherRunning = 'Диспетчер обновлений уже запущен';
+  SEnUpdDispatcherRunning = 'Update dispatcher is already running';
+  SRuUpdStopFromHandler = 'Нельзя ждать остановки бота из обработчика обновления: ' +
+    'используйте RequestStop';
+  SEnUpdStopFromHandler = 'Cannot wait for the bot to stop from an update handler: ' +
+    'use RequestStop';
+  SRuUpdNoChat = 'В обновлении нет чата для ответа';
+  SEnUpdNoChat = 'The update has no chat to reply to';
+  SRuUpdRunNotMainThread = 'Run с Delivery = Main можно вызывать только из главного потока';
+  SEnUpdRunNotMainThread = 'Run with Delivery = Main must be called from the main thread';
+  SRuUpdRunUnsupported = 'Run недоступен на этой платформе: используйте Start и Stop';
+  SEnUpdRunUnsupported = 'Run is not available on this platform: use Start and Stop';
+  SRuUpdBotRunning = 'Бот уже запущен';
+  SEnUpdBotRunning = 'The bot is already running';
+  SRuUpdHandlerFiltered = 'Назначен %s, но AllowedUpdates не содержит "%s": ' +
+    'такие обновления сервер присылать не будет';
+  SEnUpdHandlerFiltered = '%s is assigned, but AllowedUpdates does not include "%s": ' +
+    'the server will not send such updates';
+  SRuUpdWebhookUrlRequired = 'Режим Webhook: не задан WebhookUrl (внешний HTTPS-адрес бота)';
+  SEnUpdWebhookUrlRequired = 'Webhook mode: WebhookUrl (the public HTTPS address of the bot) is not set';
+  SRuUpdWebhookBadSecret = 'Недопустимый секрет webhook: нужно 1–256 символов A-Z, a-z, 0-9, "_" и "-"';
+  SEnUpdWebhookBadSecret = 'Invalid webhook secret: 1-256 characters A-Z, a-z, 0-9, "_" and "-" are required';
+  SRuUpdWebhookUnsupported = 'Режим Webhook недоступен на этой платформе: используйте Polling';
+  SEnUpdWebhookUnsupported = 'Webhook mode is not available on this platform: use Polling';
+  SRuUpdNoRandom = 'Криптостойкий генератор случайных чисел ОС недоступен';
+  SEnUpdNoRandom = 'The OS cryptographic random number generator is not available';
+
 implementation
 
 end.

@@ -134,7 +134,8 @@ uses
   System.Classes,
   System.Generics.Collections,
   System.Diagnostics,
-  System.Math;
+  System.Math,
+  TgBot.Consts;
 
 const
   // Предел потоков диспетчера.
@@ -692,7 +693,7 @@ constructor TTgUpdateDispatcher.Create(const AHandler: TTgRawHandler);
 begin
   inherited Create;
   if not Assigned(AHandler) then
-    raise EArgumentNilException.Create('AHandler');
+    raise EArgumentNilException.Create(TgLangTextFmt(@SRuArgNil, @SEnArgNil, ['AHandler']));
   FLock := TCriticalSection.Create;
   FHandler := AHandler;
   FMaxParallel := TgDefaultMaxParallel;

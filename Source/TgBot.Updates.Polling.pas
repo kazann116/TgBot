@@ -179,6 +179,7 @@ uses
   System.JSON,
   System.Math,
   System.StrUtils,
+  TgBot.Consts,
   TgBot.Json;
 
 type
@@ -908,7 +909,7 @@ var
   LThread: TTgPollThread;
 begin
   if not Assigned(ASink) then
-    raise EArgumentNilException.Create('ASink');
+    raise EArgumentNilException.Create(TgLangTextFmt(@SRuArgNil, @SEnArgNil, ['ASink']));
   FLock.Enter;
   try
     LOld := FCore;
