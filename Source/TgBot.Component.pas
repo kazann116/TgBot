@@ -512,37 +512,12 @@ implementation
 
 uses
   System.Diagnostics,
-  System.RegularExpressions;
-
-resourcestring
-  SRuBotActive = 'Нельзя менять свойства TTelegramBot, пока бот работает (Active = True)';
-  SEnBotActive = 'Cannot change TTelegramBot properties while the bot is running (Active = True)';
-  SRuEmptyRuleKey = 'Пустой ключ правила маршрутизатора (%s)';
-  SEnEmptyRuleKey = 'Empty router rule key (%s)';
-  SRuBadCommand = 'Недопустимое имя команды "%s": пробелы и "@" не допускаются';
-  SEnBadCommand = 'Invalid command name "%s": spaces and "@" are not allowed';
-  SRuNoWebhookPath = 'TTelegramBot: не задан путь webhook для Webhook.Server — ' +
-    'задайте Name компонента или Webhook.Path';
-  SEnNoWebhookPath = 'TTelegramBot: the webhook path for Webhook.Server is not set — ' +
-    'set the component Name or Webhook.Path';
-  SRuNoCertificate = 'TTelegramBot: файл сертификата Webhook.Certificate не найден: %s';
-  SEnNoCertificate = 'TTelegramBot: Webhook.Certificate file not found: %s';
-  SRuRunNotMain = 'TTelegramBot.Run с Delivery = Main можно вызывать только из главного потока';
-  SEnRunNotMain = 'TTelegramBot.Run with Delivery = Main must be called from the main thread';
-  SRuRunUnsupported = 'TTelegramBot.Run недоступен на этой платформе: используйте Active';
-  SEnRunUnsupported = 'TTelegramBot.Run is not available on this platform: use Active';
+  System.RegularExpressions,
+  TgBot.Base,
+  TgBot.Consts;
 
 const
   CDefaultTokenEnv = 'TGBOT_TOKEN';
-
-/// <summary>Текст на языке библиотеки (TgSetLanguage).</summary>
-function LangText(const ARu, AEn: string): string;
-begin
-  if TgGetLanguage = TTgLanguage.En then
-    Result := AEn
-  else
-    Result := ARu;
-end;
 
 /// <summary>Компонент по связи замыкания; nil — компонент уничтожен.</summary>
 function LinkOwner(const ALink: IInterface): TTelegramBot;
@@ -595,16 +570,16 @@ begin
   if Copy(LName, 1, 1) = '/' then
     Delete(LName, 1, 1);
   if LName = '' then
-    raise ETgError.CreateFmt(LangText(SRuEmptyRuleKey, SEnEmptyRuleKey), ['Command']);
+    raise ETgError.Create(TgLangTextFmt(@SRuRouteEmptyKey, @SEnRouteEmptyKey, ['Command']));
   for C in LName do
     if (C <= ' ') or (C = '@') then
-      raise ETgError.CreateFmt(LangText(SRuBadCommand, SEnBadCommand), [AName]);
+      raise ETgError.Create(TgLangTextFmt(@SRuRouteBadCommand, @SEnRouteBadCommand, [AName]));
 end;
 
 procedure CheckRuleKey(const AKey, ARule: string);
 begin
   if AKey = '' then
-    raise ETgError.CreateFmt(LangText(SRuEmptyRuleKey, SEnEmptyRuleKey), [ARule]);
+    raise ETgError.Create(TgLangTextFmt(@SRuRouteEmptyKey, @SEnRouteEmptyKey, [ARule]));
 end;
 
 { Обработчики внутреннего бота: захватывают только связь с компонентом }
@@ -1145,7 +1120,7 @@ procedure TTelegramBot.CheckInactive;
 begin
   if (ComponentState * [csDesigning, csLoading] = []) and Assigned(FBot) and
     (FBot.State in [TTgBotState.Running, TTgBotState.Stopping]) then
-    raise ETgError.Create(LangText(SRuBotActive, SEnBotActive));
+    raise ETgError.Create(TgLangText(@SRuCompBotActive, @SEnCompBotActive));
 end;
 
 function TTelegramBot.GetActive: Boolean;
@@ -1271,8 +1246,8 @@ begin
   if (FMode = TTgReceiveMode.Webhook) and (Trim(FWebhook.Certificate) <> '') then
   begin
     if not FileExists(Trim(FWebhook.Certificate)) then
-      raise ETgError.CreateFmt(LangText(SRuNoCertificate, SEnNoCertificate),
-        [Trim(FWebhook.Certificate)]);
+      raise ETgError.Create(TgLangTextFmt(@SRuCompNoCertificate, @SEnCompNoCertificate,
+        [Trim(FWebhook.Certificate)]));
     ABot.WebhookCertificate := TTgInputFile.FromFile(Trim(FWebhook.Certificate));
   end;
   ABot.DeleteWebhookOnStop := FWebhook.DeleteOnStop;
@@ -1327,7 +1302,7 @@ begin
   // Путь нужен только серверу: без Server тело передаёт приложение (HandleWebhook).
   if (FMode = TTgReceiveMode.Webhook) and Assigned(FWebhook.FServer) and
     (Trim(FWebhook.FPath) = '') and (Name = '') then
-    raise ETgError.Create(LangText(SRuNoWebhookPath, SEnNoWebhookPath));
+    raise ETgError.Create(TgLangText(@SRuCompNoWebhookPath, @SEnCompNoWebhookPath));
 end;
 
 procedure TTelegramBot.StartBot;
@@ -1531,11 +1506,11 @@ var
 {$ENDIF}
 begin
 {$IFDEF ANDROID}
-  raise ETgError.Create(LangText(SRuRunUnsupported, SEnRunUnsupported));
+  raise ETgError.Create(TgLangText(@SRuCompRunUnsupported, @SEnCompRunUnsupported));
 {$ELSE}
   LMain := TThread.CurrentThread.ThreadID = MainThreadID;
   if (FDelivery = TTgDelivery.Main) and not LMain then
-    raise ETgError.Create(LangText(SRuRunNotMain, SEnRunNotMain));
+    raise ETgError.Create(TgLangText(@SRuCompRunNotMain, @SEnCompRunNotMain));
   AtomicExchange(FRunStopFlag, 0);
   FRunWake.ResetEvent;
   LFaults := AtomicCmpExchange(FFaultCount, 0, 0);
@@ -1626,7 +1601,7 @@ var
   I: Integer;
 begin
   if Length(ANames) = 0 then
-    raise ETgError.CreateFmt(LangText(SRuEmptyRuleKey, SEnEmptyRuleKey), ['Command']);
+    raise ETgError.Create(TgLangTextFmt(@SRuRouteEmptyKey, @SEnRouteEmptyKey, ['Command']));
   // Открытый массив замыканием не захватывается — копия.
   SetLength(LNames, Length(ANames));
   for I := 0 to High(ANames) do

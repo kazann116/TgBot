@@ -150,13 +150,11 @@ procedure CheckRouteKey(const AKey, ARule: string);
 
 implementation
 
-resourcestring
-  SRuRouteEmptyKey = 'Пустой ключ правила маршрутизатора (%s)';
-  SEnRouteEmptyKey = 'Empty router rule key (%s)';
-  SRuRouteBadCommand = 'Недопустимое имя команды "%s": пробелы и "@" не допускаются';
-  SEnRouteBadCommand = 'Invalid command name "%s": spaces and "@" are not allowed';
+uses
+  TgBot.Consts;
 
 const
+  // Тексты TTgRouterText: пары ресурсных строк TgBot.Consts (SRuRoute…, SEnRoute…).
   CRouterTexts: array[TTgRouterText, TTgLanguage] of PResStringRec = (
     (@SRuRouteEmptyKey, @SEnRouteEmptyKey),
     (@SRuRouteBadCommand, @SEnRouteBadCommand)
@@ -164,7 +162,7 @@ const
 
 function TgRouterText(AText: TTgRouterText): string;
 begin
-  Result := LoadResString(CRouterTexts[AText, TgBot.Base.TgGetLanguage]);
+  Result := TgLangText(CRouterTexts[AText, TTgLanguage.Ru], CRouterTexts[AText, TTgLanguage.En]);
 end;
 
 { TTgTextMatcher }

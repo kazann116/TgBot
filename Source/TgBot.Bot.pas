@@ -422,27 +422,8 @@ uses
   System.Classes,
   System.Diagnostics,
   System.Math,
+  TgBot.Consts,
   TgBot.Router;
-
-resourcestring
-  SRuWebhookNotHttps = 'Режим Webhook: WebhookUrl должен начинаться с https:// ' +
-    '(Telegram принимает только HTTPS; http:// — только с Local Bot API server)';
-  SEnWebhookNotHttps = 'Webhook mode: WebhookUrl must start with https:// ' +
-    '(Telegram accepts HTTPS only; http:// is allowed only with a Local Bot API server)';
-
-type
-  /// <summary>Тексты модуля.</summary>
-  TTgBotText = (WebhookNotHttps);
-
-const
-  CBotTexts: array[TTgBotText, TTgLanguage] of PResStringRec = (
-    (@SRuWebhookNotHttps, @SEnWebhookNotHttps)
-  );
-
-function TgBotText(AText: TTgBotText): string;
-begin
-  Result := LoadResString(CBotTexts[AText, TgBot.Base.TgGetLanguage]);
-end;
 
 { TTgBot }
 
@@ -664,7 +645,7 @@ begin
   if not SameText(Copy(Trim(FWebhookUrl), 1, 8), 'https://') and
     ((FApi.Settings.ApiUrl = '') or SameText(FApi.Settings.ApiUrl, TgDefaultApiUrl) or
     not SameText(Copy(Trim(FWebhookUrl), 1, 7), 'http://')) then
-    raise ETgError.Create(TgBotText(TTgBotText.WebhookNotHttps));
+    raise ETgError.Create(TgLangText(@SRuBotWebhookNotHttps, @SEnBotWebhookNotHttps));
   // Текст ошибки не содержит самого секрета.
   if FWebhookSecretToken <> '' then
   begin
