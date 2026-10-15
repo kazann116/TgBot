@@ -4,7 +4,7 @@
   TgBot — библиотека Telegram Bot API для Delphi.
   Базовые типы ядра: опциональные значения, идентификатор чата, входной файл,
   исключения, локализация сообщений (RU/EN) и токены отмены
-  (ITgCancellation, TTgCancellationSource, TTgCancelScope).
+  (ITgCancellation, ITgCancellationSource, TTgCancellationSource, TTgCancelScope).
 
   Модуль использует только RTL и компилируется под Win32, Win64, Linux64,
   Android/Android64. Минимальная версия Delphi — 10.4 Sydney.
@@ -18,6 +18,7 @@ uses
   System.SysUtils,
   System.Classes,
   System.SyncObjs,
+  System.Generics.Collections,
   System.JSON;
 
 const
@@ -163,7 +164,7 @@ type
 
   /// <summary>
   ///   Токен отмены операции. Потокобезопасен. Создаётся через
-  ///   TTgCancellationSource; nil вместо токена означает «без отмены».
+  ///   TTgCancellationSource.New; nil вместо токена означает «без отмены».
   /// </summary>
   ITgCancellation = interface
     ['{8AF185BD-7206-4ACD-BCFE-7E817DF1B868}']
@@ -188,28 +189,73 @@ type
   end;
 
   /// <summary>
+  ///   Источник отмены: токен ITgCancellation с правом запросить отмену.
+  ///   Создаётся через TTgCancellationSource.New; храните ссылку только как
+  ///   ITgCancellationSource, а потребителям отдавайте как ITgCancellation.
+  /// </summary>
+  ITgCancellationSource = interface(ITgCancellation)
+    ['{6E1AD13D-1A08-4B32-9C7B-2948B7FCBEB4}']
+    /// <summary>
+    ///   Запрашивает отмену. Идемпотентно: повторные вызовы ничего не делают.
+    ///   Колбэки подписчиков вызываются в текущем потоке вне блокировки.
+    /// </summary>
+    procedure Cancel;
+  end;
+
+  /// <summary>
+  ///   Служебный интерфейс подписок TTgCancellationSource: через него подписка
+  ///   (результат Register) снимает свой колбэк при освобождении. В прикладном
+  ///   коде не нужен.
+  /// </summary>
+  ITgCancelRegistry = interface
+    ['{0D8864BB-2140-4DEC-88B8-A8A061EEF8F7}']
+    /// <summary>Снимает колбэк с идентификатором AId (если он ещё не вызван).</summary>
+    procedure Unregister(AId: Int64);
+  end;
+
+  /// <summary>
   ///   Источник отмены: владелец токена ITgCancellation (сам реализует его).
+  ///   Создавайте через New и храните как ITgCancellationSource; не храните
+  ///   ссылку на класс (объект живёт по счётчику ссылок интерфейсов).
   ///   Связанный источник (AParent) отменяется вместе с родителем; подписка
   ///   на родителя снимается в деструкторе — циклов ссылок нет. Подписки
-  ///   (Register) удерживают источник до своего освобождения.
+  ///   (Register) удерживают источник до своего освобождения; источник
+  ///   хранит только колбэки с идентификаторами, а не сами подписки.
   /// </summary>
-  TTgCancellationSource = class(TInterfacedObject, ITgCancellation)
+  TTgCancellationSource = class(TInterfacedObject, ITgCancellation,
+    ITgCancellationSource, ITgCancelRegistry)
+  private type
+    /// <summary>Колбэк подписчика и идентификатор его подписки.</summary>
+    TCallbackEntry = record
+      Id: Int64;
+      Callback: TProc;
+    end;
   private
     FLock: TCriticalSection;
     FCancelled: Integer;
     FEvent: TEvent;
-    FRegistrations: TList;
+    FCallbacks: TList<TCallbackEntry>;
+    FLastId: Int64;
     FLink: IInterface;
     FParentLinks: TArray<IInterface>;
     procedure LinkParent(const AParent: ITgCancellation);
-    procedure Unregister(ARegistration: TObject);
+    { ITgCancelRegistry }
+    procedure Unregister(AId: Int64);
+    /// <summary>Источник, связанный с двумя родителями (любой может быть nil).</summary>
+    constructor CreateLinked(const AParentA, AParentB: ITgCancellation);
   public
     /// <summary>
     ///   Создаёт источник; при заданном AParent — связанный: отмена родителя
     ///   отменяет и этот источник (если родитель уже отменён — сразу).
+    ///   Предпочтительно создавать через New.
     /// </summary>
     constructor Create(const AParent: ITgCancellation = nil);
     destructor Destroy; override;
+    /// <summary>
+    ///   Создаёт источник (при заданном AParent — связанный, как Create)
+    ///   и возвращает его как ITgCancellationSource.
+    /// </summary>
+    class function New(const AParent: ITgCancellation = nil): ITgCancellationSource; static;
     /// <summary>
     ///   Токен, отменяемый при отмене любого из A и B. Если один из них nil
     ///   (или A = B) — возвращается другой без создания источника; оба nil — nil.
@@ -511,7 +557,13 @@ type
     procedure Detach;
   end;
 
-  /// <summary>Реализация ITgCancelLink.</summary>
+  /// <summary>
+  ///   Реализация ITgCancelLink. FTarget — намеренно слабая ссылка на класс
+  ///   (без счётчика): сильная ссылка дала бы цикл «родитель → колбэк →
+  ///   ребёнок», а [Weak]-интерфейс нельзя безопасно разыменовать, пока
+  ///   деструктор цели уже идёт. Жизнь FTarget гарантирует монитор: цель
+  ///   вызывает Detach первым действием деструктора.
+  /// </summary>
   TTgCancelLink = class(TInterfacedObject, ITgCancelLink)
   private
     FTarget: TTgCancellationSource;
@@ -522,15 +574,16 @@ type
   end;
 
   /// <summary>
-  ///   Подписка на отмену. Удерживает источник; освобождение — отписка.
+  ///   Подписка на отмену: идентификатор колбэка и реестр источника.
+  ///   Удерживает источник (через ITgCancelRegistry); освобождение — отписка.
+  ///   Источник подписку не хранит — циклов ссылок нет.
   /// </summary>
   TTgCancelRegistration = class(TInterfacedObject)
   private
-    FSource: TTgCancellationSource;
-    FSourceRef: IInterface;
-    FCallback: TProc;
+    FRegistry: ITgCancelRegistry;
+    FId: Int64;
   public
-    constructor Create(ASource: TTgCancellationSource; const ACallback: TProc);
+    constructor Create(const ARegistry: ITgCancelRegistry; AId: Int64);
     destructor Destroy; override;
   end;
 
@@ -665,20 +718,19 @@ end;
 
 { TTgCancelRegistration }
 
-constructor TTgCancelRegistration.Create(ASource: TTgCancellationSource;
-  const ACallback: TProc);
+constructor TTgCancelRegistration.Create(const ARegistry: ITgCancelRegistry;
+  AId: Int64);
 begin
   inherited Create;
-  FSource := ASource;
-  FSourceRef := ASource;
-  FCallback := ACallback;
+  FRegistry := ARegistry;
+  FId := AId;
 end;
 
 destructor TTgCancelRegistration.Destroy;
 begin
-  // Источник жив: его удерживает FSourceRef (освобождается после тела деструктора).
-  if Assigned(FSource) then
-    FSource.Unregister(Self);
+  // Источник жив: его удерживает FRegistry (освобождается после тела деструктора).
+  if Assigned(FRegistry) then
+    FRegistry.Unregister(FId);
   inherited Destroy;
 end;
 
@@ -686,11 +738,24 @@ end;
 
 constructor TTgCancellationSource.Create(const AParent: ITgCancellation);
 begin
+  CreateLinked(AParent, nil);
+end;
+
+constructor TTgCancellationSource.CreateLinked(const AParentA,
+  AParentB: ITgCancellation);
+begin
   inherited Create;
   FLock := TCriticalSection.Create;
-  FRegistrations := TList.Create;
-  if Assigned(AParent) then
-    LinkParent(AParent);
+  FCallbacks := TList<TCallbackEntry>.Create;
+  // Если родитель уже отменён, источник отменяется сразу (до возврата).
+  LinkParent(AParentA);
+  LinkParent(AParentB);
+end;
+
+class function TTgCancellationSource.New(
+  const AParent: ITgCancellation): ITgCancellationSource;
+begin
+  Result := TTgCancellationSource.Create(AParent);
 end;
 
 destructor TTgCancellationSource.Destroy;
@@ -702,7 +767,7 @@ begin
   FParentLinks := nil;
   FLink := nil;
   FreeAndNil(FEvent);
-  FreeAndNil(FRegistrations);
+  FreeAndNil(FCallbacks);
   FreeAndNil(FLock);
   inherited Destroy;
 end;
@@ -725,28 +790,27 @@ end;
 
 class function TTgCancellationSource.Linked(const A,
   B: ITgCancellation): ITgCancellation;
-var
-  LSource: TTgCancellationSource;
 begin
   if not Assigned(A) then
     Exit(B);
   if not Assigned(B) or (A = B) then
     Exit(A);
-  LSource := TTgCancellationSource.Create(A);
-  Result := LSource;
-  LSource.LinkParent(B);
+  Result := TTgCancellationSource.CreateLinked(A, B);
 end;
 
-procedure TTgCancellationSource.Unregister(ARegistration: TObject);
+procedure TTgCancellationSource.Unregister(AId: Int64);
 var
-  LIndex: Integer;
+  I: Integer;
 begin
   FLock.Enter;
   try
-    // После Cancel список пуст — подписки там уже нет.
-    LIndex := FRegistrations.IndexOf(ARegistration);
-    if LIndex >= 0 then
-      FRegistrations.Delete(LIndex);
+    // После Cancel список пуст — колбэка там уже нет.
+    for I := 0 to FCallbacks.Count - 1 do
+      if FCallbacks[I].Id = AId then
+      begin
+        FCallbacks.Delete(I);
+        Break;
+      end;
   finally
     FLock.Leave;
   end;
@@ -765,10 +829,10 @@ begin
     if Assigned(FEvent) then
       FEvent.SetEvent;
     // Колбэки копируются: подписка может освобождаться параллельно.
-    SetLength(LCallbacks, FRegistrations.Count);
-    for I := 0 to FRegistrations.Count - 1 do
-      LCallbacks[I] := TTgCancelRegistration(FRegistrations[I]).FCallback;
-    FRegistrations.Clear;
+    SetLength(LCallbacks, FCallbacks.Count);
+    for I := 0 to FCallbacks.Count - 1 do
+      LCallbacks[I] := FCallbacks[I].Callback;
+    FCallbacks.Clear;
   finally
     FLock.Leave;
   end;
@@ -809,7 +873,7 @@ end;
 
 function TTgCancellationSource.Register(const ACallback: TProc): IInterface;
 var
-  LRegistration: TTgCancelRegistration;
+  LEntry: TCallbackEntry;
 begin
   Result := nil;
   if not Assigned(ACallback) then
@@ -818,9 +882,13 @@ begin
   try
     if FCancelled = 0 then
     begin
-      LRegistration := TTgCancelRegistration.Create(Self, ACallback);
-      Result := LRegistration;
-      FRegistrations.Add(LRegistration);
+      Inc(FLastId);
+      LEntry.Id := FLastId;
+      LEntry.Callback := ACallback;
+      // Сначала подписка: если Add не удастся, её освобождение снимет
+      // (несуществующую) запись без последствий.
+      Result := TTgCancelRegistration.Create(Self, LEntry.Id);
+      FCallbacks.Add(LEntry);
       Exit;
     end;
   finally
