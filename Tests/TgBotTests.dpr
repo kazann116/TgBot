@@ -174,6 +174,9 @@ var
   GTests: Integer;
   GTestsFailed: Integer;
   GCurrent: string;
+  // Пропуски из-за окружения (Skip): число тестов и причина в текущем тесте.
+  GTestsSkipped: Integer;
+  GCurrentSkip: string;
 
 { TFakeTransport }
 
@@ -450,6 +453,15 @@ begin
     IntToStr(AActual));
 end;
 
+/// <summary>
+///   Тест не может выполниться из-за окружения (не дефект библиотеки):
+///   без провалов он выводится как [SKIP] с причиной AWhy, а не [ OK ].
+/// </summary>
+procedure Skip(const AWhy: string);
+begin
+  GCurrentSkip := AWhy;
+end;
+
 /// <summary>AProc выбрасывает исключение класса AClass (или потомка).</summary>
 function Raises(const AProc: TProc; AClass: ExceptClass): Boolean;
 begin
@@ -511,6 +523,7 @@ begin
   if (LOnly <> '') and (Pos(LOnly, AName) = 0) then
     Exit;
   GCurrent := AName;
+  GCurrentSkip := '';
   Inc(GTests);
   LFailedBefore := GFailed;
   try
@@ -522,7 +535,12 @@ begin
       Writeln('    EXCEPTION: ', E.ClassName, ': ', E.Message);
     end;
   end;
-  if GFailed = LFailedBefore then
+  if (GFailed = LFailedBefore) and (GCurrentSkip <> '') then
+  begin
+    Inc(GTestsSkipped);
+    Writeln('[SKIP] ', AName, ': ', GCurrentSkip);
+  end
+  else if GFailed = LFailedBefore then
     Writeln('[ OK ] ', AName)
   else
   begin
@@ -5440,6 +5458,11 @@ var
 const
   // Ключ командной строки: дочерний процесс теста завершения с висящими обработчиками.
   CExitHangSwitch = '--exit-hang';
+  // Код дочернего процесса, не прошедшего инициализацию DLL (STATUS_DLL_INIT_FAILED):
+  // загрузчик Windows, до кода программы; не путать со сбоем при завершении.
+  CStatusDllInitFailed = DWORD($C0000142);
+  // Попыток запуска дочернего процесса, если он не стартовал (см. выше).
+  CExitHangStartAttempts = 3;
 
 /// <summary>
 ///   Обработчик диспетчера: сигнал входа, затем ожидание ARelease (для
@@ -5698,11 +5721,30 @@ end;
 
 {$IFDEF MSWINDOWS}
 /// <summary>
-///   Дочерний процесс (ключ --exit-hang): бот и отдельный диспетчер с
-///   обработчиками, висящими 60 с; диспетчер — Free без Stop, бот — Stop(200)
-///   = False и Free; затем выход из программы. Объекты, нужные висящим
-///   обработчикам, намеренно не освобождаются (отчёт об утечках выключен).
-///   Код: 0 — сценарий выполнен; 3–5 — сбой сценария.
+///   Дочерний процесс: взводит событие-маркер «сценарий начат» (имя — второй
+///   параметр командной строки). False — события нет или оно не взведено.
+/// </summary>
+function SignalExitHangStarted: Boolean;
+var
+  LEvent: THandle;
+begin
+  LEvent := OpenEvent(EVENT_MODIFY_STATE, False, PChar(ParamStr(2)));
+  Result := LEvent <> 0;
+  if Result then
+  try
+    Result := SetEvent(LEvent);
+  finally
+    CloseHandle(LEvent);
+  end;
+end;
+
+/// <summary>
+///   Дочерний процесс (ключ --exit-hang &lt;имя события&gt;): маркер «сценарий
+///   начат», затем бот и отдельный диспетчер с обработчиками, висящими 60 с;
+///   диспетчер — Free без Stop, бот — Stop(200) = False и Free; затем выход из
+///   программы. Объекты, нужные висящим обработчикам, намеренно не
+///   освобождаются (отчёт об утечках выключен).
+///   Код: 0 — сценарий выполнен; 3–5 — сбой сценария; 6 — маркер не взведён.
 /// </summary>
 function RunExitHangChild: Integer;
 var
@@ -5717,6 +5759,8 @@ var
   LDispatcher: ITgUpdateDispatcher;
   LWatch: TStopwatch;
 begin
+  if not SignalExitHangStarted then
+    Exit(6);
   LNeverSource := TTgCancellationSource.Create;
   LNever := LNeverSource;
   LEntered := TEvent.Create(nil, True, False, '');
@@ -5747,37 +5791,111 @@ begin
   Result := 0;
 end;
 
-procedure TestProcessExitWithHangingHandlers;
+type
+  /// <summary>Итог одного запуска дочернего процесса --exit-hang.</summary>
+  TExitHangRun = record
+    // CreateProcess удался; иначе Error — текст ошибки.
+    Launched: Boolean;
+    Error: string;
+    // Процесс завершился сам за 15 с (иначе снят с кодом 99).
+    Exited: Boolean;
+    // Маркер «сценарий начат»: дочерний дошёл до кода программы.
+    Started: Boolean;
+    Code: DWORD;
+    // Время жизни, мс, включая запуск.
+    Ms: Int64;
+  end;
+
+/// <summary>
+///   Запуск дочернего процесса --exit-hang и ожидание его завершения.
+///   DETACHED_PROCESS: дочерний ничего не выводит, а консоль родителя
+///   наследовать нельзя — при фоновом прогоне она может быть уже закрыта
+///   (завершилась оболочка), и тогда дочерний не проходит инициализацию
+///   DLL (0xC0000142) ещё до кода программы.
+/// </summary>
+function RunExitHangOnce: TExitHangRun;
 var
+  LStarted: TEvent;
   LStartup: TStartupInfo;
   LProcess: TProcessInformation;
-  LCommand: string;
+  LName, LCommand: string;
   LWatch: TStopwatch;
-  LWait, LCode: DWORD;
 begin
-  FillChar(LStartup, SizeOf(LStartup), 0);
-  LStartup.cb := SizeOf(LStartup);
-  LCommand := '"' + ParamStr(0) + '" ' + CExitHangSwitch;
-  UniqueString(LCommand);
-  LWatch := TStopwatch.StartNew;
-  if not CreateProcess(nil, PChar(LCommand), nil, nil, False, 0, nil, nil, LStartup, LProcess) then
+  Result := Default(TExitHangRun);
+  LName := 'Local\TgBotTests.ExitHang.' + TGUID.NewGuid.ToString;
+  LStarted := TEvent.Create(nil, True, False, LName);
+  try
+    FillChar(LStartup, SizeOf(LStartup), 0);
+    LStartup.cb := SizeOf(LStartup);
+    LCommand := '"' + ParamStr(0) + '" ' + CExitHangSwitch + ' "' + LName + '"';
+    UniqueString(LCommand);
+    LWatch := TStopwatch.StartNew;
+    Result.Launched := CreateProcess(nil, PChar(LCommand), nil, nil, False, DETACHED_PROCESS,
+      nil, nil, LStartup, LProcess);
+    if not Result.Launched then
+    begin
+      Result.Error := SysErrorMessage(GetLastError);
+      Exit;
+    end;
+    try
+      Result.Exited := WaitForSingleObject(LProcess.hProcess, 15000) = WAIT_OBJECT_0;
+      Result.Ms := LWatch.ElapsedMilliseconds;
+      if not Result.Exited then
+        TerminateProcess(LProcess.hProcess, 99);
+      Result.Code := 99;
+      GetExitCodeProcess(LProcess.hProcess, Result.Code);
+    finally
+      CloseHandle(LProcess.hThread);
+      CloseHandle(LProcess.hProcess);
+    end;
+    Result.Started := LStarted.WaitFor(0) = TWaitResult.wrSignaled;
+  finally
+    LStarted.Free;
+  end;
+end;
+
+/// <summary>
+///   Дочерний процесс не стартовал: загрузчик отказал (0xC0000142, например,
+///   нет desktop heap или консоли) до маркера «сценарий начат». Это окружение,
+///   а не сбой при завершении — запуск повторяется.
+/// </summary>
+function ExitHangNotStarted(const ARun: TExitHangRun): Boolean;
+begin
+  Result := ARun.Exited and not ARun.Started and (ARun.Code = CStatusDllInitFailed);
+end;
+
+procedure TestProcessExitWithHangingHandlers;
+var
+  LRun: TExitHangRun;
+  LAttempt: Integer;
+begin
+  for LAttempt := 1 to CExitHangStartAttempts do
   begin
-    Check(False, 'дочерний процесс запущен: ' + SysErrorMessage(GetLastError));
+    LRun := RunExitHangOnce;
+    if not LRun.Launched then
+    begin
+      Check(False, 'дочерний процесс запущен: ' + LRun.Error);
+      Exit;
+    end;
+    if not ExitHangNotStarted(LRun) then
+      Break;
+    Writeln(Format('    дочерний процесс не стартовал (попытка %d из %d): код 0x%.8x за %d мс, ' +
+      'маркера «сценарий начат» нет', [LAttempt, CExitHangStartAttempts, Int64(LRun.Code), LRun.Ms]));
+    if LAttempt < CExitHangStartAttempts then
+      Sleep(500);
+  end;
+  if ExitHangNotStarted(LRun) then
+  begin
+    Skip(Format('дочерний процесс не стартовал ни в одной из %d попыток (0x%.8x, ' +
+      'STATUS_DLL_INIT_FAILED — окружение), сценарий не проверен',
+      [CExitHangStartAttempts, Int64(LRun.Code)]));
     Exit;
   end;
-  try
-    LWait := WaitForSingleObject(LProcess.hProcess, 15000);
-    GExitHangMs := LWatch.ElapsedMilliseconds;
-    if LWait <> WAIT_OBJECT_0 then
-      TerminateProcess(LProcess.hProcess, 99);
-    LCode := 99;
-    GetExitCodeProcess(LProcess.hProcess, LCode);
-  finally
-    CloseHandle(LProcess.hThread);
-    CloseHandle(LProcess.hProcess);
-  end;
-  Check(LWait = WAIT_OBJECT_0, 'процесс с висящими обработчиками завершился');
-  CheckEquals(0, LCode, 'код выхода 0: сценарий выполнен, без AV при завершении');
+  // Дочерний действительно запускался — сценарий проверяется строго.
+  GExitHangMs := LRun.Ms;
+  Check(LRun.Exited, 'процесс с висящими обработчиками завершился');
+  Check(LRun.Started, 'дочерний процесс начал сценарий (маркер «сценарий начат»)');
+  CheckEquals(0, LRun.Code, 'код выхода 0: сценарий выполнен, без AV при завершении');
   Check(GExitHangMs < 2000,
     Format('процесс завершился < 2 с (%d мс, включая запуск)', [GExitHangMs]));
 end;
@@ -11602,6 +11720,9 @@ begin
     'отмен родителя = %d, вызовов колбэков детей = %d', [GRaceTag, GRaceMs, GRaceCancels, GRaceHits]));
   Writeln(Format('Тестов: %d, не прошло: %d; проверок: %d, ошибок: %d',
     [GTests, GTestsFailed, GPassed + GFailed, GFailed]));
+  // Отдельной строкой: формат итоговой строки выше разбирают скрипты прогонов.
+  if GTestsSkipped > 0 then
+    Writeln(Format('Пропущено из-за окружения ([SKIP]): %d', [GTestsSkipped]));
   if GFailed > 0 then
     ExitCode := 1;
 end;
