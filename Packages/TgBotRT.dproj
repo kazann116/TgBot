@@ -102,6 +102,7 @@
         <DCCReference Include="..\Source\TgBot.Consts.pas"/>
         <DCCReference Include="..\Source\TgBot.Base.pas"/>
         <DCCReference Include="..\Source\TgBot.Json.pas"/>
+        <DCCReference Include="..\Source\TgBot.Intf.pas"/>
         <DCCReference Include="..\Source\TgBot.Http.pas"/>
         <DCCReference Include="..\Source\TgBot.Dto.pas"/>
         <DCCReference Include="..\Source\TgBot.Core.pas"/>

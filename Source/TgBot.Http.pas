@@ -5,6 +5,8 @@
 
   - ITgTransport — абстракция транспорта (подменяется в тестах);
   - ITgCancellableTransport — транспорт с токеном отмены на операцию;
+    оба контракта и записи настроек объявлены в TgBot.Intf (для своей
+    реализации транспорта достаточно его), здесь — псевдонимы;
   - TTgHttpTransport — реализация: POST JSON / multipart, GET для файлов,
     пул THTTPClient (THTTPClient не потокобезопасен — каждый запрос берёт
     клиент из пула в монопольное пользование), разбор ответа Bot API,
@@ -36,182 +38,55 @@ uses
   System.Net.HttpClient,
   System.Net.Mime,
   TgBot.Base,
-  TgBot.Json;
+  TgBot.Json,
+  TgBot.Intf;
 
 const
-  /// <summary>Адрес облачного Bot API по умолчанию.</summary>
-  TgDefaultApiUrl = 'https://api.telegram.org';
-  /// <summary>Таймаут соединения по умолчанию, мс.</summary>
-  TgDefaultConnectionTimeoutMs = 15000;
-  /// <summary>Таймаут ответа по умолчанию, мс (для long polling увеличивается автоматически).</summary>
-  TgDefaultResponseTimeoutMs = 60000;
+  /// <summary>Адрес облачного Bot API по умолчанию (TgBot.Intf).</summary>
+  TgDefaultApiUrl = TgBot.Intf.TgDefaultApiUrl;
+  /// <summary>Таймаут соединения по умолчанию, мс (TgBot.Intf).</summary>
+  TgDefaultConnectionTimeoutMs = TgBot.Intf.TgDefaultConnectionTimeoutMs;
+  /// <summary>Таймаут ответа по умолчанию, мс (TgBot.Intf).</summary>
+  TgDefaultResponseTimeoutMs = TgBot.Intf.TgDefaultResponseTimeoutMs;
   /// <summary>Запас к timeout getUpdates при расчёте таймаута ответа, с.</summary>
   TgLongPollReserveSec = 15;
-  /// <summary>Максимум попыток повтора при 429 по умолчанию.</summary>
-  TgDefaultMaxRetries = 3;
-  /// <summary>Максимальное ожидание retry_after по умолчанию, с (больше — ошибка сразу).</summary>
-  TgDefaultMaxRetryAfterSec = 60;
-  /// <summary>Глобальный лимит запросов в секунду на бота по умолчанию.</summary>
-  TgDefaultGlobalRatePerSec = 30;
-  /// <summary>Минимальный интервал между сообщениями в один чат по умолчанию, мс.</summary>
-  TgDefaultPerChatIntervalMs = 1000;
+  /// <summary>Максимум попыток повтора при 429 по умолчанию (TgBot.Intf).</summary>
+  TgDefaultMaxRetries = TgBot.Intf.TgDefaultMaxRetries;
+  /// <summary>Максимальное ожидание retry_after по умолчанию, с (TgBot.Intf).</summary>
+  TgDefaultMaxRetryAfterSec = TgBot.Intf.TgDefaultMaxRetryAfterSec;
+  /// <summary>Глобальный лимит запросов в секунду на бота по умолчанию (TgBot.Intf).</summary>
+  TgDefaultGlobalRatePerSec = TgBot.Intf.TgDefaultGlobalRatePerSec;
+  /// <summary>Минимальный интервал между сообщениями в один чат по умолчанию, мс (TgBot.Intf).</summary>
+  TgDefaultPerChatIntervalMs = TgBot.Intf.TgDefaultPerChatIntervalMs;
   /// <summary>Максимум простаивающих HTTP-клиентов в пуле.</summary>
   TgMaxIdleClients = 8;
 
 type
+  { Контракты транспорта объявлены в TgBot.Intf (модуль без реализаций и без
+    System.Net); здесь — псевдонимы для совместимости: те же типы и GUID. }
+
+  /// <summary>Настройки HTTP-прокси бота (описание — TgBot.Intf.TTgProxySettings).</summary>
+  TTgProxySettings = TgBot.Intf.TTgProxySettings;
+  /// <summary>Настройки транспорта (описание — TgBot.Intf.TTgHttpSettings).</summary>
+  TTgHttpSettings = TgBot.Intf.TTgHttpSettings;
+  /// <summary>Сырой HTTP-ответ (TgBot.Intf).</summary>
+  TTgHttpResponse = TgBot.Intf.TTgHttpResponse;
+  /// <summary>Транспорт Bot API (описание — TgBot.Intf.ITgTransport).</summary>
+  ITgTransport = TgBot.Intf.ITgTransport;
+  /// <summary>Транспорт с отменой отдельной операции (описание — TgBot.Intf.ITgCancellableTransport).</summary>
+  ITgCancellableTransport = TgBot.Intf.ITgCancellableTransport;
+
   /// <summary>
-  ///   Настройки HTTP-прокси бота (применяются ко всем запросам транспорта:
-  ///   методы Bot API, long polling, скачивание файлов). Запросы к https://
-  ///   (облачный Bot API) идут через прокси туннелем CONNECT — прокси должен
-  ///   его поддерживать. Поддерживается только HTTP-прокси: SOCKS- и
-  ///   HTTPS-прокси (TLS до самого прокси) библиотека не поддерживает. Настройки
-  ///   проверяет и нормализует TTgHttpTransport.Create (см. Normalized),
-  ///   ошибка настройки — ETgError.
-  ///   Поле записи меняется на месте, в том числе через with:
-  ///   <code>
-  ///   LSettings := TTgHttpSettings.Create(LToken);
-  ///   with LSettings.Proxy do begin Host := '192.168.1.1'; Port := 3128; end;
-  ///   LBot := TTgBot.Create(LSettings);
-  ///   </code>
-  ///   При сетевой ошибке текст ETgNetworkError содержит адрес прокси.
+  ///   Преобразование настроек прокси в настройки RTL. Помощник записи
+  ///   объявлен здесь, а не в TgBot.Intf: TProxySettings — тип
+  ///   System.Net.URLClient. Действует там, где подключён TgBot.Http.
   /// </summary>
-  TTgProxySettings = record
-    /// <summary>
-    ///   Хост прокси; пусто — прокси бота не задан (Windows: системные
-    ///   настройки прокси WinHTTP/IE). Адреса 127.0.0.1/localhost в ApiUrl
-    ///   WinHTTP запрашивает напрямую, минуя прокси. Допустимо 'хост:порт'
-    ///   и префикс 'http://'; IPv6 — '[::1]' или без скобок.
-    /// </summary>
-    Host: string;
-    /// <summary>Порт прокси 1..65535; 0 — порт берётся из Host ('хост:порт').</summary>
-    Port: Integer;
-    /// <summary>Имя пользователя (необязательно).</summary>
-    UserName: string;
-    /// <summary>Пароль (необязательно).</summary>
-    Password: string;
-    /// <summary>
-    ///   Схема прокси — для совместимости: допустимы только пусто и 'http'
-    ///   (равнозначно, HTTP-прокси). В RTL всегда передаётся пустая схема:
-    ///   на Windows схема RTL — протокол связи с самим прокси ('https' —
-    ///   TLS до прокси, обычный HTTP-прокси на это отвечает ошибкой 12029),
-    ///   на Linux (curl) и Android RTL её не использует. Другие значения
-    ///   ('https', 'socks5'…) — ETgError при создании транспорта.
-    /// </summary>
-    Scheme: string;
-    /// <summary>Создаёт настройки прокси.</summary>
-    class function Create(const AHost: string; APort: Integer;
-      const AUserName: string = ''; const APassword: string = '';
-      const AScheme: string = ''): TTgProxySettings; static;
-    /// <summary>Прокси задан.</summary>
-    function IsEnabled: Boolean;
-    /// <summary>
-    ///   Проверенная копия настроек: Host без пробелов и префикса 'http://',
-    ///   порт из 'хост:порт' (при Port = 0), IPv6 без скобок — в '[…]'.
-    ///   Host пустой или из пробелов — Host = '' без проверок (прокси не
-    ///   задан). Учётные данные в тексты ошибок не попадают. Ошибки —
-    ///   ETgError: схема, кроме '' и 'http' (в Scheme или 'схема://' в Host);
-    ///   '/', '@' или пробел в Host; порт вне 1..65535; порт в Host
-    ///   не совпадает с Port.
-    /// </summary>
-    function Normalized: TTgProxySettings;
+  TTgProxySettingsHelper = record helper for TTgProxySettings
     /// <summary>
     ///   Настройки прокси для THTTPClient: Normalized, схема всегда пустая
     ///   (единственный вариант HTTP-прокси, корректный на всех платформах).
     /// </summary>
     function ToRtlSettings: TProxySettings;
-  end;
-
-  /// <summary>
-  ///   Настройки транспорта. Создавайте через TTgHttpSettings.Create(Token) —
-  ///   он заполняет значения по умолчанию, затем меняйте нужные поля.
-  /// </summary>
-  TTgHttpSettings = record
-    /// <summary>Токен бота.</summary>
-    Token: string;
-    /// <summary>Адрес сервера Bot API (облачный или Local Bot API server), без '/' в конце.</summary>
-    ApiUrl: string;
-    /// <summary>Прокси бота.</summary>
-    Proxy: TTgProxySettings;
-    /// <summary>Таймаут соединения, мс.</summary>
-    ConnectionTimeoutMs: Integer;
-    /// <summary>Таймаут ответа, мс.</summary>
-    ResponseTimeoutMs: Integer;
-    /// <summary>Значение заголовка User-Agent.</summary>
-    UserAgent: string;
-    /// <summary>Автоматически повторять запрос при ошибке 429.</summary>
-    AutoRetry429: Boolean;
-    /// <summary>Максимум повторов при 429.</summary>
-    MaxRetries: Integer;
-    /// <summary>Если retry_after больше этого значения (с) — ошибка без ожидания.</summary>
-    MaxRetryAfterSec: Integer;
-    /// <summary>Глобальный лимит запросов в секунду; 0 — без ограничения.</summary>
-    GlobalRatePerSec: Integer;
-    /// <summary>Интервал между отправками в один чат, мс; 0 — без ограничения.</summary>
-    PerChatIntervalMs: Integer;
-    /// <summary>
-    ///   Режим Local Bot API server (--local): DownloadFile читает абсолютный
-    ///   file_path напрямую с локального диска. Включайте, только если бот
-    ///   и сервер Bot API работают на одной машине. По умолчанию False.
-    /// </summary>
-    LocalMode: Boolean;
-    /// <summary>Настройки по умолчанию для указанного токена.</summary>
-    class function Create(const AToken: string): TTgHttpSettings; static;
-  end;
-
-  /// <summary>Сырой HTTP-ответ.</summary>
-  TTgHttpResponse = record
-    /// <summary>HTTP-статус.</summary>
-    StatusCode: Integer;
-    /// <summary>Тело ответа — исходные байты (ожидается JSON в UTF-8).</summary>
-    Body: TBytes;
-  end;
-
-  /// <summary>
-  ///   Транспорт Bot API. Реализации должны быть потокобезопасны.
-  /// </summary>
-  ITgTransport = interface
-    ['{FCE9ECCD-6131-4258-B4BC-6C83CDDACBE8}']
-    /// <summary>
-    ///   Вызывает метод Bot API и возвращает поле result (объект принадлежит
-    ///   вызывающему). AParams может быть nil.
-    ///   Ошибки: ETgApiError, ETgNetworkError, ETgCancelledError.
-    /// </summary>
-    function Execute(const AMethod: string; AParams: TTgParams): TJSONValue;
-    /// <summary>
-    ///   Скачивает файл по file_path (из getFile) в поток ADest.
-    ///   Пути UNC и с сегментом '..' отклоняются (ETgError).
-    ///   При ошибке содержимое ADest не определено.
-    /// </summary>
-    procedure DownloadFile(const AFilePath: string; ADest: TStream);
-    /// <summary>
-    ///   УСТАРЕЛО: используйте токены отмены (ITgCancellableTransport,
-    ///   TTgCancelScope). Глобально прерывает текущие и будущие ожидания
-    ///   (лимитёр, retry_after) всех клиентов транспорта — они завершаются
-    ///   ETgCancelledError. Уже идущий HTTP-запрос не прерывается.
-    /// </summary>
-    procedure Cancel;
-    /// <summary>УСТАРЕЛО: снимает признак глобальной отмены (см. Cancel).</summary>
-    procedure ResetCancel;
-    /// <summary>УСТАРЕЛО: признак глобальной отмены установлен (см. Cancel).</summary>
-    function IsCancelled: Boolean;
-  end;
-
-  /// <summary>
-  ///   Транспорт с отменой отдельной операции. Execute/DownloadFile такого
-  ///   транспорта используют окружающий токен (TTgCancelScope.Current).
-  /// </summary>
-  ITgCancellableTransport = interface(ITgTransport)
-    ['{6FDF0494-1D1F-4832-B086-3B1E6043EE64}']
-    /// <summary>
-    ///   Как Execute, но с токеном отмены ACancel (nil — без отмены):
-    ///   отмена прерывает ожидания и, где поддерживается, идущий HTTP-запрос
-    ///   (ETgCancelledError).
-    /// </summary>
-    function ExecuteEx(const AMethod: string; AParams: TTgParams;
-      const ACancel: ITgCancellation): TJSONValue;
-    /// <summary>Как DownloadFile, но с токеном отмены ACancel (nil — без отмены).</summary>
-    procedure DownloadFileEx(const AFilePath: string; ADest: TStream;
-      const ACancel: ITgCancellation);
   end;
 
   /// <summary>
@@ -239,15 +114,10 @@ type
   end;
 
   /// <summary>
-  ///   Служебный: транспорт с настройками TTgHttpSettings (реализует
-  ///   TTgHttpTransport). Через него клиент получает настройки транспорта без
-  ///   приведения к классу. В прикладном коде не нужен.
+  ///   Служебный: транспорт с настройками TTgHttpSettings (описание —
+  ///   TgBot.Intf.ITgHttpSettingsProvider). В прикладном коде не нужен.
   /// </summary>
-  ITgHttpSettingsProvider = interface
-    ['{804B9679-6947-4414-8785-FE1C5499DF87}']
-    /// <summary>Настройки транспорта (копия записи).</summary>
-    function GetSettings: TTgHttpSettings;
-  end;
+  ITgHttpSettingsProvider = TgBot.Intf.ITgHttpSettingsProvider;
 
   /// <summary>Транспорт на System.Net.HttpClient. Настройки неизменяемы после создания.</summary>
   TTgHttpTransport = class(TInterfacedObject, ITgTransport, ITgCancellableTransport,
@@ -336,8 +206,7 @@ implementation
 uses
   System.Math,
   System.NetConsts,
-  System.NetEncoding,
-  TgBot.Consts;
+  System.NetEncoding;
 
 /// <summary>
 ///   Таймаут ответа клиента: AMs <= 0 — значение RTL по умолчанию (как у нового
@@ -560,139 +429,9 @@ begin
     end;
 end;
 
-{ TTgProxySettings }
+{ TTgProxySettingsHelper }
 
-class function TTgProxySettings.Create(const AHost: string; APort: Integer;
-  const AUserName, APassword, AScheme: string): TTgProxySettings;
-begin
-  Result.Host := AHost;
-  Result.Port := APort;
-  Result.UserName := AUserName;
-  Result.Password := APassword;
-  Result.Scheme := AScheme;
-end;
-
-function TTgProxySettings.IsEnabled: Boolean;
-begin
-  Result := Host <> '';
-end;
-
-/// <summary>Порт в адресе прокси: 1–5 десятичных цифр (без знака и '$').</summary>
-function IsProxyPortText(const AText: string): Boolean;
-var
-  I: Integer;
-begin
-  Result := (Length(AText) >= 1) and (Length(AText) <= 5);
-  for I := 1 to Length(AText) do
-    if not CharInSet(AText[I], ['0'..'9']) then
-      Exit(False);
-end;
-
-/// <summary>Имя схемы URL (буквы, цифры, '+', '-', '.') — без учётных данных.</summary>
-function IsSchemeName(const AText: string): Boolean;
-var
-  I: Integer;
-begin
-  Result := AText <> '';
-  for I := 1 to Length(AText) do
-    if not CharInSet(AText[I], ['A'..'Z', 'a'..'z', '0'..'9', '+', '-', '.']) then
-      Exit(False);
-end;
-
-function TTgProxySettings.Normalized: TTgProxySettings;
-const
-  CHttpPrefix = 'http://';
-  CSchemeMark = '://';
-
-  procedure RaiseBadHost;
-  begin
-    raise ETgError.Create(TgLangText(@SRuProxyBadHost, @SEnProxyBadHost));
-  end;
-
-var
-  LHost, LPortText, LScheme: string;
-  LMark, LColons, LHostPort, I: Integer;
-begin
-  Result := Self;
-  LHost := Trim(Host);
-  Result.Host := LHost;
-  if LHost = '' then
-    Exit;
-  // Схема RTL всё равно пустая (ToRtlSettings); иные значения — неподдерживаемый прокси.
-  LScheme := Trim(Scheme);
-  if (LScheme <> '') and not SameText(LScheme, 'http') then
-    raise ETgError.Create(TgLangTextFmt(@SRuProxyScheme, @SEnProxyScheme, [LScheme]));
-  if SameText(Copy(LHost, 1, Length(CHttpPrefix)), CHttpPrefix) then
-    Delete(LHost, 1, Length(CHttpPrefix))
-  else
-  begin
-    LMark := Pos(CSchemeMark, LHost);
-    if LMark > 0 then
-    begin
-      // В текст — только имя схемы: после неё могут идти логин и пароль.
-      LScheme := Copy(LHost, 1, LMark - 1);
-      if not IsSchemeName(LScheme) then
-        RaiseBadHost;
-      raise ETgError.Create(TgLangTextFmt(@SRuProxyScheme, @SEnProxyScheme, [LScheme]));
-    end;
-  end;
-  if LHost = '' then
-    RaiseBadHost;
-  for I := 1 to Length(LHost) do
-    if CharInSet(LHost[I], ['/', '\', '@']) or (LHost[I] <= ' ') then
-      RaiseBadHost;
-  LPortText := '';
-  if LHost[1] = '[' then
-  begin
-    // IPv6 в скобках: '[адрес]' или '[адрес]:порт'.
-    LMark := Pos(']', LHost);
-    if (LMark <= 2) or (Pos('[', Copy(LHost, 2, LMark - 2)) > 0) then
-      RaiseBadHost;
-    LPortText := Copy(LHost, LMark + 1, MaxInt);
-    SetLength(LHost, LMark);
-    if LPortText <> '' then
-    begin
-      if LPortText[1] <> ':' then
-        RaiseBadHost;
-      Delete(LPortText, 1, 1);
-      if not IsProxyPortText(LPortText) then
-        RaiseBadHost;
-    end;
-  end
-  else
-  begin
-    if (Pos('[', LHost) > 0) or (Pos(']', LHost) > 0) then
-      RaiseBadHost;
-    LColons := 0;
-    for I := 1 to Length(LHost) do
-      if LHost[I] = ':' then
-        Inc(LColons);
-    if LColons = 1 then
-    begin
-      LMark := Pos(':', LHost);
-      LPortText := Copy(LHost, LMark + 1, MaxInt);
-      SetLength(LHost, LMark - 1);
-      if (LHost = '') or not IsProxyPortText(LPortText) then
-        RaiseBadHost;
-    end
-    else if LColons > 1 then
-      // IPv6 без скобок: порт в такой записи неотделим — только из Port.
-      LHost := '[' + LHost + ']';
-  end;
-  Result.Host := LHost;
-  if LPortText <> '' then
-  begin
-    LHostPort := StrToInt(LPortText);
-    if (Result.Port <> 0) and (Result.Port <> LHostPort) then
-      raise ETgError.Create(TgLangTextFmt(@SRuProxyPortConflict, @SEnProxyPortConflict,
-        [LHost, LHostPort, Result.Port]));
-    Result.Port := LHostPort;
-  end;
-  if (Result.Port < 1) or (Result.Port > 65535) then
-    raise ETgError.Create(TgLangTextFmt(@SRuProxyPort, @SEnProxyPort, [LHost, Result.Port]));
-end;
-
-function TTgProxySettings.ToRtlSettings: TProxySettings;
+function TTgProxySettingsHelper.ToRtlSettings: TProxySettings;
 var
   LProxy: TTgProxySettings;
 begin
@@ -704,23 +443,6 @@ begin
   // использует. Пустая схема — HTTP-прокси для всех запросов, везде.
   Result := TProxySettings.Create(LProxy.Host, LProxy.Port, LProxy.UserName,
     LProxy.Password, '');
-end;
-
-{ TTgHttpSettings }
-
-class function TTgHttpSettings.Create(const AToken: string): TTgHttpSettings;
-begin
-  Result := Default(TTgHttpSettings);
-  Result.Token := AToken;
-  Result.ApiUrl := TgDefaultApiUrl;
-  Result.ConnectionTimeoutMs := TgDefaultConnectionTimeoutMs;
-  Result.ResponseTimeoutMs := TgDefaultResponseTimeoutMs;
-  Result.UserAgent := TgBotUserAgent;
-  Result.AutoRetry429 := True;
-  Result.MaxRetries := TgDefaultMaxRetries;
-  Result.MaxRetryAfterSec := TgDefaultMaxRetryAfterSec;
-  Result.GlobalRatePerSec := TgDefaultGlobalRatePerSec;
-  Result.PerChatIntervalMs := TgDefaultPerChatIntervalMs;
 end;
 
 { TTgRateLimiter }
