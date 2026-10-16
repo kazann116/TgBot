@@ -79,6 +79,9 @@ resourcestring
     'this token is probably running, or a webhook is set while using getUpdates';
   SRuClientClosed = 'Клиент Bot API уничтожается: асинхронный вызов отменён';
   SEnClientClosed = 'Bot API client is being destroyed: asynchronous call cancelled';
+  // Дополнение сетевой ошибки: текст ошибки, затем адрес прокси (host:port).
+  SRuViaProxy = '%s; запрос шёл через прокси %s';
+  SEnViaProxy = '%s; the request was sent via proxy %s';
 
   { Ядро: проверка аргументов (EArgumentNilException, EArgumentOutOfRangeException).
     Первая подстановка — имя параметра (не переводится). }

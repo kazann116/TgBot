@@ -993,6 +993,15 @@ webhook несколько ботов обслуживает один `TTgWebhoo
   LBot := TTgBot.Create(LSettings);
 ```
 
+`Proxy` — поле записи, его можно менять и по частям (в том числе через `with`):
+
+```pascal
+  LSettings := TTgHttpSettings.Create(GetEnvironmentVariable('TGBOT_TOKEN'));
+  LSettings.Proxy.Host := '192.168.1.1';
+  LSettings.Proxy.Port := 3128;   // Scheme: '' и 'http' равнозначны
+  LBot := TTgBot.Create(LSettings);
+```
+
 Компонент — свойство `Proxy` (пустой `Host` — без прокси):
 
 ```pascal
@@ -1000,7 +1009,16 @@ webhook несколько ботов обслуживает один `TTgWebhoo
   TelegramBot1.Proxy.Port := 3128;
 ```
 
-Поддерживаются HTTP(S)-прокси (средствами `System.Net.HttpClient`).
+Прокси применяется ко всем запросам бота: методы Bot API, long polling, скачивание файлов. Что важно знать:
+
+- **Нужен HTTP-прокси с поддержкой CONNECT.** Облачный Bot API работает по `https://`, поэтому запросы идут
+  туннелем `CONNECT api.telegram.org:443`. Проверка прокси запросом к `http://…` этого не показывает —
+  проверяйте `https://api.telegram.org`. SOCKS-прокси на Windows (WinHTTP) не поддерживается.
+- **Пустой `Host`** — прокси бота не задан; на Windows действуют системные настройки прокси.
+- **Локальные адреса** (`127.0.0.1`, `localhost` в `ApiUrl`, например Local Bot API) WinHTTP запрашивает
+  напрямую, минуя прокси.
+- **Ошибка сети через прокси** — текст `ETgNetworkError` заканчивается адресом прокси («…; запрос шёл через
+  прокси 192.168.1.1:3128»): сверьте хост и порт.
 
 ### Local Bot API server
 
