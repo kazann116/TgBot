@@ -515,35 +515,73 @@ end;
 ```pascal
 type
   TMainForm = class(TForm)
+    StatusLabel: TLabel;
     ...
   private
-    FApi: TTgApi;
+    FToken: string;
     FChatId: Int64;
-    FCancel: ITgCancellationSource; // интерфейс, а не TTgCancellationSource
+    FClosing: ITgCancellationSource; // отменяется при закрытии формы
+    FCancel: ITgCancellationSource;  // интерфейс, а не TTgCancellationSource
   end;
+
+procedure TMainForm.FormCreate(Sender: TObject);
+begin
+  FClosing := TTgCancellationSource.New;
+end;
+
+procedure TMainForm.FormDestroy(Sender: TObject);
+begin
+  FClosing.Cancel; // прерывает отправки и отключает их вывод в форму
+end;
 
 procedure TMainForm.SendButtonClick(Sender: TObject);
 var
+  LToken: string;
+  LChatId: Int64;
+  LClosing: ITgCancellation;
   LCancel: ITgCancellationSource;
+  LStatus: TLabel;
 begin
-  LCancel := TTgCancellationSource.New;
+  // Задаче — копии полей, а не Self: форму она не захватывает.
+  LToken := FToken;
+  LChatId := FChatId;
+  LClosing := FClosing;
+  LStatus := StatusLabel;
+  LCancel := TTgCancellationSource.New(FClosing); // отменяется кнопкой и закрытием формы
   FCancel := LCancel;
   TTask.Run(
     procedure
     var
+      LApi: TTgApi;
       LScope: TTgCancelScope;
+      LText: string;
     begin
-      LScope := TTgCancelScope.Enter(LCancel); // вызовы ниже прерываются отменой
+      LApi := TTgApi.Create(LToken); // свой клиент: не зависит от времени жизни формы
       try
+        LScope := TTgCancelScope.Enter(LCancel); // вызовы ниже прерываются отменой
         try
-          FApi.SendDocument(FChatId, TTgInputFile.FromFile('C:\big.zip'));
-        except
-          on ETgCancelledError do
-            ; // отменено кнопкой
+          try
+            LApi.SendDocument(LChatId, TTgInputFile.FromFile('C:\big.zip'));
+            LText := 'Отправлено';
+          except
+            on ETgCancelledError do
+              LText := 'Отменено';
+            on E: Exception do
+              LText := E.Message;
+          end;
+        finally
+          LScope.Leave;
         end;
       finally
-        LScope.Leave;
+        LApi.Free;
       end;
+      TThread.Queue(nil,
+        procedure
+        begin
+          // Главный поток: после FormDestroy (FClosing.Cancel) форму не трогаем.
+          if not LClosing.IsCancelled then
+            LStatus.Caption := LText;
+        end);
     end);
 end;
 
@@ -553,6 +591,11 @@ begin
     FCancel.Cancel;
 end;
 ```
+
+Задача не захватывает `Self` формы и не пользуется её клиентом: копия указателя на общий `TTgApi` формы не
+спасает — задача может начаться уже после того, как форма освободила клиент. Результат попадает в форму только
+через `TThread.Queue` и только пока `FClosing` не отменён: и очередь, и `FormDestroy` выполняются в главном
+потоке, поэтому проверка `IsCancelled` надёжна.
 
 Не храните ссылку на класс (`LSource: TTgCancellationSource`) и не вызывайте для источника `Free`: объект живёт
 по счётчику ссылок интерфейсов и освобождается вместе с последней из них — переменная класса станет висячей.
@@ -1078,6 +1121,9 @@ webhook-сервера тоже: `TgBotIndyRT` берёт их оттуда). Е
 - **Интерфейсы — только интерфейсная ссылка.** `ITgContext`, `ITgCancellation` / `ITgCancellationSource`,
   подписка `Register` (освобождение ссылки — отписка), `ITgStateStorage`, DTO Bot API (`ITgMessage` и др.).
   Объект освобождается вместе с последней ссылкой; `Free` не нужен.
+- **Отписка не останавливает уже идущую отмену.** Освобождение ссылки, возвращённой `Register`, снимает
+  подписку, но колбэк, уже скопированный идущим в другом потоке `Cancel`, может быть вызван и после этого.
+  Объекты, нужные колбэку, держите в самом колбэке (интерфейсной ссылкой) или защищайте флагом.
 
 ### Что можно хранить
 
@@ -1095,6 +1141,9 @@ webhook-сервера тоже: `TgBotIndyRT` берёт их оттуда). Е
 - Хранить `TTgCancellationSource` как класс (`LSource: TTgCancellationSource`) и вызывать для него `Free`.
 - Обращаться после `Free` бота к переменной бота, захваченной в обработчике (`LBot` — уже освобождённый
   объект).
+- Ждать в колбэке `Register` освобождения этого же источника или его родителя: возможна взаимоблокировка.
+- Захватывать `Self` формы в фоновой задаче: форма может быть освобождена раньше, чем задача завершится
+  (пример без захвата — [раздел 5, «Отмена»](#отмена)).
 
 ### Free во время висящих запросов
 
