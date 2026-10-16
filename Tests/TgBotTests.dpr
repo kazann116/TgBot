@@ -8123,6 +8123,9 @@ var
   GOwnFreeCancellableMs: Int64 = -1;
   GOwnFreePlainMs: Int64 = -1;
   GOwnChurnMs: Int64 = -1;
+  // Замеры FREEWAIT, мс.
+  GFreeWaitStopMs: Int64 = -1;
+  GFreeWaitCompMs: Int64 = -1;
 
 /// <summary>
 ///   Живые ядра ботов (хук TGBOT_TESTHOOKS модуля TgBot.Bot.Core); без
@@ -8196,7 +8199,8 @@ end;
 ///   TTgBot с командой (getMe и меню — в фоне), getMe висит: ACancellable —
 ///   транспорт с токенами, getMe ждёт отмены; иначе — транспорт без токенов,
 ///   getMe ждёт события (неотменяемо) и отпускается после Free. Free без
-///   Stop: ждёт задачу TgDefaultBotStopTimeoutMs, затем отменяет её.
+///   Stop: ждёт задачу TgDefaultBotFreeStartJobWaitMs (не бюджет Stop),
+///   затем отменяет её; Stop внутри Free снятую задачу уже не ждёт.
 /// </summary>
 procedure RunFreeWithHangingGetMe(ACancellable: Boolean; out AFreeMs: Int64);
 var
@@ -8265,8 +8269,12 @@ begin
       LBot.Free;
       AFreeMs := LWatch.ElapsedMilliseconds;
     end;
-    Check(AFreeMs < TgDefaultBotStopTimeoutMs + 1500,
-      Format('%s: Free при висящем getMe — в бюджете Stop (%d мс)', [LWhat, AFreeMs]));
+    Check(AFreeMs < TgDefaultBotFreeStartJobWaitMs + 1000,
+      Format('%s: Free при висящем getMe — короткое ожидание подготовки, не бюджет Stop (%d мс)',
+      [LWhat, AFreeMs]));
+    Check(AFreeMs >= TgDefaultBotFreeStartJobWaitMs - 100,
+      Format('%s: Free сначала ждал подготовку ≈%d мс (%d мс)',
+      [LWhat, TgDefaultBotFreeStartJobWaitMs, AFreeMs]));
     if not ACancellable then
     begin
       // Задача отпущена (Stop = False): замыкание пула держит ядро, ядро —
@@ -8297,6 +8305,142 @@ procedure TestStartJobFreeHangingGetMe;
 begin
   RunFreeWithHangingGetMe(True, GOwnFreeCancellableMs);
   RunFreeWithHangingGetMe(False, GOwnFreePlainMs);
+end;
+
+/// <summary>
+///   Явный Stop(300) при висящем getMe (отменяемый транспорт): ждёт
+///   подготовку в пределах переданного бюджета (≈300 мс, а не
+///   TgDefaultBotFreeStartJobWaitMs Free), затем отменяет её.
+/// </summary>
+procedure TestStartJobStopBudget;
+const
+  CWaitMs = 300;
+var
+  LTransport: TScriptTransport;
+  LTransportRef: ITgTransport;
+  LBot: TTgBot;
+  LErrors: TTextLog;
+  LEntered, LBaseCores, LBaseJobs: Integer;
+  LWatch: TStopwatch;
+  LStopped: Boolean;
+begin
+  LBaseCores := LiveBotCores;
+  LBaseJobs := LiveStartJobs;
+  LEntered := 0;
+  LErrors := TTextLog.Create;
+  try
+    LTransport := TScriptCancellableTransport.Create(
+      function(const AMethod: string; AParams: TTgParams): TJSONValue
+      begin
+        if AMethod = 'getUpdates' then
+          Exit(IdleUpdates(AParams));
+        if AMethod = 'getMe' then
+        begin
+          TInterlocked.Increment(LEntered);
+          Exit(HangGetMe('LateBot'));
+        end;
+        Result := TJSONTrue.Create;
+      end);
+    LTransportRef := LTransport;
+    LBot := TTgBot.Create(LTransportRef);
+    try
+      LBot.Command('start', 'Запуск',
+        procedure(ACtx: ITgContext)
+        begin
+        end);
+      LBot.OnError :=
+        procedure(AError: Exception; ACtx: ITgContext)
+        begin
+          LErrors.Add(AError.ClassName + ': ' + AError.Message);
+        end;
+      LBot.Start;
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := TInterlocked.CompareExchange(LEntered, 0, 0) > 0;
+        end, 5000), 'getMe фоновой подготовки начат');
+      LWatch := TStopwatch.StartNew;
+      LStopped := LBot.Stop(CWaitMs);
+      GFreeWaitStopMs := LWatch.ElapsedMilliseconds;
+      Check(GFreeWaitStopMs >= CWaitMs - 50,
+        Format('Stop(%d) ждал подготовку весь бюджет (%d мс, Stop = %s)',
+        [CWaitMs, GFreeWaitStopMs, BoolToStr(LStopped, True)]));
+      Check(GFreeWaitStopMs < CWaitMs + 1000,
+        Format('Stop(%d) уложился в свой бюджет (%d мс)', [CWaitMs, GFreeWaitStopMs]));
+      CheckEquals('Idle', BotStateName(LBot.State), 'после Stop — Idle');
+    finally
+      LBot.Free;
+    end;
+    Check(WaitTransportReleased(LTransport, 5000), 'ядро и клиент освобождены');
+    Check(WaitLiveAtMost(LBaseCores, LBaseJobs, 5000), 'живых ядер и задач подготовки — как до теста');
+    CheckEquals(0, LTransport.Count('setMyCommands'), 'меню отменённой задачи не отправлялось');
+    CheckEquals(0, LErrors.Count, 'OnError не вызывался: ' + LErrors.Text);
+  finally
+    LErrors.Free;
+  end;
+end;
+
+/// <summary>
+///   TTelegramBot (без формы) с командой: Free при висящем getMe фоновой
+///   подготовки (отменяемый транспорт) — не дольше
+///   TgDefaultBotFreeStartJobWaitMs + 1 с (закрытие формы без фриза).
+/// </summary>
+procedure TestComponentFreeHangingGetMe;
+var
+  LEvents: TComponentEvents;
+  LBot: TTelegramBot;
+  LTransport: TScriptCancellableTransport;
+  LTransportRef: ITgTransport;
+  LEntered, LBaseCores, LBaseJobs: Integer;
+  LWatch: TStopwatch;
+begin
+  LBaseCores := LiveBotCores;
+  LBaseJobs := LiveStartJobs;
+  LEntered := 0;
+  LEvents := TComponentEvents.Create;
+  try
+    LTransport := TScriptCancellableTransport.Create(
+      function(const AMethod: string; AParams: TTgParams): TJSONValue
+      begin
+        if AMethod = 'getUpdates' then
+          Exit(IdleUpdates(AParams));
+        if AMethod = 'getMe' then
+        begin
+          TInterlocked.Increment(LEntered);
+          Exit(HangGetMe('LateBot'));
+        end;
+        Result := TJSONTrue.Create;
+      end);
+    LTransportRef := LTransport;
+    LBot := TTelegramBot.Create(nil);
+    try
+      LBot.Transport := LTransportRef;
+      LBot.OnError := LEvents.DoError;
+      LBot.Command('start', 'Run',
+        procedure(ACtx: ITgContext)
+        begin
+        end);
+      LBot.Active := True;
+      Check(PumpUntil(
+        function: Boolean
+        begin
+          Result := TInterlocked.CompareExchange(LEntered, 0, 0) > 0;
+        end, 5000), 'getMe фоновой подготовки начат');
+    finally
+      LWatch := TStopwatch.StartNew;
+      LBot.Free;
+      GFreeWaitCompMs := LWatch.ElapsedMilliseconds;
+    end;
+    Check(GFreeWaitCompMs < TgDefaultBotFreeStartJobWaitMs + 1000,
+      Format('Free компонента при висящем getMe — без ожидания бюджета Stop (%d мс)', [GFreeWaitCompMs]));
+    Check(WaitTransportReleased(LTransport, 5000), 'ядро и клиент освобождены');
+    Check(WaitLiveAtMost(LBaseCores, LBaseJobs, 5000), 'живых ядер и задач подготовки — как до теста');
+    CheckEquals(0, LTransport.Count('setMyCommands'), 'меню отменённой задачи не отправлялось');
+    // Записи OnError — 'err <класс> ...' (Has сравнивает строку целиком).
+    CheckEquals(0, Pos('err ', LEvents.Log.Text), 'без ошибок: ' + LEvents.Log.Text);
+  finally
+    LEvents.Free;
+  end;
 end;
 
 procedure TestStartJobRestartLateReply;
@@ -9658,7 +9802,12 @@ begin
   RunTest('6E2: 401 при getMe/setMyCommands/setWebhook — один OnError и один OnFault; тишина после Faulted',
     TestStartJobAfterFault);
   RunTest('Владение, фаза 2: Free при висящем getMe (отменяемый и неотменяемый транспорт) — ' +
-    'в бюджете, ядро освобождается после задачи', TestStartJobFreeHangingGetMe);
+    'ожидание подготовки ≈0,5 с, не бюджет Stop; ядро освобождается после задачи',
+    TestStartJobFreeHangingGetMe);
+  RunTest('Free бота: явный Stop(300) при висящем getMe ждёт подготовку в своём бюджете ≈300 мс',
+    TestStartJobStopBudget);
+  RunTest('Free бота: TTelegramBot.Free при висящем getMe — не дольше 1,5 с',
+    TestComponentFreeHangingGetMe);
   RunTest('Владение, фаза 2: Stop(50) при висящих getMe/setMyCommands, сразу Start — ' +
     'поздние ответы старых задач не трогают новую', TestStartJobRestartLateReply);
   RunTest('Владение, фаза 2: обработчик /cmd@бот ждёт username, Stop и Free — выход без AV',
@@ -9712,10 +9861,12 @@ begin
     [GServerPostMs, GServer413Ms]));
   Writeln(Format('Замеры 6E2, мс: TTelegramBot.Run после RequestStop (Main) = %d, (Worker) = %d; ' +
     'Run при отказе = %d', [GCompRunStopMs, GCompRunWorkerStopMs, GCompRunFaultMs]));
-  Writeln(Format('Замеры OWN2, мс: Free при висящем getMe (отменяемый) = %d, (неотменяемый) = %d; ' +
-    '200 циклов Start/Stop/Free = %d; счётчики живых объектов: %s',
-    [GOwnFreeCancellableMs, GOwnFreePlainMs, GOwnChurnMs,
+  Writeln(Format('Замеры OWN2, мс: Free при висящем getMe (отменяемый) = %d, (неотменяемый) = %d ' +
+    '(ожидание подготовки при Free = %d); 200 циклов Start/Stop/Free = %d; счётчики живых объектов: %s',
+    [GOwnFreeCancellableMs, GOwnFreePlainMs, TgDefaultBotFreeStartJobWaitMs, GOwnChurnMs,
     {$IFDEF TGBOT_TESTHOOKS}'включены'{$ELSE}'выключены (без TGBOT_TESTHOOKS)'{$ENDIF}]));
+  Writeln(Format('Замеры FREEWAIT, мс: Stop(300) при висящем getMe = %d; ' +
+    'TTelegramBot.Free при висящем getMe = %d', [GFreeWaitStopMs, GFreeWaitCompMs]));
   Writeln(Format('Замеры OWN5: новый бот по адресу прежнего — %d из %d перезапусков',
     [GOwnAbaSameAddress, GOwnAbaRestarts]));
   Writeln(Format('Тестов: %d, не прошло: %d; проверок: %d, ошибок: %d',

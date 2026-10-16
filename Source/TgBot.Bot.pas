@@ -8,7 +8,8 @@
   через интерфейс ITgBotCore (TgBot.Bot.Core).
 
   Указывать этот модуль в uses не нужно: TgBot реэкспортирует TTgBot,
-  TTgBotState, TTgReceiveMode и TgDefaultBotStopTimeoutMs псевдонимами.
+  TTgBotState, TTgReceiveMode, TgDefaultBotStopTimeoutMs и
+  TgDefaultBotFreeStartJobWaitMs псевдонимами.
 }
 
 {$SCOPEDENUMS ON}
@@ -29,6 +30,13 @@ uses
 const
   /// <summary>Таймаут TTgBot.Stop по умолчанию, мс.</summary>
   TgDefaultBotStopTimeoutMs = 10000;
+  /// <summary>
+  ///   Сколько Free (TTgBot.Destroy) ждёт фоновую подготовку запуска
+  ///   (getMe/setMyCommands), прежде чем отменить её, мс. Меню команд при
+  ///   Free сразу после Start может не уйти — оно отправится при следующем
+  ///   Start. Явный Stop ждёт подготовку в пределах своего AWaitMs.
+  /// </summary>
+  TgDefaultBotFreeStartJobWaitMs = 500;
 
 type
   /// <summary>
@@ -183,7 +191,9 @@ type
     /// <summary>Бот с внешним транспортом (общим или тестовым).</summary>
     constructor Create(const ATransport: ITgTransport); overload;
     /// <summary>
-    ///   Останавливает бота (Stop; результат может быть False), отсоединяет
+    ///   Ждёт фоновую подготовку запуска (getMe/setMyCommands) не дольше
+    ///   TgDefaultBotFreeStartJobWaitMs и отменяет её, затем останавливает
+    ///   бота (Stop; результат может быть False), отсоединяет
     ///   ядро (обработчики сбрасываются, клиент закрывается Shutdown) и
     ///   отпускает его. Клиент освобождается вместе с ядром сразу или позже —
     ///   в потоке обработчика, в потоке пула (фоновая подготовка getMe/
@@ -494,6 +504,11 @@ begin
   // В т.ч. в Faulted: ресурсы запуска заняты, пока не выполнен Stop.
   if FStarted then
     try
+      // Фоновая подготовка — коротко (не бюджет Stop): Free не замораживает
+      // UI на висящем getMe. Отменённая задача снята — Stop её не ждёт.
+      // Из обработчика и OnFault Stop отказывает; задачу отменит Shutdown.
+      if not (TTgUpdateDispatcher.InHandler or TgInFaultNotify) then
+        FCore.FinishStartJob(TgDefaultBotFreeStartJobWaitMs);
       Stop;
     except
       // Деструктор не выпускает исключений (например, вызов из обработчика).
