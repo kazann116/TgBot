@@ -49,8 +49,8 @@ type
   ///   Поля — под внутренней блокировкой; обработчики вызываются со снимка
   ///   вне блокировки. Сеттеры освобождают прежнее значение (замыкание,
   ///   хранилище, массив правил) вне блокировки.
-  ///   После Detach (Free бота) обработчики сброшены, OnError, OnFault и
-  ///   автоответ не вызываются, клиент закрыт (вызовы — ETgCancelledError);
+  ///   После Detach (Free бота) обработчики и хранилище сброшены, OnError,
+  ///   OnFault и автоответ не вызываются, клиент закрыт (вызовы — ETgCancelledError);
   ///   клиент освобождается с последней ссылкой на ядро. Клиент — Api
   ///   (ITgApiOwner; не меняется за жизнь ядра).
   /// </summary>
@@ -84,7 +84,8 @@ type
 
     /// <summary>
     ///   Отсоединение от бота (идемпотентно, не блокирует): Detached,
-    ///   сброс обработчиков, Api.Shutdown.
+    ///   сброс обработчиков и хранилища состояния (GetStateStorage — nil,
+    ///   SetStateStorage игнорируется), Api.Shutdown.
     /// </summary>
     procedure Detach;
     function GetDetached: Boolean;
@@ -687,12 +688,18 @@ var
   LOnFault: TProc<Exception>;
   LOnWebhookRegistered: TProc;
   LRoutes: TTgRoutes;
+  LStorage: ITgStateStorage;
 begin
   FLock.Enter;
   try
     FDetached := True;
     LOnWebhookRegistered := FOnWebhookRegistered;
     FOnWebhookRegistered := nil;
+    // Хранилище не переживает бота, даже если ядро держится дольше (контекст,
+    // WebhookReceiver): контексты обработчиков держат свой снимок, а
+    // HandleRaw после Detach сразу выходит. Освобождается при выходе — вне блокировки.
+    LStorage := FStateStorage;
+    FStateStorage := nil;
     // Замыкания пользователя освобождаются при выходе — вне блокировки.
     LRoutes := FRoutes;
     FRoutes := Default(TTgRoutes);
@@ -736,6 +743,9 @@ begin
     LNew := TTgMemoryStateStorage.Create;
   FLock.Enter;
   try
+    // После Detach хранилище не удерживается (см. Detach).
+    if FDetached then
+      Exit;
     LOld := FStateStorage;
     FStateStorage := LNew;
   finally

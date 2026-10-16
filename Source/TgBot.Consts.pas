@@ -160,6 +160,10 @@ resourcestring
     '(Telegram принимает только HTTPS; http:// — только с Local Bot API server)';
   SEnBotWebhookNotHttps = 'Webhook mode: WebhookUrl must start with https:// ' +
     '(Telegram accepts HTTPS only; http:// is allowed only with a Local Bot API server)';
+  SRuBotWebhookNoSecret = 'Webhook без секрета: при регистрации вне бота передайте secret_token ' +
+    'и задайте WebhookSecretToken — иначе обновление может прислать любой, кто знает URL';
+  SEnBotWebhookNoSecret = 'Webhook without a secret: when registering outside the bot, pass secret_token ' +
+    'and set WebhookSecretToken — otherwise anyone who knows the URL can send updates';
 
   { Компонент TTelegramBot (TgBot.Component). Ключи правил и имена команд
     проверяются текстами маршрутизатора (SRuRoute…). }

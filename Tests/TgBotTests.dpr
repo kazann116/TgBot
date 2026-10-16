@@ -1572,6 +1572,8 @@ var
 /// <summary>Источник отмены как объект (Cancel не входит в ITgCancellation).</summary>
 function SourceOf(const AToken: ITgCancellation): TTgCancellationSource;
 begin
+  // Класс TTgCancellationSource получается намеренно: тесты проверяют API
+  // самого класса (Create, Cancel); объект живёт по интерфейсной ссылке AToken.
   Result := AToken as TTgCancellationSource;
 end;
 
@@ -5119,6 +5121,8 @@ end;
 
 procedure TestDispatcherFreeNonBlocking;
 var
+  // Класс TTgCancellationSource хранится намеренно — для проверки RefCount;
+  // время жизни объекта задаёт интерфейсная ссылка LRelease.
   LReleaseSource: TTgCancellationSource;
   LRelease: ITgCancellation;
   LEntered: TEvent;
@@ -5237,6 +5241,8 @@ end;
 
 procedure TestDeliveryMainOrphans;
 var
+  // Класс TTgCancellationSource хранится намеренно — для проверки RefCount;
+  // время жизни объекта задаёт интерфейсная ссылка LMarker.
   LMarkerSource: TTgCancellationSource;
   LMarker: ITgCancellation;
   LCount: Integer;
@@ -5313,6 +5319,9 @@ end;
 /// </summary>
 function RunExitHangChild: Integer;
 var
+  // Класс TTgCancellationSource хранится намеренно (как в тестах с RefCount):
+  // объект живёт по интерфейсной ссылке LNever, которую держат висящие
+  // обработчики; переменная класса только создаёт его и не освобождает.
   LNeverSource: TTgCancellationSource;
   LNever: ITgCancellation;
   LEntered, LBotEntered: TEvent;
@@ -9046,6 +9055,7 @@ var
   LBot, LCopy: TTelegramBot;
   LFile: string;
   LNames, LPaths: TArray<string>;
+  LCalls: Integer;
 begin
   LFile := TPath.Combine(TPath.GetTempPath, 'tgbot6e2_' + IntToStr(TThread.CurrentThread.ThreadID) + '.pem');
   TFile.WriteAllText(LFile, '-----BEGIN CERTIFICATE-----'#13#10'MIIB'#13#10'-----END CERTIFICATE-----'#13#10);
@@ -9098,6 +9108,16 @@ begin
           LBot.Active := True;
         end, ETgError), 'нет файла сертификата → ETgError при запуске');
       Check(not LBot.Active, 'бот не запущен');
+      // Без регистрации при запуске сертификат не используется: файл не проверяется.
+      LBot.Webhook.RegisterOnStart := False;
+      LBot.Webhook.SecretToken := 'cert_Secret-1';
+      LCalls := LFake.Calls + LFake.ExCalls;
+      LBot.Active := True;
+      Check(LBot.Active, 'RegisterOnStart = False: нет файла сертификата — запуск без ошибки');
+      Check(LBot.Bot.WebhookCertificate.IsEmpty, 'RegisterOnStart = False: сертификат боту не передан');
+      TThread.Sleep(200);
+      CheckEquals(LCalls, LFake.Calls + LFake.ExCalls, 'RegisterOnStart = False: setWebhook не вызван');
+      LBot.Active := False;
     finally
       LBot.Free;
     end;
@@ -9125,7 +9145,7 @@ type
 const
   // Пары TgBot.Consts, не покрытые TTgText, TTgUpdatesText и TTgRouterText
   // (модули берут их через TgLangText напрямую). Новую такую пару — сюда.
-  CConstPairs: array[0..25] of TTextPair = (
+  CConstPairs: array[0..26] of TTextPair = (
     (Name: 'ArgNil'; Ru: @SRuArgNil; En: @SEnArgNil),
     (Name: 'ArgOutOfRange'; Ru: @SRuArgOutOfRange; En: @SEnArgOutOfRange),
     (Name: 'JsonNotInteger'; Ru: @SRuJsonNotInteger; En: @SEnJsonNotInteger),
@@ -9139,6 +9159,7 @@ const
     (Name: 'DtoNotJsonDto'; Ru: @SRuDtoNotJsonDto; En: @SEnDtoNotJsonDto),
     (Name: 'UpdNoRandom'; Ru: @SRuUpdNoRandom; En: @SEnUpdNoRandom),
     (Name: 'BotWebhookNotHttps'; Ru: @SRuBotWebhookNotHttps; En: @SEnBotWebhookNotHttps),
+    (Name: 'BotWebhookNoSecret'; Ru: @SRuBotWebhookNoSecret; En: @SEnBotWebhookNoSecret),
     (Name: 'CompBotActive'; Ru: @SRuCompBotActive; En: @SEnCompBotActive),
     (Name: 'CompNoWebhookPath'; Ru: @SRuCompNoWebhookPath; En: @SEnCompNoWebhookPath),
     (Name: 'CompNoCertificate'; Ru: @SRuCompNoCertificate; En: @SEnCompNoCertificate),
@@ -9155,7 +9176,7 @@ const
   );
   // Всего пар SRu…/SEn… в TgBot.Consts: перечисления TTgText, TTgUpdatesText,
   // TTgRouterText и CConstPairs. Обновите при добавлении пары в TgBot.Consts.
-  CExpectedConstPairs = 60;
+  CExpectedConstPairs = 61;
 
 { TTestDto }
 
@@ -9826,7 +9847,7 @@ end;
 /// <summary>
 ///   0.3.0, фаза 2: WebhookRegisterOnStart = False (без setWebhook и
 ///   OnWebhookRegistered, URL не обязателен, секрет — заданный или без
-///   проверки); WebhookMaxBodySize, WebhookDedupWindow = 0 и
+///   проверки с предупреждением OnError при Start); WebhookMaxBodySize, WebhookDedupWindow = 0 и
 ///   WebhookPostTimeoutMs применяются при Start.
 /// </summary>
 procedure TestWebhookBotSettings;
@@ -9864,8 +9885,20 @@ begin
         begin
           LLog.Add('msg ' + ACtx.Text);
         end;
+      // Предупреждение о webhook без секрета — синхронно в Start (OnError, Ctx = nil).
+      LBot.OnError :=
+        procedure(E: Exception; ACtx: ITgContext)
+        begin
+          if (E is ETgError) and not Assigned(ACtx) and
+            (E.Message = TgLangText(@SRuBotWebhookNoSecret, @SEnBotWebhookNoSecret)) then
+            LLog.Add('warn no-secret')
+          else
+            LLog.Add('err ' + E.ClassName + ' ' + E.Message);
+        end;
       LBot.Start;
       Check(LBot.State = TTgBotState.Running, 'без регистрации: Start → Running без WebhookUrl');
+      Check(not LLog.Has('warn no-secret') and not LLog.HasPrefix('err '),
+        'без регистрации, секрет задан: без предупреждения: ' + LLog.Text);
       Check(LBot.HandleWebhook(MsgUpdate(1, 100, 7, 'one'), CSecret) = TTgWebhookResult.Accepted,
         'без регистрации: заданный секрет → Accepted');
       Check(WaitLogHas(LLog, 'msg one'), 'без регистрации: обработчик вызван');
@@ -9878,6 +9911,9 @@ begin
       // Пустой секрет без регистрации: случайный серверу не сообщить — без проверки.
       LBot.WebhookSecretToken := '';
       LBot.Start;
+      CheckEquals(1, LLog.CountOf('warn no-secret'),
+        'без регистрации, пустой секрет: предупреждение OnError(ETgError, nil) при Start: ' + LLog.Text);
+      Check(LBot.State = TTgBotState.Running, 'без регистрации, пустой секрет: запуск продолжается');
       Check(LBot.HandleWebhook(MsgUpdate(3, 100, 7, 'three'), '') = TTgWebhookResult.Accepted,
         'без регистрации, пустой секрет: заголовок не проверяется');
       Check(WaitLogHas(LLog, 'msg three'), 'без регистрации, пустой секрет: обработчик вызван');
@@ -9891,6 +9927,10 @@ begin
       Check(WaitSetWebhook(LTransport, 1), 'WebhookRegisterOnStart = True: setWebhook');
       Check(WaitLogHas(LLog, 'registered'), 'WebhookRegisterOnStart = True: OnWebhookRegistered');
       Check(LBot.Stop, 'WebhookRegisterOnStart = True: Stop = True');
+      // С регистрацией пустой секрет заменяется случайным — предупреждения нет.
+      CheckEquals(1, LLog.CountOf('warn no-secret'),
+        'WebhookRegisterOnStart = True, пустой секрет: без нового предупреждения');
+      Check(not LLog.HasPrefix('err '), 'других ошибок нет: ' + LLog.Text);
     finally
       LBot.Free;
     end;
@@ -10044,6 +10084,109 @@ begin
     LReceiver := nil;
     Check(WaitLiveAtMost(LCores0, LJobs0, 5000),
       'без Start: после отпускания приёмника ядро освобождено (счётчики)');
+  finally
+    LLog.Free;
+  end;
+end;
+
+var
+  // Живые экземпляры TTrackedStateStorage.
+  GTrackedStorageLive: Integer;
+
+type
+  /// <summary>Хранилище в памяти со счётчиком живых экземпляров (GTrackedStorageLive).</summary>
+  TTrackedStateStorage = class(TTgMemoryStateStorage)
+  public
+    constructor Create;
+    destructor Destroy; override;
+  end;
+
+constructor TTrackedStateStorage.Create;
+begin
+  inherited Create;
+  AtomicIncrement(GTrackedStorageLive);
+end;
+
+destructor TTrackedStateStorage.Destroy;
+begin
+  AtomicDecrement(GTrackedStorageLive);
+  inherited Destroy;
+end;
+
+/// <summary>
+///   Правки по ревью 0.3.0: WebhookReceiver — отдельный приёмник (через
+///   Supports из него не получить ITgWebhookSource), после Free бота при
+///   живом приёмнике пользовательский StateStorage освобождён, Accept —
+///   Unavailable; после отпускания приёмника ядро освобождено (TGBOT_TESTHOOKS).
+/// </summary>
+procedure TestBotWebhookReceiverReleases;
+const
+  CSecret = 'recv_Release-1';
+var
+  LTransportRef: ITgTransport;
+  LSource: ITgWebhookSource;
+  LBot: TTgBot;
+  LLog: TTextLog;
+  LReceiver: ITgWebhookReceiver;
+  LCores0, LJobs0, LStorage0: Integer;
+begin
+  LCores0 := LiveBotCores;
+  LJobs0 := LiveStartJobs;
+  LStorage0 := AtomicCmpExchange(GTrackedStorageLive, 0, 0);
+  LLog := TTextLog.Create;
+  try
+    // Нижний слой: приёмник источника — не сам источник.
+    // Транспорт — через переменную: объект, созданный прямо в аргументе
+    // const-интерфейса, не получил бы счётчик ссылок.
+    LTransportRef := TScriptCancellableTransport.Create(WebhookScript(False));
+    LSource := TTgWebhookSource.New(LTransportRef);
+    LReceiver := LSource.Receiver;
+    Check(Assigned(LReceiver), 'ITgWebhookSource.Receiver задан');
+    Check(not Supports(LReceiver, ITgWebhookSource), 'Receiver источника: Supports(ITgWebhookSource) = False');
+    Check(not Supports(LReceiver, ITgUpdateSource), 'Receiver источника: Supports(ITgUpdateSource) = False');
+    Check(LReceiver.Accept(MsgUpdate(1, 100, 7, 'one'), '') = TTgWebhookResult.Unavailable,
+      'Receiver источника до Start: Unavailable (Accept передан источнику)');
+    LReceiver := nil;
+    LSource := nil;
+
+    LTransportRef := TScriptCancellableTransport.Create(WebhookScript(False));
+    LBot := TTgBot.Create(LTransportRef);
+    try
+      LBot.Mode := TTgReceiveMode.Webhook;
+      LBot.WebhookUrl := 'https://example.org/hook';
+      LBot.WebhookSecretToken := CSecret;
+      LBot.StateStorage := TTrackedStateStorage.Create;
+      CheckEquals(LStorage0 + 1, AtomicCmpExchange(GTrackedStorageLive, 0, 0), 'хранилище создано');
+      LBot.OnMessage :=
+        procedure(ACtx: ITgContext)
+        begin
+          LLog.Add('msg ' + ACtx.Text);
+        end;
+      LReceiver := LBot.WebhookReceiver;
+      Check(not Supports(LReceiver, ITgWebhookSource),
+        'Bot.WebhookReceiver: Supports(ITgWebhookSource) = False — источник не остановить');
+      Check(not Supports(LReceiver, ITgUpdateSource), 'Bot.WebhookReceiver: Supports(ITgUpdateSource) = False');
+      LBot.Start;
+      Check(LReceiver.Accept(MsgUpdate(1, 100, 7, 'one'), CSecret) = TTgWebhookResult.Accepted,
+        'запущен: Accept через приёмник → Accepted');
+      Check(WaitLogHas(LLog, 'msg one'), 'запущен: обработчик вызван');
+    finally
+      LBot.Free;
+    end;
+    Check(WaitUntil(
+      function: Boolean
+      begin
+        Result := AtomicCmpExchange(GTrackedStorageLive, 0, 0) = LStorage0;
+      end, 5000), 'после Free бота при живом приёмнике StateStorage освобождён');
+{$IFDEF TGBOT_TESTHOOKS}
+    Check(LiveBotCores > LCores0, 'приёмник удерживает закрытое ядро до отпускания');
+{$ENDIF}
+    Check(LReceiver.Accept(MsgUpdate(2, 100, 7, 'two'), CSecret) = TTgWebhookResult.Unavailable,
+      'после Free бота: Accept → Unavailable');
+    TThread.Sleep(100);
+    Check(not LLog.Has('msg two'), 'после Free бота: обработчик не вызван');
+    LReceiver := nil;
+    Check(WaitLiveAtMost(LCores0, LJobs0, 5000), 'после отпускания приёмника ядро освобождено (счётчики)');
   finally
     LLog.Free;
   end;
@@ -10472,6 +10615,8 @@ begin
     'WebhookMaxBodySize, WebhookDedupWindow = 0, WebhookPostTimeoutMs', TestWebhookBotSettings);
   RunTest('0.3.0: TTgBot.WebhookReceiver — Accept при работе, Unavailable после Stop и Free, ' +
     'без утечек после отпускания', TestBotWebhookReceiver);
+  RunTest('Ревью 0.3.0: WebhookReceiver — без доступа к ITgWebhookSource; после Free бота StateStorage ' +
+    'освобождён, Accept → Unavailable; ядро — после отпускания приёмника', TestBotWebhookReceiverReleases);
   RunTest('0.3.0: компонент Polling/Webhook — значения по умолчанию, Assign, DFM (default не пишется), ' +
     'загрузка', TestComponentOptionsStreaming);
   RunTest('0.3.0: компонент Polling/Webhook → TTgBot (limit в getUpdates, RegisterOnStart = False, ' +
