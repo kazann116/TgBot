@@ -21,6 +21,7 @@ contains
   TgBot.Consts in '..\Source\TgBot.Consts.pas',
   TgBot.Base in '..\Source\TgBot.Base.pas',
   TgBot.Json in '..\Source\TgBot.Json.pas',
+  TgBot.Intf in '..\Source\TgBot.Intf.pas',
   TgBot.Http in '..\Source\TgBot.Http.pas',
   TgBot.Dto in '..\Source\TgBot.Dto.pas',
   TgBot.Core in '..\Source\TgBot.Core.pas',

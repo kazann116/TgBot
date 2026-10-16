@@ -6,6 +6,7 @@
   - ITgStateStorage — абстракция: значения-строки по ключу диалога и имени
     (TTgBot использует ключ 'chat:user'); реализации должны быть
     потокобезопасны — обработчики разных чатов выполняются параллельно;
+    контракт объявлен в TgBot.Intf, здесь — псевдоним;
   - TTgMemoryStateStorage — хранилище в памяти процесса (по умолчанию):
     теряется при перезапуске; для постоянного хранения реализуйте
     ITgStateStorage поверх файла или базы данных.
@@ -18,22 +19,15 @@ interface
 uses
   System.SysUtils,
   System.SyncObjs,
-  System.Generics.Collections;
+  System.Generics.Collections,
+  TgBot.Intf;
 
 type
   /// <summary>
-  ///   Хранилище состояния: строковые значения AName в пределах ключа AKey.
-  ///   Реализации обязаны быть потокобезопасными.
+  ///   Хранилище состояния (описание — TgBot.Intf.ITgStateStorage; здесь —
+  ///   псевдоним для совместимости, тот же тип и GUID).
   /// </summary>
-  ITgStateStorage = interface
-    ['{0C6A2F51-5A3B-4D7E-9B83-61A7C4E2D915}']
-    /// <summary>Значение AName ключа AKey; False — значения нет.</summary>
-    function TryGet(const AKey, AName: string; out AValue: string): Boolean;
-    /// <summary>Записывает (заменяет) значение AName ключа AKey.</summary>
-    procedure Put(const AKey, AName, AValue: string);
-    /// <summary>Удаляет значение AName ключа AKey; AName = '' — все значения ключа.</summary>
-    procedure Delete(const AKey: string; const AName: string = '');
-  end;
+  ITgStateStorage = TgBot.Intf.ITgStateStorage;
 
   /// <summary>
   ///   Потокобезопасное хранилище состояния в памяти процесса. Ключ без

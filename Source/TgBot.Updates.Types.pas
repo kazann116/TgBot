@@ -10,7 +10,8 @@
     диспетчера TTgUpdateDispatcher, модуль TgBot.Updates.Dispatcher);
   - ITgUpdateSource / ITgWebhookReceiver / ITgPollTimer — контракты
     источников TTgLongPollSource (TgBot.Updates.Polling) и
-    TTgWebhookSource (TgBot.Updates.WebhookSource);
+    TTgWebhookSource (TgBot.Updates.WebhookSource); контракты и
+    перечисления объявлены в TgBot.Intf, здесь — псевдонимы;
   - перечисления, константы по умолчанию, тексты (TgUpdatesText),
     TgWebhookHttpStatus, TgWaitEventPumping;
   - служебное для источников: TgCallTransport, TgInvokeQuietly,
@@ -33,7 +34,7 @@ uses
   System.JSON,
   TgBot.Base,
   TgBot.Json,
-  TgBot.Http;
+  TgBot.Intf;
 
 const
   /// <summary>Таймаут long polling (параметр timeout getUpdates) по умолчанию, с.</summary>
@@ -77,156 +78,43 @@ const
   TgFinalGraceMs = 100;
 
 type
-  /// <summary>Состояние источника обновлений.</summary>
-  TTgSourceState = (
-    /// <summary>Не запущен или остановлен.</summary>
-    Idle,
-    /// <summary>Принимает обновления.</summary>
-    Running,
-    /// <summary>Остановка запрошена (дренаж, итоговое подтверждение).</summary>
-    Stopping,
-    /// <summary>Остановлен из-за неустранимой ошибки (401, 404, webhook и т.п.).</summary>
-    Faulted);
+  { Контракты приёма обновлений, их перечисления и типы обработчиков
+    объявлены в TgBot.Intf (модуль без реализаций); здесь — псевдонимы для
+    совместимости: те же типы и GUID. }
 
-  /// <summary>Когда подтверждать (offset) принятые обновления.</summary>
-  TTgAckPolicy = (
-    /// <summary>
-    ///   Сразу после приёма: следующий getUpdates отправляется, как только
-    ///   пакет помещён в очередь (ограничение — ёмкость очереди). Быстро, но
-    ///   при аварийном завершении процесса обновления из очереди теряются.
-    /// </summary>
-    AfterReceive,
-    /// <summary>
-    ///   После обработки: следующий getUpdates — только когда обработаны все
-    ///   обновления пакета. Медленнее, зато при сбое пакет придёт повторно.
-    /// </summary>
-    AfterBatch);
-
-  /// <summary>Где выполняются обработчики обновлений.</summary>
-  TTgDelivery = (
-    /// <summary>В потоках диспетчера (параллельно для разных чатов).</summary>
-    Worker,
-    /// <summary>
-    ///   В главном потоке (TThread.Queue): для VCL/FMX — без ручной
-    ///   синхронизации; в консоли главный поток должен вызывать
-    ///   CheckSynchronize (это делает TTgBot.Run).
-    /// </summary>
-    Main);
-
-  /// <summary>
-  ///   Итог приёма webhook-запроса (TTgWebhookSource.Accept); HTTP-код
-  ///   ответа — TgWebhookHttpStatus.
-  /// </summary>
-  TTgWebhookResult = (
-    /// <summary>Принято (или повтор уже принятого update_id) — 200.</summary>
-    Accepted,
-    /// <summary>Неверный X-Telegram-Bot-Api-Secret-Token — 403.</summary>
-    Forbidden,
-    /// <summary>Тело не JSON-объект обновления, нет update_id или больше лимита — 400.</summary>
-    BadRequest,
-    /// <summary>
-    ///   Источник не запущен, останавливается, в Faulted или очередь
-    ///   переполнена — 503 (Telegram повторит доставку позже).
-    /// </summary>
-    Unavailable);
+  /// <summary>Состояние источника обновлений (TgBot.Intf).</summary>
+  TTgSourceState = TgBot.Intf.TTgSourceState;
+  /// <summary>Когда подтверждать (offset) принятые обновления (TgBot.Intf).</summary>
+  TTgAckPolicy = TgBot.Intf.TTgAckPolicy;
+  /// <summary>Где выполняются обработчики обновлений (TgBot.Intf).</summary>
+  TTgDelivery = TgBot.Intf.TTgDelivery;
+  /// <summary>Итог приёма webhook-запроса; HTTP-код — TgWebhookHttpStatus (TgBot.Intf).</summary>
+  TTgWebhookResult = TgBot.Intf.TTgWebhookResult;
 
   /// <summary>Тексты сообщений (служебное: источники, диспетчер, TgBot.Bot, TgBot.Context).</summary>
   TTgUpdatesText = (SourceRunning, DispatcherRunning, StopFromHandler, NoChat,
     RunNotMainThread, RunUnsupported, BotRunning, HandlerFiltered, WebhookUrlRequired,
     WebhookBadSecret, WebhookUnsupported);
 
-  /// <summary>
-  ///   Обновление Bot API в сыром виде. Владеет своим JSON-объектом (не
-  ///   освобождайте Json); живёт, пока на него есть ссылки.
-  /// </summary>
-  ITgRawUpdate = interface
-    ['{D51FD45E-3FE0-4240-9B70-5A58992E6674}']
-    function GetUpdateId: Int64;
-    function GetKind: string;
-    function GetChatKey: string;
-    function GetJson: TJSONObject;
-    /// <summary>update_id.</summary>
-    property UpdateId: Int64 read GetUpdateId;
-    /// <summary>Вид обновления — имя поля ('message', 'callback_query', …; TTgUpdateType).</summary>
-    property Kind: string read GetKind;
-    /// <summary>
-    ///   Ключ порядка: id чата ('-100123'), 'u' + id пользователя для
-    ///   обновлений без чата ('u42'), '' — порядок не важен (poll, poll_answer).
-    /// </summary>
-    property ChatKey: string read GetChatKey;
-    /// <summary>JSON обновления целиком (владелец — обновление).</summary>
-    property Json: TJSONObject read GetJson;
-  end;
+  /// <summary>Обновление Bot API в сыром виде (описание — TgBot.Intf.ITgRawUpdate).</summary>
+  ITgRawUpdate = TgBot.Intf.ITgRawUpdate;
+  /// <summary>Приёмник обновлений (описание — TgBot.Intf.ITgUpdateSink).</summary>
+  ITgUpdateSink = TgBot.Intf.ITgUpdateSink;
+  /// <summary>Приёмник с ограниченным ожиданием места (описание — TgBot.Intf.ITgTimedUpdateSink).</summary>
+  ITgTimedUpdateSink = TgBot.Intf.ITgTimedUpdateSink;
+  /// <summary>Приём тела webhook-запроса (описание — TgBot.Intf.ITgWebhookReceiver).</summary>
+  ITgWebhookReceiver = TgBot.Intf.ITgWebhookReceiver;
+  /// <summary>Источник обновлений (описание — TgBot.Intf.ITgUpdateSource).</summary>
+  ITgUpdateSource = TgBot.Intf.ITgUpdateSource;
+  /// <summary>Часы и паузы источника (описание — TgBot.Intf.ITgPollTimer).</summary>
+  ITgPollTimer = TgBot.Intf.ITgPollTimer;
 
-  /// <summary>Приёмник обновлений (очередь диспетчера).</summary>
-  ITgUpdateSink = interface
-    ['{C83E716B-723A-43C2-8DE7-FCC6C6BAD5BF}']
-    /// <summary>
-    ///   Ставит обновление в очередь; при полной очереди ждёт места.
-    ///   False — приёмник остановлен или ACancel отменён (обновление не принято).
-    /// </summary>
-    function Post(const AUpdate: ITgRawUpdate; const ACancel: ITgCancellation): Boolean;
-  end;
-
-  /// <summary>
-  ///   Приёмник с ограниченным ожиданием места в очереди (webhook: поток
-  ///   HTTP-сервера не должен висеть на полной очереди).
-  /// </summary>
-  ITgTimedUpdateSink = interface
-    ['{8E4B1F0A-6C2D-4E73-9A5B-3D7F2C1E8B64}']
-    /// <summary>
-    ///   Как Post, но место в очереди ждёт не дольше ATimeoutMs мс (0 — не
-    ///   ждёт). False — очередь полна, приёмник остановлен или ACancel отменён.
-    /// </summary>
-    function TryPost(const AUpdate: ITgRawUpdate; const ACancel: ITgCancellation;
-      ATimeoutMs: Cardinal): Boolean;
-  end;
-
-  /// <summary>
-  ///   Приём тела webhook-запроса из любого HTTP-сервера (потокобезопасно,
-  ///   из любого числа потоков). ASecretHeader — значение заголовка
-  ///   X-Telegram-Bot-Api-Secret-Token ('' — заголовка нет).
-  /// </summary>
-  ITgWebhookReceiver = interface
-    ['{4F7A2C9E-1B3D-4A86-8E5F-6C0D9B2A7E31}']
-    /// <summary>Тело — байты UTF-8 (как пришли по сети).</summary>
-    function Accept(const ABody: TBytes; const ASecretHeader: string): TTgWebhookResult; overload;
-    /// <summary>Тело — уже декодированная строка.</summary>
-    function Accept(const ABody, ASecretHeader: string): TTgWebhookResult; overload;
-  end;
-
-  /// <summary>Источник обновлений (long polling или webhook).</summary>
-  ITgUpdateSource = interface
-    ['{2EB5AB98-37B8-4632-8BB9-B64429C8269B}']
-    /// <summary>Запускает приём в ASink. Повторный Start работающего источника — ETgError.</summary>
-    procedure Start(const ASink: ITgUpdateSink);
-    /// <summary>
-    ///   Останавливает приём не дольше ≈AWaitMs мс. False — поток не удалось
-    ///   прервать и он отпущен (его поздний результат будет выброшен).
-    /// </summary>
-    function Stop(AWaitMs: Cardinal): Boolean;
-    /// <summary>Обновление AUpdateId обработано (для подтверждения offset).</summary>
-    procedure Processed(AUpdateId: Int64);
-    function GetState: TTgSourceState;
-    /// <summary>Состояние источника.</summary>
-    property State: TTgSourceState read GetState;
-  end;
-
-  /// <summary>Часы и паузы источника (подменяются в тестах).</summary>
-  ITgPollTimer = interface
-    ['{CD72B2B4-FC57-46C4-958D-A76187CBB215}']
-    /// <summary>Монотонное время, мс.</summary>
-    function NowMs: Int64;
-    /// <summary>Пауза AMs мс; True — прервана отменой ACancel.</summary>
-    function Sleep(AMs: Cardinal; const ACancel: ITgCancellation): Boolean;
-  end;
-
-  /// <summary>Обработчик обновления нижнего уровня.</summary>
-  TTgRawHandler = reference to procedure(const AUpdate: ITgRawUpdate);
-  /// <summary>Обработчик исключения обработчика (объект исключения действителен только внутри).</summary>
-  TTgRawErrorHandler = reference to procedure(AError: Exception; const AUpdate: ITgRawUpdate);
-  /// <summary>Событие конфликта 409 (объект исключения действителен только внутри).</summary>
-  TTgConflictHandler = reference to procedure(AError: ETgConflictError);
+  /// <summary>Обработчик обновления нижнего уровня (TgBot.Intf).</summary>
+  TTgRawHandler = TgBot.Intf.TTgRawHandler;
+  /// <summary>Обработчик исключения обработчика (TgBot.Intf).</summary>
+  TTgRawErrorHandler = TgBot.Intf.TTgRawErrorHandler;
+  /// <summary>Событие конфликта 409 (TgBot.Intf).</summary>
+  TTgConflictHandler = TgBot.Intf.TTgConflictHandler;
 
   /// <summary>Реализация ITgRawUpdate.</summary>
   TTgRawUpdate = class(TInterfacedObject, ITgRawUpdate)
