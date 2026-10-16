@@ -231,6 +231,9 @@ type
   /// <summary>
   ///   HTTP-прокси бота (TTgHttpSettings.Proxy, см. TTgProxySettings); пустой
   ///   Host — без прокси. Для https:// прокси должен поддерживать CONNECT.
+  ///   Только HTTP-прокси: SOCKS не поддерживается. Порт обязателен — в Port
+  ///   или в Host ('хост:порт'); неверные настройки — ETgError при Active.
+  ///   Password хранится в DFM открытым текстом — задавайте его в коде.
   /// </summary>
   TTgProxyOptions = class(TPersistent)
   private

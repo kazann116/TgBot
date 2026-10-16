@@ -9532,7 +9532,11 @@ type
 const
   // Пары TgBot.Consts, не покрытые TTgText, TTgUpdatesText и TTgRouterText
   // (модули берут их через TgLangText напрямую). Новую такую пару — сюда.
-  CConstPairs: array[0..26] of TTextPair = (
+  CConstPairs: array[0..30] of TTextPair = (
+    (Name: 'ProxyScheme'; Ru: @SRuProxyScheme; En: @SEnProxyScheme),
+    (Name: 'ProxyBadHost'; Ru: @SRuProxyBadHost; En: @SEnProxyBadHost),
+    (Name: 'ProxyPort'; Ru: @SRuProxyPort; En: @SEnProxyPort),
+    (Name: 'ProxyPortConflict'; Ru: @SRuProxyPortConflict; En: @SEnProxyPortConflict),
     (Name: 'ArgNil'; Ru: @SRuArgNil; En: @SEnArgNil),
     (Name: 'ArgOutOfRange'; Ru: @SRuArgOutOfRange; En: @SEnArgOutOfRange),
     (Name: 'JsonNotInteger'; Ru: @SRuJsonNotInteger; En: @SEnJsonNotInteger),
@@ -9563,7 +9567,7 @@ const
   );
   // Всего пар SRu…/SEn… в TgBot.Consts: перечисления TTgText, TTgUpdatesText,
   // TTgRouterText и CConstPairs. Обновите при добавлении пары в TgBot.Consts.
-  CExpectedConstPairs = 62;
+  CExpectedConstPairs = 66;
 
 { TTestDto }
 
@@ -11147,6 +11151,243 @@ begin
   end;
 end;
 
+const
+  // Пароль прокси: не должен попадать в тексты ошибок.
+  CProxySecret = 'S3cr3t-Pa55';
+
+/// <summary>
+///   TTgProxySettings.Normalized: 'Host|Port' или '<ETgError> текст'.
+///   Учётные данные — 'user'/CProxySecret.
+/// </summary>
+function NormalizedProxy(const AHost: string; APort: Integer; const AScheme: string = ''): string;
+var
+  LProxy: TTgProxySettings;
+begin
+  try
+    LProxy := TTgProxySettings.Create(AHost, APort, 'user', CProxySecret, AScheme).Normalized;
+    Result := LProxy.Host + '|' + IntToStr(LProxy.Port);
+  except
+    on E: ETgError do
+      Result := '<ETgError> ' + E.Message;
+  end;
+end;
+
+/// <summary>NormalizedProxy завершился ETgError, в тексте есть AFragment и нет пароля.</summary>
+procedure CheckProxyRejected(const AHost: string; APort: Integer; const AScheme,
+  AFragment, AWhat: string);
+var
+  LText: string;
+begin
+  LText := NormalizedProxy(AHost, APort, AScheme);
+  Check(Contains('<ETgError> ', LText) and Contains(AFragment, LText),
+    AWhat + ': ожидалась ETgError с "' + AFragment + '", получено ' + LText);
+  Check(not Contains(CProxySecret, LText), AWhat + ': пароль не в тексте');
+end;
+
+/// <summary>
+///   Проверка и нормализация прокси: 'хост:порт', 'http://', IPv6, порт
+///   обязателен, противоречие портов, SOCKS/HTTPS (в Host и в Scheme) и
+///   недопустимые символы — ETgError без учётных данных; идемпотентность.
+/// </summary>
+procedure TestProxyNormalize;
+const
+  CUnsupported = 'SOCKS/HTTPS';
+  CCredentials = 'UserName/Password';
+var
+  LProxy, LAgain: TTgProxySettings;
+begin
+  // Разбор адреса.
+  CheckEquals('proxy.local|3128', NormalizedProxy('proxy.local', 3128), 'хост + Port');
+  CheckEquals('proxy.local|3128', NormalizedProxy('  proxy.local:3128 ', 0), 'хост:порт, пробелы');
+  CheckEquals('proxy.local|3128', NormalizedProxy('proxy.local:3128', 3128), 'порт в Host = Port');
+  CheckEquals('10.0.0.1|65535', NormalizedProxy('10.0.0.1:65535', 0), 'порт 65535');
+  CheckEquals('h|3128', NormalizedProxy('http://h:3128', 0), 'http://h:3128 → h, 3128');
+  CheckEquals('h|8080', NormalizedProxy('HTTP://h', 8080), 'префикс HTTP:// без учёта регистра');
+  CheckEquals('h|3128', NormalizedProxy('h', 3128, 'http'), 'Scheme = http');
+  CheckEquals('h|3128', NormalizedProxy('h', 3128, ' HTTP '), 'Scheme = HTTP с пробелами');
+  CheckEquals('|0', NormalizedProxy('   ', 0, 'socks5'), 'Host из пробелов — прокси не задан, без проверок');
+  // IPv6.
+  CheckEquals('[::1]|3128', NormalizedProxy('::1', 3128), 'IPv6 без скобок → [::1]');
+  CheckEquals('[2001:db8::1]|8080', NormalizedProxy('2001:db8::1', 8080), 'IPv6 без скобок, длинный');
+  CheckEquals('[::1]|3128', NormalizedProxy('[::1]:3128', 0), '[::1]:3128');
+  CheckEquals('[::1]|3128', NormalizedProxy('[::1]', 3128), '[::1] + Port');
+  CheckProxyRejected('2001:db8::1', 0, '', '65535', 'IPv6 без скобок без Port');
+  CheckProxyRejected('[::1', 3128, '', CCredentials, 'IPv6 без ]');
+  CheckProxyRejected('[]:3128', 0, '', CCredentials, 'пустые скобки');
+  CheckProxyRejected('[::1]x', 3128, '', CCredentials, 'мусор после ]');
+  CheckProxyRejected('h]:3128', 0, '', CCredentials, '] без [');
+  // Порт.
+  CheckProxyRejected('proxy.local', 0, '', '65535', 'Port = 0, порта в Host нет');
+  CheckProxyRejected('proxy.local', -1, '', '65535', 'Port < 0');
+  CheckProxyRejected('proxy.local', 65536, '', '65536', 'Port > 65535');
+  CheckProxyRejected('proxy.local:70000', 0, '', '70000', 'порт в Host > 65535');
+  CheckProxyRejected('proxy.local:0', 0, '', '65535', 'порт 0 в Host');
+  CheckProxyRejected('proxy.local:3128', 8080, '', '8080', 'порт в Host ≠ Port');
+  CheckProxyRejected('proxy.local:3128', 8080, '', '3128', 'порт в Host ≠ Port: оба порта в тексте');
+  CheckProxyRejected('proxy.local:', 3128, '', CCredentials, 'пустой порт после :');
+  CheckProxyRejected('proxy.local:abc', 0, '', CCredentials, 'нечисловой порт');
+  CheckProxyRejected('proxy.local:$C38', 0, '', CCredentials, 'шестнадцатеричный порт');
+  CheckProxyRejected('proxy.local:123456', 0, '', CCredentials, 'порт из 6 цифр');
+  CheckProxyRejected(':3128', 0, '', CCredentials, 'без хоста');
+  // Неподдерживаемые прокси: схема в Host или в Scheme.
+  CheckProxyRejected('socks5://127.0.0.1:1080', 0, '', CUnsupported, 'socks5://');
+  CheckProxyRejected('socks5://127.0.0.1:1080', 0, '', '"socks5"', 'socks5:// — имя схемы в тексте');
+  CheckProxyRejected('socks4://h:1080', 0, '', CUnsupported, 'socks4://');
+  CheckProxyRejected('https://h:443', 0, '', '"https"', 'https:// в Host');
+  CheckProxyRejected('socks5://user:' + CProxySecret + '@h:1080', 0, '', CUnsupported,
+    'socks5:// с логином и паролем');
+  CheckProxyRejected('h', 3128, 'https', '"https"', 'Scheme = https');
+  CheckProxyRejected('h', 3128, 'https', CUnsupported, 'Scheme = https: текст о поддержке');
+  CheckProxyRejected('h', 1080, 'socks5', '"socks5"', 'Scheme = socks5');
+  // Путь, учётные данные и пробелы в Host.
+  CheckProxyRejected('user:' + CProxySecret + '@h:3128', 0, '', CCredentials, 'логин:пароль@ в Host');
+  CheckProxyRejected('http://user:' + CProxySecret + '@h:3128', 0, '', CCredentials,
+    'http://логин:пароль@ в Host');
+  CheckProxyRejected('h:3128/', 0, '', CCredentials, '/ в конце');
+  CheckProxyRejected('http://h/path', 3128, '', CCredentials, 'путь');
+  CheckProxyRejected('http://', 3128, '', CCredentials, 'только http://');
+  CheckProxyRejected('pro xy', 3128, '', CCredentials, 'пробел внутри');
+  // Учётные данные и схема сохраняются; повторная нормализация ничего не меняет.
+  LProxy := TTgProxySettings.Create(' http://[::1]:3128 ', 0, 'user', CProxySecret, 'http').Normalized;
+  CheckEquals('user', LProxy.UserName, 'UserName сохранён');
+  CheckEquals(CProxySecret, LProxy.Password, 'Password сохранён');
+  CheckEquals('http', LProxy.Scheme, 'Scheme сохранена');
+  LAgain := LProxy.Normalized;
+  CheckEquals(LProxy.Host, LAgain.Host, 'идемпотентность: Host');
+  CheckEquals(LProxy.Port, LAgain.Port, 'идемпотентность: Port');
+end;
+
+type
+  /// <summary>Транспорт для проверки текста сетевой ошибки (NetworkErrorFrom) без сети.</summary>
+  TProxyErrorProbe = class(TTgHttpTransport)
+  public
+    function NetworkErrorText(const AMessage: string): string;
+  end;
+
+function TProxyErrorProbe.NetworkErrorText(const AMessage: string): string;
+var
+  LSource: Exception;
+  LError: ETgNetworkError;
+begin
+  LSource := Exception.Create(AMessage);
+  try
+    LError := NetworkErrorFrom('getMe', LSource);
+    try
+      Result := LError.Message;
+    finally
+      LError.Free;
+    end;
+  finally
+    LSource.Free;
+  end;
+end;
+
+/// <summary>
+///   Транспорт: в RTL уходит пустая схема (Scheme '' и 'http'); настройки
+///   прокси транспорта нормализованы; ошибка настройки — ETgError из
+///   конструктора (TTgApi и компонент при Active); текст сетевой ошибки
+///   содержит прокси host:port и не содержит учётных данных.
+/// </summary>
+procedure TestProxyTransportSettings;
+var
+  LRtl: TProxySettings;
+  LSettings: TTgHttpSettings;
+  LApi: TTgApi;
+  // Намеренно класс: NetworkErrorText (обёртка защищённого NetworkErrorFrom)
+  // есть только у класса; объект держит интерфейсная ссылка LProbeRef.
+  LProbe: TProxyErrorProbe;
+  LProbeRef: ITgTransport;
+  LText: string;
+  LBot: TTelegramBot;
+begin
+  // В RTL — всегда пустая схема.
+  LRtl := TTgProxySettings.Create('http://proxy.local:3128', 0, 'user', CProxySecret, 'http').ToRtlSettings;
+  CheckEquals('', LRtl.Scheme, 'RTL: Scheme = http → пустая');
+  CheckEquals('proxy.local', LRtl.Host, 'RTL: Host');
+  CheckEquals(3128, LRtl.Port, 'RTL: Port из Host');
+  CheckEquals('user', LRtl.UserName, 'RTL: UserName');
+  CheckEquals(CProxySecret, LRtl.Password, 'RTL: Password');
+  LRtl := TTgProxySettings.Create('::1', 8080).ToRtlSettings;
+  CheckEquals('', LRtl.Scheme, 'RTL: Scheme = '''' → пустая');
+  CheckEquals('[::1]', LRtl.Host, 'RTL: IPv6 в скобках');
+  CheckEquals(8080, LRtl.Port, 'RTL: Port IPv6');
+  Check(Raises(
+    procedure
+    begin
+      TTgProxySettings.Create('h', 1080, '', '', 'socks5').ToRtlSettings;
+    end, ETgError), 'RTL: Scheme = socks5 → ETgError');
+  // Транспорт хранит нормализованные настройки.
+  LSettings := TTgHttpSettings.Create(CProxyToken);
+  LSettings.Proxy := TTgProxySettings.Create(' http://proxy.local:3128 ', 0, 'user', CProxySecret);
+  LApi := TTgApi.Create(LSettings);
+  try
+    CheckEquals('proxy.local', LApi.Settings.Proxy.Host, 'транспорт: Host нормализован');
+    CheckEquals(3128, LApi.Settings.Proxy.Port, 'транспорт: Port из Host');
+  finally
+    LApi.Free;
+  end;
+  // Ошибки настройки — из конструктора транспорта.
+  LSettings.Proxy := TTgProxySettings.Create('socks5://127.0.0.1:1080', 0);
+  Check(Raises(
+    procedure
+    begin
+      TTgApi.Create(LSettings).Free;
+    end, ETgError), 'TTgApi: socks5:// → ETgError');
+  LSettings.Proxy := TTgProxySettings.Create('proxy.local', 0);
+  Check(Raises(
+    procedure
+    begin
+      TTgApi.Create(LSettings).Free;
+    end, ETgError), 'TTgApi: Port = 0 → ETgError');
+  LSettings.Proxy := TTgProxySettings.Create('proxy.local', 3128, '', '', 'https');
+  Check(Raises(
+    procedure
+    begin
+      TTgBot.Create(LSettings).Free;
+    end, ETgError), 'TTgBot: Scheme = https → ETgError');
+  // Компонент: ошибка при Active, бот не запущен.
+  LBot := TTelegramBot.Create(nil);
+  try
+    LBot.Token := CProxyToken;
+    LBot.Proxy.Host := 'socks5://127.0.0.1:1080';
+    Check(Raises(
+      procedure
+      begin
+        LBot.Active := True;
+      end, ETgError), 'компонент: socks5:// → ETgError при Active');
+    Check(not LBot.Active, 'компонент: после ошибки прокси Active = False');
+    LBot.Proxy.Host := 'proxy.local';
+    LBot.Proxy.Port := 0;
+    Check(Raises(
+      procedure
+      begin
+        LBot.Active := True;
+      end, ETgError), 'компонент: Port = 0 → ETgError при Active');
+    Check(not LBot.Active, 'компонент: после Port = 0 Active = False');
+  finally
+    LBot.Free;
+  end;
+  // Текст сетевой ошибки: прокси host:port есть, учётных данных нет.
+  LSettings.Proxy := TTgProxySettings.Create('http://proxy.local:3128', 0, 'proxyuser', CProxySecret);
+  LProbe := TProxyErrorProbe.Create(LSettings);
+  LProbeRef := LProbe;
+  LText := LProbe.NetworkErrorText('connection refused');
+  Check(Contains(TgTextFmt(TTgText.ViaProxy, ['', 'proxy.local:3128']), LText),
+    'сетевая ошибка: прокси host:port в тексте: ' + LText);
+  Check(Contains('connection refused', LText), 'сетевая ошибка: исходный текст сохранён');
+  Check(not Contains(CProxySecret, LText), 'сетевая ошибка: пароля нет');
+  Check(not Contains('proxyuser', LText), 'сетевая ошибка: логина нет');
+  Check(not Contains('http://', LText), 'сетевая ошибка: адрес прокси без схемы');
+  LProbeRef := nil;
+  LSettings.Proxy := TTgProxySettings.Create('::1', 8080);
+  LProbe := TProxyErrorProbe.Create(LSettings);
+  LProbeRef := LProbe;
+  LText := LProbe.NetworkErrorText('timeout');
+  Check(Contains(TgTextFmt(TTgText.ViaProxy, ['', '[::1]:8080']), LText),
+    'сетевая ошибка: IPv6-прокси [::1]:8080 в тексте: ' + LText);
+  LProbeRef := nil;
+end;
+
 procedure RunAll;
 begin
   Writeln('TgBot ', TgBotVersion, ' (Bot API ', TgBotApiVersion, ') — офлайн-тесты');
@@ -11310,6 +11551,10 @@ begin
   RunTest('Прокси: недоступный прокси и 404 при скачивании — адрес прокси в ETgNetworkError, без прокси — нет',
     TestProxyErrorText);
   RunTest('Прокси: компонент TTelegramBot.Proxy — запросы бота через прокси', TestComponentProxy);
+  RunTest('Прокси: нормализация — хост:порт, http://, IPv6, порт обязателен, противоречие портов, ' +
+    'SOCKS/HTTPS и учётные данные в Host — ETgError без пароля', TestProxyNormalize);
+  RunTest('Прокси: в RTL пустая схема, ошибки настройки из конструктора транспорта и компонента, ' +
+    'адрес прокси без учётных данных в сетевой ошибке', TestProxyTransportSettings);
 {$IFDEF MSWINDOWS}
   RunTest('Завершение процесса при висящих обработчиках: < 2 с, код 0',
     TestProcessExitWithHangingHandlers);
