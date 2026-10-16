@@ -3206,14 +3206,27 @@ begin
     '"chat":{"id":-6},"business_connection_id":"b"}}').ChatKey, 'business_message → chat.id');
 end;
 
+/// <summary>
+///   Start источника ASource в ASink выбрасывает ETgError. Отдельная функция:
+///   замыкание захватывает параметры, а не переменные теста — результат New,
+///   присвоенный захваченной переменной, удерживался бы скрытой временной
+///   ссылкой до конца теста.
+/// </summary>
+function SourceStartRaises(const ASource: ITgUpdateSource; const ASink: ITgUpdateSink): Boolean;
+begin
+  Result := Raises(
+    procedure
+    begin
+      ASource.Start(ASink);
+    end, ETgError);
+end;
+
 procedure TestPollStopHanging;
 var
   LTransport: TScriptCancellableTransport;
   LTransportRef: ITgTransport;
-  LSource: TTgLongPollSource;
-  LSourceRef: ITgUpdateSource;
-  LDispatcher: TTgUpdateDispatcher;
-  LSinkRef: ITgUpdateSink;
+  LSource: ITgLongPollSource;
+  LDispatcher: ITgUpdateDispatcher;
   LLog: TIdLog;
   LWatch: TStopwatch;
   LCalls: TArray<string>;
@@ -3226,23 +3239,17 @@ begin
         Result := HangUntilCancelled;
       end);
     LTransportRef := LTransport;
-    LDispatcher := TTgUpdateDispatcher.Create(RecordTo(LLog));
-    LSinkRef := LDispatcher;
+    LDispatcher := TTgUpdateDispatcher.New(RecordTo(LLog));
     LDispatcher.Start;
-    LSource := TTgLongPollSource.Create(LTransportRef);
-    LSourceRef := LSource;
-    LSource.Start(LSinkRef);
+    LSource := TTgLongPollSource.New(LTransportRef);
+    LSource.Start(LDispatcher);
     Check(WaitUntil(
       function: Boolean
       begin
         Result := LTransport.Count('getUpdates') = 1;
       end, 5000), 'getUpdates висит');
     Check(LSource.State = TTgSourceState.Running, 'State = Running');
-    Check(Raises(
-      procedure
-      begin
-        LSource.Start(LDispatcher);
-      end, ETgError), 'повторный Start → ETgError');
+    Check(SourceStartRaises(LSource, LDispatcher), 'повторный Start → ETgError');
     LCalls := LTransport.Calls('getUpdates');
     CheckEquals(50, ParamInt(LCalls[0], 'timeout'), 'timeout по умолчанию = 50');
     CheckEquals(100, ParamInt(LCalls[0], 'limit'), 'limit по умолчанию = 100');
@@ -3255,8 +3262,8 @@ begin
     CheckEquals(1, LTransport.Count('getUpdates'), 'ничего не принято — итогового запроса нет');
     Check(LDispatcher.Stop(2000), 'диспетчер остановлен');
   finally
-    LSourceRef := nil;
-    LSinkRef := nil;
+    LSource := nil;
+    LDispatcher := nil;
     LLog.Free;
   end;
 end;
@@ -3266,10 +3273,8 @@ var
   LRelease: TEvent;
   LTransport: TScriptTransport;
   LTransportRef: ITgTransport;
-  LSource: TTgLongPollSource;
-  LSourceRef: ITgUpdateSource;
-  LDispatcher: TTgUpdateDispatcher;
-  LSinkRef: ITgUpdateSink;
+  LSource: ITgLongPollSource;
+  LDispatcher: ITgUpdateDispatcher;
   LLog: TIdLog;
   LWatch: TStopwatch;
   LStopped: Boolean;
@@ -3287,13 +3292,11 @@ begin
         Result := MsgBatch([11, 12], 1);
       end);
     LTransportRef := LTransport;
-    LDispatcher := TTgUpdateDispatcher.Create(RecordTo(LLog));
-    LSinkRef := LDispatcher;
-    LSource := TTgLongPollSource.Create(LTransportRef);
-    LSourceRef := LSource;
-    LDispatcher.OnProcessed := AckTo(LSourceRef);
+    LDispatcher := TTgUpdateDispatcher.New(RecordTo(LLog));
+    LSource := TTgLongPollSource.New(LTransportRef);
+    LDispatcher.OnProcessed := AckTo(LSource);
     LDispatcher.Start;
-    LSource.Start(LSinkRef);
+    LSource.Start(LDispatcher);
     Check(WaitUntil(
       function: Boolean
       begin
@@ -3314,8 +3317,8 @@ begin
     CheckEquals(2, LTransport.Count('getUpdates'), 'отпущенный поток не подтверждал offset');
     Check(LDispatcher.Stop(2000), 'диспетчер остановлен');
   finally
-    LSourceRef := nil;
-    LSinkRef := nil;
+    LSource := nil;
+    LDispatcher := nil;
     LLog.Free;
     LRelease.Free;
   end;
@@ -3341,10 +3344,8 @@ var
   LGate: TEvent;
   LTransport: TScriptCancellableTransport;
   LTransportRef: ITgTransport;
-  LSource: TTgLongPollSource;
-  LSourceRef: ITgUpdateSource;
-  LDispatcher: TTgUpdateDispatcher;
-  LSinkRef: ITgUpdateSink;
+  LSource: ITgLongPollSource;
+  LDispatcher: ITgUpdateDispatcher;
   LLog: TIdLog;
   LCalls: TArray<string>;
   LPolicy: TTgAckPolicy;
@@ -3357,19 +3358,17 @@ begin
       LGate.ResetEvent;
       LTransport := TScriptCancellableTransport.Create(AckScript());
       LTransportRef := LTransport;
-      LDispatcher := TTgUpdateDispatcher.Create(
+      LDispatcher := TTgUpdateDispatcher.New(
         procedure(const AUpdate: ITgRawUpdate)
         begin
           LGate.WaitFor(10000);
           LLog.Add(AUpdate.UpdateId);
         end);
-      LSinkRef := LDispatcher;
-      LSource := TTgLongPollSource.Create(LTransportRef);
-      LSourceRef := LSource;
+      LSource := TTgLongPollSource.New(LTransportRef);
       LSource.AckPolicy := LPolicy;
-      LDispatcher.OnProcessed := AckTo(LSourceRef);
+      LDispatcher.OnProcessed := AckTo(LSource);
       LDispatcher.Start;
-      LSource.Start(LSinkRef);
+      LSource.Start(LDispatcher);
       if LPolicy = TTgAckPolicy.AfterReceive then
       begin
         Check(WaitUntil(
@@ -3405,8 +3404,8 @@ begin
       end;
       CheckEquals(4, LSource.ConfirmedOffset, 'ConfirmedOffset = 4');
       Check(LDispatcher.Stop(2000), 'диспетчер остановлен');
-      LSourceRef := nil;
-      LSinkRef := nil;
+      LSource := nil;
+      LDispatcher := nil;
       LTransportRef := nil;
       LLog.Free;
       LLog := TIdLog.Create;
@@ -3415,21 +3414,19 @@ begin
     // Дренаж с таймаутом: обновление 2 не обработано — итоговый offset = 2.
     LTransport := TScriptCancellableTransport.Create(AckScript());
     LTransportRef := LTransport;
-    LDispatcher := TTgUpdateDispatcher.Create(
+    LDispatcher := TTgUpdateDispatcher.New(
       procedure(const AUpdate: ITgRawUpdate)
       begin
         if AUpdate.UpdateId = 2 then
           TTgCancelScope.Current.WaitFor(10000);
         LLog.Add(AUpdate.UpdateId);
       end);
-    LSinkRef := LDispatcher;
-    LSource := TTgLongPollSource.Create(LTransportRef);
-    LSourceRef := LSource;
+    LSource := TTgLongPollSource.New(LTransportRef);
     LSource.AckPolicy := TTgAckPolicy.AfterBatch;
     LSource.DrainTimeoutMs := 300;
-    LDispatcher.OnProcessed := AckTo(LSourceRef);
+    LDispatcher.OnProcessed := AckTo(LSource);
     LDispatcher.Start;
-    LSource.Start(LSinkRef);
+    LSource.Start(LDispatcher);
     Check(WaitUntil(
       function: Boolean
       begin
@@ -3442,11 +3439,28 @@ begin
       CheckEquals(2, ParamInt(LCalls[1], 'offset'), 'итоговый offset = наименьший необработанный (2)');
     Check(LDispatcher.Stop(2000), 'диспетчер прервал висящий обработчик токеном');
   finally
-    LSourceRef := nil;
-    LSinkRef := nil;
+    LSource := nil;
+    LDispatcher := nil;
     LLog.Free;
     LGate.Free;
   end;
+end;
+
+/// <summary>
+///   Ждёт AUntil(ATransport, ASource) не дольше 5 с. Отдельная функция:
+///   замыкание захватывает параметры, а не переменные RunPollScenario — в
+///   общем кадре её замыканий лежат и обработчики событий источника, и
+///   захваченная ссылка на источник замкнула бы цикл (источник не
+///   освободился бы).
+/// </summary>
+function WaitPollCondition(const AUntil: TFunc<TScriptTransport, ITgLongPollSource, Boolean>;
+  ATransport: TScriptTransport; const ASource: ITgLongPollSource): Boolean;
+begin
+  Result := WaitUntil(
+    function: Boolean
+    begin
+      Result := AUntil(ATransport, ASource);
+    end, 5000);
 end;
 
 /// <summary>
@@ -3455,7 +3469,7 @@ end;
 /// </summary>
 procedure RunPollScenario(const AScript: TFakeHandler; ATimer: TFakeTimer;
   AAutoDeleteWebhook, ADropPending: Boolean; AJitter: Integer;
-  const AUntil: TFunc<TScriptTransport, TTgLongPollSource, Boolean>;
+  const AUntil: TFunc<TScriptTransport, ITgLongPollSource, Boolean>;
   ALog: TIdLog; AEvents: TTextLog; out ATransportCalls: TArray<string>;
   out AState: TTgSourceState; out AReached: Boolean; out AGetUpdatesCalls: TArray<string>;
   out ADeleteCalls: TArray<string>);
@@ -3463,18 +3477,14 @@ var
   LTransport: TScriptCancellableTransport;
   LTransportRef: ITgTransport;
   LTimerRef: ITgPollTimer;
-  LSource: TTgLongPollSource;
-  LSourceRef: ITgUpdateSource;
-  LDispatcher: TTgUpdateDispatcher;
-  LSinkRef: ITgUpdateSink;
+  LSource: ITgLongPollSource;
+  LDispatcher: ITgUpdateDispatcher;
 begin
   LTransport := TScriptCancellableTransport.Create(AScript);
   LTransportRef := LTransport;
   LTimerRef := ATimer;
-  LDispatcher := TTgUpdateDispatcher.Create(RecordTo(ALog));
-  LSinkRef := LDispatcher;
-  LSource := TTgLongPollSource.Create(LTransportRef);
-  LSourceRef := LSource;
+  LDispatcher := TTgUpdateDispatcher.New(RecordTo(ALog));
+  LSource := TTgLongPollSource.New(LTransportRef);
   LSource.Timer := LTimerRef;
   LSource.JitterPercent := AJitter;
   LSource.AutoDeleteWebhook := AAutoDeleteWebhook;
@@ -3494,14 +3504,10 @@ begin
     begin
       AEvents.Add('fault');
     end;
-  LDispatcher.OnProcessed := AckTo(LSourceRef);
+  LDispatcher.OnProcessed := AckTo(LSource);
   LDispatcher.Start;
-  LSource.Start(LSinkRef);
-  AReached := WaitUntil(
-    function: Boolean
-    begin
-      Result := AUntil(LTransport, LSource);
-    end, 5000);
+  LSource.Start(LDispatcher);
+  AReached := WaitPollCondition(AUntil, LTransport, LSource);
   AState := LSource.State;
   LSource.Stop(5000);
   LDispatcher.Stop(2000);
@@ -3573,7 +3579,7 @@ begin
           Result := HangUntilCancelled;
         end;
       end, LTimer, False, False, 0,
-      function(ATransport: TScriptTransport; ASource: TTgLongPollSource): Boolean
+      function(ATransport: TScriptTransport; ASource: ITgLongPollSource): Boolean
       begin
         Result := ATransport.Count('getUpdates') >= 6;
       end, LLog, LEvents, LMethods, LState, LReached, LGets, LDeletes);
@@ -3600,7 +3606,7 @@ begin
           raise ETgNetworkError.Create('сеть недоступна');
         Result := HangUntilCancelled;
       end, LTimer, False, False, 20,
-      function(ATransport: TScriptTransport; ASource: TTgLongPollSource): Boolean
+      function(ATransport: TScriptTransport; ASource: ITgLongPollSource): Boolean
       begin
         Result := ATransport.Count('getUpdates') >= 9;
       end, LLog, LEvents, LMethods, LState, LReached, LGets, LDeletes);
@@ -3632,7 +3638,7 @@ begin
           Result := HangUntilCancelled;
         end;
       end, LTimer, True, True, 0,
-      function(ATransport: TScriptTransport; ASource: TTgLongPollSource): Boolean
+      function(ATransport: TScriptTransport; ASource: ITgLongPollSource): Boolean
       begin
         Result := LLog.Count = 1;
       end, LLog, LEvents, LMethods, LState, LReached, LGets, LDeletes);
@@ -3654,7 +3660,7 @@ begin
       begin
         raise ETgConflictError.Create('getUpdates', 409, CWebhookConflict);
       end, LTimer, False, False, 0,
-      function(ATransport: TScriptTransport; ASource: TTgLongPollSource): Boolean
+      function(ATransport: TScriptTransport; ASource: ITgLongPollSource): Boolean
       begin
         Result := ASource.State = TTgSourceState.Faulted;
       end, LLog, LEvents, LMethods, LState, LReached, LGets, LDeletes);
@@ -3678,7 +3684,7 @@ begin
           Result := HangUntilCancelled;
         end;
       end, LTimer, False, False, 0,
-      function(ATransport: TScriptTransport; ASource: TTgLongPollSource): Boolean
+      function(ATransport: TScriptTransport; ASource: ITgLongPollSource): Boolean
       begin
         Result := LLog.Count = 1;
       end, LLog, LEvents, LMethods, LState, LReached, LGets, LDeletes);
@@ -3700,7 +3706,7 @@ begin
         begin
           raise ETgApiError.Create('getUpdates', LErrors, 'Unauthorized');
         end, LTimer, False, False, 0,
-        function(ATransport: TScriptTransport; ASource: TTgLongPollSource): Boolean
+        function(ATransport: TScriptTransport; ASource: ITgLongPollSource): Boolean
         begin
           Result := ASource.State = TTgSourceState.Faulted;
         end, LLog, LEvents, LMethods, LState, LReached, LGets, LDeletes);
@@ -3718,8 +3724,7 @@ end;
 
 procedure TestDispatcherOrder;
 var
-  LDispatcher: TTgUpdateDispatcher;
-  LSinkRef: ITgUpdateSink;
+  LDispatcher: ITgUpdateDispatcher;
   LLock: TCriticalSection;
   LLast: TDictionary<string, Int64>;
   LProcessed: TIdLog;
@@ -3735,7 +3740,7 @@ begin
     LActive := 0;
     LMax := 0;
     LDone := 0;
-    LDispatcher := TTgUpdateDispatcher.Create(
+    LDispatcher := TTgUpdateDispatcher.New(
       procedure(const AUpdate: ITgRawUpdate)
       var
         LPrev: Int64;
@@ -3761,7 +3766,6 @@ begin
           LLock.Leave;
         end;
       end);
-    LSinkRef := LDispatcher;
     LDispatcher.MaxParallel := 4;
     LDispatcher.QueueCapacity := 16;
     LDispatcher.OnProcessed :=
@@ -3788,7 +3792,7 @@ begin
     Check(not LDispatcher.Active, 'Active = False после Stop');
     Check(not LDispatcher.Post(RawOf(MsgUpdate(1, 1, 1, 'x')), nil), 'Post после Stop → False');
   finally
-    LSinkRef := nil;
+    LDispatcher := nil;
     LProcessed.Free;
     LLast.Free;
     LLock.Free;
@@ -3797,8 +3801,7 @@ end;
 
 procedure TestDispatcherErrors;
 var
-  LDispatcher: TTgUpdateDispatcher;
-  LSinkRef: ITgUpdateSink;
+  LDispatcher: ITgUpdateDispatcher;
   LDone, LErrors, LProcessed: TIdLog;
   I: Integer;
 begin
@@ -3806,14 +3809,13 @@ begin
   LErrors := TIdLog.Create;
   LProcessed := TIdLog.Create;
   try
-    LDispatcher := TTgUpdateDispatcher.Create(
+    LDispatcher := TTgUpdateDispatcher.New(
       procedure(const AUpdate: ITgRawUpdate)
       begin
         if AUpdate.UpdateId mod 3 = 0 then
           raise Exception.Create('сбой обработчика');
         LDone.Add(AUpdate.UpdateId);
       end);
-    LSinkRef := LDispatcher;
     LDispatcher.MaxParallel := 2;
     LDispatcher.OnError :=
       procedure(AError: Exception; const AUpdate: ITgRawUpdate)
@@ -3838,7 +3840,7 @@ begin
     Check(LDispatcher.WaitIdle(5000) and (LDone.Count = 8), 'цикл жив после исключения в OnError');
     Check(LDispatcher.Stop(2000), 'Stop');
   finally
-    LSinkRef := nil;
+    LDispatcher := nil;
     LProcessed.Free;
     LErrors.Free;
     LDone.Free;
@@ -3847,8 +3849,7 @@ end;
 
 procedure TestDeliveryMain;
 var
-  LDispatcher: TTgUpdateDispatcher;
-  LSinkRef: ITgUpdateSink;
+  LDispatcher: ITgUpdateDispatcher;
   LThreads: TIdLog;
   LIds: TArray<Int64>;
   I: Integer;
@@ -3857,12 +3858,11 @@ var
 begin
   LThreads := TIdLog.Create;
   try
-    LDispatcher := TTgUpdateDispatcher.Create(
+    LDispatcher := TTgUpdateDispatcher.New(
       procedure(const AUpdate: ITgRawUpdate)
       begin
         LThreads.Add(Int64(TThread.CurrentThread.ThreadID));
       end);
-    LSinkRef := LDispatcher;
     LDispatcher.Delivery := TTgDelivery.Main;
     LDispatcher.Start;
     for I := 1 to 5 do
@@ -3890,7 +3890,7 @@ begin
       CheckSynchronize(10);
     CheckEquals(5, LThreads.Count, 'брошенные задания не выполнялись');
   finally
-    LSinkRef := nil;
+    LDispatcher := nil;
     LThreads.Free;
   end;
 end;
@@ -5083,15 +5083,15 @@ end;
 ///   Диспетчер с NewHangingRawHandler. Отдельная функция: временная ссылка
 ///   на замыкание-аргумент освобождается при выходе из неё, а не в конце теста.
 /// </summary>
-function NewHangingDispatcher(AEntered: TEvent; const ARelease: ITgCancellation): TTgUpdateDispatcher;
+function NewHangingDispatcher(AEntered: TEvent; const ARelease: ITgCancellation): ITgUpdateDispatcher;
 begin
-  Result := TTgUpdateDispatcher.Create(NewHangingRawHandler(AEntered, ARelease, 10000));
+  Result := TTgUpdateDispatcher.New(NewHangingRawHandler(AEntered, ARelease, 10000));
 end;
 
 /// <summary>Диспетчер Delivery = Main (4 потока) с NewMarkedCountingHandler.</summary>
-function NewMarkedMainDispatcher(const AMarker: ITgCancellation; ACounter: PInteger): TTgUpdateDispatcher;
+function NewMarkedMainDispatcher(const AMarker: ITgCancellation; ACounter: PInteger): ITgUpdateDispatcher;
 begin
-  Result := TTgUpdateDispatcher.Create(NewMarkedCountingHandler(AMarker, ACounter));
+  Result := TTgUpdateDispatcher.New(NewMarkedCountingHandler(AMarker, ACounter));
   Result.Delivery := TTgDelivery.Main;
   Result.MaxParallel := 4;
 end;
@@ -5122,8 +5122,7 @@ var
   LReleaseSource: TTgCancellationSource;
   LRelease: ITgCancellation;
   LEntered: TEvent;
-  LDispatcher: TTgUpdateDispatcher;
-  LSinkRef: ITgUpdateSink;
+  LDispatcher: ITgUpdateDispatcher;
   LWatch: TStopwatch;
   LReleased: Boolean;
 begin
@@ -5132,14 +5131,13 @@ begin
   LEntered := TEvent.Create(nil, True, False, '');
   LReleased := False;
   try
-    // 1) Free без Stop при зависшем обработчике.
+    // 1) Free без Stop при зависшем обработчике (отпускание последней ссылки).
     LDispatcher := NewHangingDispatcher(LEntered, LRelease);
-    LSinkRef := LDispatcher;
     LDispatcher.Start;
     LDispatcher.Post(RawOf(MsgUpdate(1, 1, 1, 'x')), nil);
     Check(LEntered.WaitFor(5000) = TWaitResult.wrSignaled, 'обработчик вошёл (Free без Stop)');
     LWatch := TStopwatch.StartNew;
-    LSinkRef := nil;
+    LDispatcher := nil;
     GDispatcherFreeHangingMs := LWatch.ElapsedMilliseconds;
     Check(GDispatcherFreeHangingMs < 100,
       Format('Free диспетчера без Stop при зависшем обработчике < 100 мс (%d мс)', [GDispatcherFreeHangingMs]));
@@ -5147,13 +5145,12 @@ begin
     // 2) Stop = False, затем Free.
     LEntered.ResetEvent;
     LDispatcher := NewHangingDispatcher(LEntered, LRelease);
-    LSinkRef := LDispatcher;
     LDispatcher.Start;
     LDispatcher.Post(RawOf(MsgUpdate(2, 2, 1, 'x')), nil);
     Check(LEntered.WaitFor(5000) = TWaitResult.wrSignaled, 'обработчик вошёл (Stop, затем Free)');
     Check(not LDispatcher.Stop(100), 'Stop(100) = False при зависшем обработчике');
     LWatch := TStopwatch.StartNew;
-    LSinkRef := nil;
+    LDispatcher := nil;
     GDispatcherFreeAfterStopMs := LWatch.ElapsedMilliseconds;
     Check(GDispatcherFreeAfterStopMs < 100,
       Format('Free диспетчера после Stop = False < 100 мс (%d мс)', [GDispatcherFreeAfterStopMs]));
@@ -5163,7 +5160,7 @@ begin
     LReleased := WaitRefCountOne(LReleaseSource, 5000);
     Check(LReleased, 'после возврата обработчиков ядра и обработчики освобождены');
   finally
-    LSinkRef := nil;
+    LDispatcher := nil;
     // Не дождались освобождения — событие может быть ещё нужно обработчику.
     if LReleased then
       LEntered.Free;
@@ -5176,10 +5173,8 @@ var
   LRelease: TEvent;
   LTransport: TScriptTransport;
   LTransportRef: ITgTransport;
-  LSource: TTgLongPollSource;
-  LSourceRef: ITgUpdateSource;
-  LDispatcher: TTgUpdateDispatcher;
-  LSinkRef: ITgUpdateSink;
+  LSource: ITgLongPollSource;
+  LDispatcher: ITgUpdateDispatcher;
   LLog: TIdLog;
   LWatch: TStopwatch;
   LReleased: Boolean;
@@ -5190,29 +5185,26 @@ begin
   try
     LTransport := TScriptTransport.Create(BlockingPollScript(LRelease));
     LTransportRef := LTransport;
-    LDispatcher := TTgUpdateDispatcher.Create(RecordTo(LLog));
-    LSinkRef := LDispatcher;
+    LDispatcher := TTgUpdateDispatcher.New(RecordTo(LLog));
     LDispatcher.Start;
 
-    // 1) Free без Stop при висящем (неотменяемом) getUpdates.
-    LSource := TTgLongPollSource.Create(LTransportRef);
-    LSourceRef := LSource;
-    LSource.Start(LSinkRef);
+    // 1) Free без Stop при висящем (неотменяемом) getUpdates (отпускание последней ссылки).
+    LSource := TTgLongPollSource.New(LTransportRef);
+    LSource.Start(LDispatcher);
     Check(WaitUntil(
       function: Boolean
       begin
         Result := LTransport.Count('getUpdates') = 1;
       end, 5000), 'getUpdates висит (Free без Stop)');
     LWatch := TStopwatch.StartNew;
-    LSourceRef := nil;
+    LSource := nil;
     GSourceFreeHangingMs := LWatch.ElapsedMilliseconds;
     Check(GSourceFreeHangingMs < 100,
       Format('Free источника без Stop при висящем запросе < 100 мс (%d мс)', [GSourceFreeHangingMs]));
 
     // 2) Stop = False, затем Free.
-    LSource := TTgLongPollSource.Create(LTransportRef);
-    LSourceRef := LSource;
-    LSource.Start(LSinkRef);
+    LSource := TTgLongPollSource.New(LTransportRef);
+    LSource.Start(LDispatcher);
     Check(WaitUntil(
       function: Boolean
       begin
@@ -5220,7 +5212,7 @@ begin
       end, 5000), 'getUpdates висит (Stop, затем Free)');
     Check(not LSource.Stop(200), 'Stop(200) = False: неотменяемый запрос');
     LWatch := TStopwatch.StartNew;
-    LSourceRef := nil;
+    LSource := nil;
     GSourceFreeAfterStopMs := LWatch.ElapsedMilliseconds;
     Check(GSourceFreeAfterStopMs < 100,
       Format('Free источника после Stop = False < 100 мс (%d мс)', [GSourceFreeAfterStopMs]));
@@ -5233,8 +5225,8 @@ begin
     CheckEquals(0, LLog.Count, 'ответы после остановки выброшены');
     Check(LDispatcher.Stop(2000), 'диспетчер остановлен');
   finally
-    LSourceRef := nil;
-    LSinkRef := nil;
+    LSource := nil;
+    LDispatcher := nil;
     if LReleased then
     begin
       LLog.Free;
@@ -5248,8 +5240,11 @@ var
   LMarkerSource: TTgCancellationSource;
   LMarker: ITgCancellation;
   LCount: Integer;
-  LDispatcher: TTgUpdateDispatcher;
-  LSinkRef: ITgUpdateSink;
+  LDispatcher: ITgUpdateDispatcher;
+  // Диспетчер для фонового потока. Поток захватывает эту переменную, а не
+  // LDispatcher: результат функции, присвоенный захваченной переменной,
+  // удерживался бы скрытой временной ссылкой до конца теста.
+  LStopTarget: ITgUpdateDispatcher;
   LStopDone: TEvent;
   LStopped: Boolean;
   LWatch: TStopwatch;
@@ -5262,13 +5257,12 @@ begin
   try
     // 1) Free без Stop: задания ждут в очереди главного потока, CheckSynchronize не вызывается.
     LDispatcher := NewMarkedMainDispatcher(LMarker, @LCount);
-    LSinkRef := LDispatcher;
     LDispatcher.Start;
     for I := 1 to 3 do
       LDispatcher.Post(RawOf(MsgUpdate(I, I, 1, 'x')), nil);
     TThread.Sleep(200);
     LWatch := TStopwatch.StartNew;
-    LSinkRef := nil;
+    LDispatcher := nil;
     GMainOrphanFreeMs := LWatch.ElapsedMilliseconds;
     Check(GMainOrphanFreeMs < 100,
       Format('Free диспетчера (Main, задания в очереди) < 100 мс (%d мс)', [GMainOrphanFreeMs]));
@@ -5278,22 +5272,23 @@ begin
 
     // 2) Stop из фонового потока (без прокачки очереди), затем Free.
     LDispatcher := NewMarkedMainDispatcher(LMarker, @LCount);
-    LSinkRef := LDispatcher;
     LDispatcher.Start;
     for I := 1 to 3 do
       LDispatcher.Post(RawOf(MsgUpdate(10 + I, I, 1, 'x')), nil);
     TThread.Sleep(200);
     LStopped := False;
+    LStopTarget := LDispatcher;
     // Ожидание — на событии, не TThread.WaitFor (тот в главном потоке прокачивает очередь).
     TThread.CreateAnonymousThread(
       procedure
       begin
-        LStopped := LDispatcher.Stop(2000);
+        LStopped := LStopTarget.Stop(2000);
         LStopDone.SetEvent;
       end).Start;
     Check(LStopDone.WaitFor(5000) = TWaitResult.wrSignaled, 'Stop из фонового потока вернулся');
     Check(LStopped, 'Stop = True: брошенные задания не держат потоки диспетчера');
-    LSinkRef := nil;
+    LStopTarget := nil;
+    LDispatcher := nil;
     Check(WaitRefCountOne(LMarkerSource, 5000),
       'Stop + Free: брошенные задания сняты из очереди без CheckSynchronize, ядро освобождено');
 
@@ -5301,7 +5296,8 @@ begin
       CheckSynchronize(10);
     CheckEquals(0, TInterlocked.CompareExchange(LCount, 0, 0), 'осиротевшие процедуры не выполнялись');
   finally
-    LSinkRef := nil;
+    LStopTarget := nil;
+    LDispatcher := nil;
     LMarker := nil;
     LStopDone.Free;
   end;
@@ -5322,8 +5318,7 @@ var
   LEntered, LBotEntered: TEvent;
   LTransportRef: ITgTransport;
   LBot: TTgBot;
-  LDispatcher: TTgUpdateDispatcher;
-  LSinkRef: ITgUpdateSink;
+  LDispatcher: ITgUpdateDispatcher;
   LWatch: TStopwatch;
 begin
   LNeverSource := TTgCancellationSource.Create;
@@ -5340,15 +5335,14 @@ begin
       LNever.WaitFor(60000);
     end;
   LBot.Start;
-  LDispatcher := TTgUpdateDispatcher.Create(NewHangingRawHandler(LEntered, LNever, 60000));
-  LSinkRef := LDispatcher;
+  LDispatcher := TTgUpdateDispatcher.New(NewHangingRawHandler(LEntered, LNever, 60000));
   LDispatcher.Start;
   LDispatcher.Post(RawOf(MsgUpdate(1, 1, 1, 'x')), nil);
   if (LEntered.WaitFor(5000) <> TWaitResult.wrSignaled) or
     (LBotEntered.WaitFor(5000) <> TWaitResult.wrSignaled) then
     Exit(3);
   LWatch := TStopwatch.StartNew;
-  LSinkRef := nil;
+  LDispatcher := nil;
   if LBot.Stop(200) then
     Exit(4);
   LBot.Free;
@@ -10055,6 +10049,286 @@ begin
   end;
 end;
 
+/// <summary>Сохраняет компонент в поток (WriteComponent) и возвращает текст DFM.</summary>
+function SaveToDfmText(AComponent: TComponent): string;
+var
+  LBinary: TMemoryStream;
+  LText: TStringStream;
+begin
+  LBinary := TMemoryStream.Create;
+  LText := TStringStream.Create('');
+  try
+    LBinary.WriteComponent(AComponent);
+    LBinary.Position := 0;
+    ObjectBinaryToText(LBinary, LText);
+    Result := LText.DataString;
+  finally
+    LText.Free;
+    LBinary.Free;
+  end;
+end;
+
+/// <summary>
+///   0.3.0, фаза 3: published-настройки компонента Polling (Limit,
+///   JitterPercent, ConflictNotifyIntervalMs) и Webhook (MaxBodySize,
+///   PostTimeoutMs, DedupWindow, RegisterOnStart) — значения по умолчанию,
+///   Assign, сохранение в DFM (значения по умолчанию не пишутся) и загрузка.
+/// </summary>
+procedure TestComponentOptionsStreaming;
+var
+  LBot, LOther, LLoaded: TTelegramBot;
+  LText: string;
+begin
+  LLoaded := nil;
+  LOther := nil;
+  LBot := TTelegramBot.Create(nil);
+  try
+    LOther := TTelegramBot.Create(nil);
+    LLoaded := TTelegramBot.Create(nil);
+    LBot.Name := 'TelegramBot1';
+    CheckEquals(TgDefaultPollLimit, LBot.Polling.Limit, 'Polling.Limit по умолчанию');
+    CheckEquals(TgDefaultBackoffJitterPercent, LBot.Polling.JitterPercent, 'Polling.JitterPercent по умолчанию');
+    CheckEquals(TgDefaultConflictNotifyMs, LBot.Polling.ConflictNotifyIntervalMs,
+      'Polling.ConflictNotifyIntervalMs по умолчанию');
+    CheckEquals(TgDefaultWebhookMaxBodySize, LBot.Webhook.MaxBodySize, 'Webhook.MaxBodySize по умолчанию');
+    CheckEquals(TgDefaultWebhookPostTimeoutMs, LBot.Webhook.PostTimeoutMs, 'Webhook.PostTimeoutMs по умолчанию');
+    CheckEquals(TgDefaultWebhookDedupWindow, LBot.Webhook.DedupWindow, 'Webhook.DedupWindow по умолчанию');
+    Check(LBot.Webhook.RegisterOnStart, 'Webhook.RegisterOnStart по умолчанию True');
+    // Значения по умолчанию в форму не пишутся (default-директивы).
+    LText := SaveToDfmText(LBot);
+    Check(Contains('object TelegramBot1: TTelegramBot', LText), 'DFM: компонент записан: ' + LText);
+    Check(not Contains('Polling.', LText) and not Contains('MaxBodySize', LText) and
+      not Contains('PostTimeoutMs', LText) and not Contains('DedupWindow', LText) and
+      not Contains('RegisterOnStart', LText), 'DFM: значения по умолчанию не сохраняются: ' + LText);
+
+    LBot.Polling.Limit := 7;
+    LBot.Polling.JitterPercent := 0;
+    LBot.Polling.ConflictNotifyIntervalMs := 1234;
+    LBot.Webhook.MaxBodySize := 400;
+    LBot.Webhook.PostTimeoutMs := 600;
+    LBot.Webhook.DedupWindow := 0;
+    LBot.Webhook.RegisterOnStart := False;
+    // Присваивание группы — Assign.
+    LOther.Polling := LBot.Polling;
+    LOther.Webhook := LBot.Webhook;
+    CheckEquals(7, LOther.Polling.Limit, 'Assign: Polling.Limit');
+    CheckEquals(0, LOther.Polling.JitterPercent, 'Assign: Polling.JitterPercent');
+    CheckEquals(1234, LOther.Polling.ConflictNotifyIntervalMs, 'Assign: Polling.ConflictNotifyIntervalMs');
+    CheckEquals(400, LOther.Webhook.MaxBodySize, 'Assign: Webhook.MaxBodySize');
+    CheckEquals(600, LOther.Webhook.PostTimeoutMs, 'Assign: Webhook.PostTimeoutMs');
+    CheckEquals(0, LOther.Webhook.DedupWindow, 'Assign: Webhook.DedupWindow');
+    Check(not LOther.Webhook.RegisterOnStart, 'Assign: Webhook.RegisterOnStart');
+    Check(Raises(
+      procedure
+      begin
+        LOther.Polling.Assign(LOther.Proxy);
+      end, EConvertError), 'Polling.Assign(другой класс) → EConvertError');
+
+    // Не-default значения сохраняются и загружаются.
+    LText := SaveToDfmText(LBot);
+    Check(Contains('Polling.Limit = 7', LText), 'DFM: Polling.Limit сохранён: ' + LText);
+    Check(Contains('Polling.JitterPercent = 0', LText), 'DFM: Polling.JitterPercent сохранён');
+    Check(Contains('Polling.ConflictNotifyIntervalMs = 1234', LText),
+      'DFM: Polling.ConflictNotifyIntervalMs сохранён');
+    Check(Contains('Webhook.MaxBodySize = 400', LText), 'DFM: Webhook.MaxBodySize сохранён');
+    Check(Contains('Webhook.PostTimeoutMs = 600', LText), 'DFM: Webhook.PostTimeoutMs сохранён');
+    Check(Contains('Webhook.DedupWindow = 0', LText), 'DFM: Webhook.DedupWindow сохранён');
+    Check(Contains('Webhook.RegisterOnStart = False', LText), 'DFM: Webhook.RegisterOnStart сохранён');
+    LoadFromDfm(LLoaded, LText);
+    CheckEquals(7, LLoaded.Polling.Limit, 'DFM: Polling.Limit загружен');
+    CheckEquals(0, LLoaded.Polling.JitterPercent, 'DFM: Polling.JitterPercent загружен');
+    CheckEquals(1234, LLoaded.Polling.ConflictNotifyIntervalMs, 'DFM: Polling.ConflictNotifyIntervalMs загружен');
+    CheckEquals(400, LLoaded.Webhook.MaxBodySize, 'DFM: Webhook.MaxBodySize загружен');
+    CheckEquals(600, LLoaded.Webhook.PostTimeoutMs, 'DFM: Webhook.PostTimeoutMs загружен');
+    CheckEquals(0, LLoaded.Webhook.DedupWindow, 'DFM: Webhook.DedupWindow загружен');
+    Check(not LLoaded.Webhook.RegisterOnStart, 'DFM: Webhook.RegisterOnStart загружен');
+  finally
+    LLoaded.Free;
+    LOther.Free;
+    LBot.Free;
+  end;
+end;
+
+/// <summary>
+///   0.3.0, фаза 3: настройки Polling/Webhook компонента передаются в TTgBot
+///   при запуске (Polling.Limit → "limit" в getUpdates; Webhook.RegisterOnStart
+///   = False — без setWebhook и OnWebhookRegistered; MaxBodySize, DedupWindow);
+///   смена при работе — ETgError с текстом SRuCompBotActive.
+/// </summary>
+procedure TestComponentOptionsApply;
+const
+  CSecret = 'comp_Opt-Secret1';
+var
+  LEvents: TComponentEvents;
+  LBot, LOther: TTelegramBot;
+  LTransport: TScriptCancellableTransport;
+  LTransportRef: ITgTransport;
+  LMessage: string;
+{$IFDEF TGBOT_TESTHOOKS}
+  LPoll: ITgLongPollSource;
+{$ENDIF}
+begin
+  LEvents := TComponentEvents.Create;
+  try
+    LBot := nil;
+    LOther := TTelegramBot.Create(nil);
+    try
+      LBot := TTelegramBot.Create(nil);
+      LTransport := TScriptCancellableTransport.Create(
+        function(const AMethod: string; AParams: TTgParams): TJSONValue
+        begin
+          if AMethod = 'getUpdates' then
+          begin
+            if TTgJson.GetInt(AParams.Json, 'timeout') <> 0 then
+              Exit(HangUntilCancelled);
+            Exit(TJSONArray.Create);
+          end;
+          Result := TJSONTrue.Create;
+        end);
+      LTransportRef := LTransport;
+      LBot.Transport := LTransportRef;
+      LBot.OnError := LEvents.DoError;
+      LBot.OnMessage := LEvents.DoMessage;
+      LBot.OnWebhookRegistered := LEvents.DoWebhookRegistered;
+
+      // Polling: настройки → TTgBot и источник.
+      LBot.Polling.Limit := 7;
+      LBot.Polling.JitterPercent := 0;
+      LBot.Polling.ConflictNotifyIntervalMs := 1234;
+      LBot.Active := True;
+      CheckEquals(7, LBot.Bot.PollLimit, 'Polling.Limit → TTgBot.PollLimit');
+      CheckEquals(0, LBot.Bot.PollJitterPercent, 'Polling.JitterPercent → TTgBot.PollJitterPercent');
+      CheckEquals(1234, LBot.Bot.PollConflictNotifyIntervalMs,
+        'Polling.ConflictNotifyIntervalMs → TTgBot.PollConflictNotifyIntervalMs');
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := LTransport.Count('getUpdates') >= 1;
+        end, 5000), 'getUpdates отправлен');
+      Check(LongPollCallsHave(LTransport.Calls('getUpdates'), 0, '"limit":7'),
+        'Polling.Limit = 7 → "limit":7 в getUpdates');
+{$IFDEF TGBOT_TESTHOOKS}
+      LPoll := TgTestBotPollSource(LBot.Bot);
+      CheckEquals(7, LPoll.Limit, 'Polling.Limit применён к источнику');
+      CheckEquals(0, LPoll.JitterPercent, 'Polling.JitterPercent применён к источнику');
+      CheckEquals(1234, LPoll.ConflictNotifyIntervalMs, 'Polling.ConflictNotifyIntervalMs применён к источнику');
+      LPoll := nil;
+{$ENDIF}
+
+      // Смена при работе — ETgError, как у остальных свойств компонента.
+      LMessage := '';
+      try
+        LBot.Polling.Limit := 1;
+      except
+        on E: ETgError do
+          LMessage := E.Message;
+      end;
+      CheckEquals(TgLangText(@SRuCompBotActive, @SEnCompBotActive), LMessage,
+        'Polling.Limit при работе → ETgError (SRuCompBotActive)');
+      Check(Raises(
+        procedure
+        begin
+          LBot.Polling.JitterPercent := 1;
+        end, ETgError), 'Polling.JitterPercent при работе → ETgError');
+      Check(Raises(
+        procedure
+        begin
+          LBot.Polling.ConflictNotifyIntervalMs := 1;
+        end, ETgError), 'Polling.ConflictNotifyIntervalMs при работе → ETgError');
+      Check(Raises(
+        procedure
+        begin
+          LBot.Polling := LOther.Polling;
+        end, ETgError), 'Polling := … (Assign) при работе → ETgError');
+      Check(Raises(
+        procedure
+        begin
+          LBot.Webhook.MaxBodySize := 1;
+        end, ETgError), 'Webhook.MaxBodySize при работе → ETgError');
+      Check(Raises(
+        procedure
+        begin
+          LBot.Webhook.PostTimeoutMs := 1;
+        end, ETgError), 'Webhook.PostTimeoutMs при работе → ETgError');
+      Check(Raises(
+        procedure
+        begin
+          LBot.Webhook.DedupWindow := 1;
+        end, ETgError), 'Webhook.DedupWindow при работе → ETgError');
+      Check(Raises(
+        procedure
+        begin
+          LBot.Webhook.RegisterOnStart := False;
+        end, ETgError), 'Webhook.RegisterOnStart при работе → ETgError');
+      Check(Raises(
+        procedure
+        begin
+          LBot.Webhook := LOther.Webhook;
+        end, ETgError), 'Webhook := … (Assign) при работе → ETgError');
+      Check((LBot.Polling.Limit = 7) and (LBot.Polling.JitterPercent = 0) and
+        (LBot.Polling.ConflictNotifyIntervalMs = 1234), 'отклонённая смена не изменила Polling');
+      Check((LBot.Webhook.MaxBodySize = TgDefaultWebhookMaxBodySize) and
+        (LBot.Webhook.PostTimeoutMs = TgDefaultWebhookPostTimeoutMs) and
+        (LBot.Webhook.DedupWindow = TgDefaultWebhookDedupWindow) and LBot.Webhook.RegisterOnStart,
+        'отклонённая смена не изменила Webhook');
+      LBot.Active := False;
+      // Остановлен — менять снова можно.
+      LBot.Polling.Limit := 3;
+      CheckEquals(3, LBot.Polling.Limit, 'после остановки Polling.Limit меняется');
+
+      // Webhook: регистрация вне бота, размер тела, без дедупликации.
+      LBot.Mode := TTgReceiveMode.Webhook;
+      LBot.Webhook.RegisterOnStart := False;
+      LBot.Webhook.SecretToken := CSecret;
+      LBot.Webhook.MaxBodySize := 400;
+      LBot.Webhook.PostTimeoutMs := 600;
+      LBot.Webhook.DedupWindow := 0;
+      LBot.Active := True;
+      Check(LBot.Active, 'Webhook.RegisterOnStart = False: запуск без Webhook.Url');
+      CheckEquals(400, LBot.Bot.WebhookMaxBodySize, 'Webhook.MaxBodySize → TTgBot.WebhookMaxBodySize');
+      CheckEquals(600, LBot.Bot.WebhookPostTimeoutMs, 'Webhook.PostTimeoutMs → TTgBot.WebhookPostTimeoutMs');
+      CheckEquals(0, LBot.Bot.WebhookDedupWindow, 'Webhook.DedupWindow → TTgBot.WebhookDedupWindow');
+      Check(not LBot.Bot.WebhookRegisterOnStart, 'Webhook.RegisterOnStart → TTgBot.WebhookRegisterOnStart');
+      Check(LBot.HandleWebhook(MsgUpdate(10, 100, 7, StringOfChar('a', 400)), CSecret) =
+        TTgWebhookResult.BadRequest, 'Webhook.MaxBodySize = 400: тело больше → BadRequest');
+      Check(LBot.HandleWebhook(MsgUpdate(11, 100, 7, 'small'), CSecret) = TTgWebhookResult.Accepted,
+        'тело меньше Webhook.MaxBodySize: Accepted');
+      Check(LBot.HandleWebhook(MsgUpdate(11, 100, 7, 'small'), CSecret) = TTgWebhookResult.Accepted,
+        'Webhook.DedupWindow = 0: повтор Accepted');
+      Check(PumpUntil(
+        function: Boolean
+        begin
+          Result := LEvents.Log.CountOf('msg small') = 2;
+        end, 5000), 'Webhook.DedupWindow = 0: повтор update_id обработан повторно');
+      Check(not PumpUntil(
+        function: Boolean
+        begin
+          Result := LEvents.Log.Has('registered');
+        end, 300), 'Webhook.RegisterOnStart = False: OnWebhookRegistered не вызван');
+      CheckEquals(0, LTransport.Count('setWebhook'), 'Webhook.RegisterOnStart = False: setWebhook не вызван');
+      LBot.Active := False;
+      // Контроль: с RegisterOnStart = True setWebhook и событие есть — проверки выше не пустые.
+      LBot.Webhook.RegisterOnStart := True;
+      LBot.Webhook.Url := 'https://example.org/hook';
+      LBot.Active := True;
+      Check(WaitSetWebhook(LTransport, 1), 'Webhook.RegisterOnStart = True: setWebhook');
+      Check(PumpUntil(
+        function: Boolean
+        begin
+          Result := LEvents.Log.Has('registered');
+        end, 5000), 'Webhook.RegisterOnStart = True: OnWebhookRegistered');
+      LBot.Active := False;
+    finally
+      LBot.Free;
+      LOther.Free;
+    end;
+    // Записи OnError — 'err <класс> <код> ctx=…', поэтому по префиксу.
+    Check(not LEvents.Log.HasPrefix('err '), 'OnError не вызывался: ' + LEvents.Log.Text);
+  finally
+    LEvents.Free;
+  end;
+end;
+
 procedure RunAll;
 begin
   Writeln('TgBot ', TgBotVersion, ' (Bot API ', TgBotApiVersion, ') — офлайн-тесты');
@@ -10198,6 +10472,10 @@ begin
     'WebhookMaxBodySize, WebhookDedupWindow = 0, WebhookPostTimeoutMs', TestWebhookBotSettings);
   RunTest('0.3.0: TTgBot.WebhookReceiver — Accept при работе, Unavailable после Stop и Free, ' +
     'без утечек после отпускания', TestBotWebhookReceiver);
+  RunTest('0.3.0: компонент Polling/Webhook — значения по умолчанию, Assign, DFM (default не пишется), ' +
+    'загрузка', TestComponentOptionsStreaming);
+  RunTest('0.3.0: компонент Polling/Webhook → TTgBot (limit в getUpdates, RegisterOnStart = False, ' +
+    'MaxBodySize, DedupWindow), смена при работе → ETgError', TestComponentOptionsApply);
 {$IFDEF MSWINDOWS}
   RunTest('Завершение процесса при висящих обработчиках: < 2 с, код 0',
     TestProcessExitWithHangingHandlers);
