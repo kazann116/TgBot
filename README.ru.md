@@ -24,7 +24,7 @@
 ## 1. Что это
 
 - **Telegram Bot API 10.3, весь API.** Все типы и методы сгенерированы по официальной спецификации генератором
-  `Tools\TgBotGen` (константа `TgBotApiVersion`). Версия библиотеки — `TgBotVersion` (сейчас 0.2.2).
+  `Tools\TgBotGen` (константа `TgBotApiVersion`). Версия библиотеки — `TgBotVersion` (сейчас 0.3.0).
 - **Платформы:** Win32, Win64, Linux64, Android (32 и 64 бит). iOS не поддерживается.
 - **Delphi 10.4 Sydney и новее.** Проверено на 10.4 и 12.
 - **Зависимости.** Ядро использует только RTL (`System.Net.HttpClient`, `System.JSON`, `System.Threading`).
@@ -712,6 +712,40 @@ Android — по таймауту ответа. `Free` клиента отмен
 - `Run`/`RequestStop` — как у `TTgBot` (для консоли и служб).
 - Внутренний бот доступен как `TelegramBot1.Bot` (только во время работы; тонкие настройки вроде
   `StateStorage`), клиент — `TelegramBot1.Api`.
+- Тонкие настройки приёма — в Object Inspector: группа `Polling` (`Limit`, `JitterPercent`,
+  `ConflictNotifyIntervalMs`; timeout getUpdates — `PollingTimeout` на верхнем уровне) и группа `Webhook`
+  (`MaxBodySize`, `PostTimeoutMs`, `DedupWindow`, `RegisterOnStart` и др.). Значения по умолчанию в DFM не
+  пишутся; см. таблицу ниже.
+
+### Настройки приёма
+
+Источник обновлений (long polling или webhook) и диспетчер обработчиков бот создаёт и хранит сам — снаружи
+они не видны. Их настройки — свойства бота; применяются при `Start`, у работающего компонента менять нельзя
+(`ETgError`).
+
+| `TTgBot` | `TTelegramBot` | По умолчанию | Что задаёт |
+|---|---|---|---|
+| `PollTimeout` | `PollingTimeout` | 50 (`TgDefaultPollTimeoutSec`) | `timeout` getUpdates, с |
+| `PollLimit` | `Polling.Limit` | 100 (`TgDefaultPollLimit`) | `limit` getUpdates — обновлений за запрос (1–100) |
+| `PollJitterPercent` | `Polling.JitterPercent` | 20 (`TgDefaultBackoffJitterPercent`) | разброс пауз между повторами после ошибок, ±% (0–50) |
+| `PollConflictNotifyIntervalMs` | `Polling.ConflictNotifyIntervalMs` | 60000 (`TgDefaultConflictNotifyMs`) | минимальный интервал повторных `OnConflict` при 409 «другой getUpdates», мс |
+| `WebhookMaxBodySize` | `Webhook.MaxBodySize` | 1 МБ (`TgDefaultWebhookMaxBodySize`) | наибольшее тело `HandleWebhook`; больше — `BadRequest` |
+| `WebhookPostTimeoutMs` | `Webhook.PostTimeoutMs` | 250 (`TgDefaultWebhookPostTimeoutMs`) | сколько `HandleWebhook` ждёт места в полной очереди, мс; затем `Unavailable` |
+| `WebhookDedupWindow` | `Webhook.DedupWindow` | 1000 (`TgDefaultWebhookDedupWindow`) | сколько последних `update_id` помнить для отбрасывания повторов; 0 — без дедупликации |
+| `WebhookRegisterOnStart` | `Webhook.RegisterOnStart` | `True` | вызывать `setWebhook` при запуске; `False` — webhook зарегистрирован вне бота |
+| `WebhookReceiver` | — | — | приёмник тела webhook для своего HTTP-сервера (только чтение, [раздел 8](#свой-http-сервер-handlewebhook)) |
+
+```pascal
+  LBot.PollLimit := 20;                        // небольшие пачки обновлений
+  LBot.PollConflictNotifyIntervalMs := 300000; // OnConflict не чаще раза в 5 минут
+  // компонент
+  TelegramBot1.Polling.Limit := 20;
+  TelegramBot1.Webhook.DedupWindow := 0;       // без дедупликации повторов
+```
+
+Нужен источник или диспетчер отдельно от `TTgBot` (свой цикл приёма, тесты) — создайте его через
+`TTgLongPollSource.New`, `TTgWebhookSource.New` или `TTgUpdateDispatcher.New` и храните как интерфейс
+(`ITgLongPollSource`, `ITgWebhookSource`, `ITgUpdateDispatcher`) — [раздел 14](#14-правила-владения).
 
 ## 8. Webhook
 
@@ -814,10 +848,54 @@ begin
 end;
 ```
 
-`HandleWebhook` потокобезопасен и не блокирует дольше `WebhookSource.PostTimeoutMs` (250 мс): обработка идёт в
-потоках бота, а серверу сразу возвращается код. Результаты: `Accepted` (200), `Forbidden` (403, неверный
+`HandleWebhook` потокобезопасен и не блокирует дольше `WebhookPostTimeoutMs` (по умолчанию 250 мс): обработка
+идёт в потоках бота, а серверу сразу возвращается код. Результаты: `Accepted` (200), `Forbidden` (403, неверный
 секрет), `BadRequest` (400), `Unavailable` (503 — бот не запущен или очередь переполнена; Telegram повторит
 доставку). У компонента — `TelegramBot1.HandleWebhook` с тем же смыслом (при `Webhook.Server = nil`).
+
+**Приёмник вместо бота: `WebhookReceiver`.** Если HTTP-сервер живёт дольше бота или удобнее хранить
+интерфейс, чем объект, отдайте серверу `TTgBot.WebhookReceiver` (`ITgWebhookReceiver`). Его `Accept`
+равносилен `HandleWebhook`, объект один на всю жизнь бота, а ссылка может пережить `Free` бота: после `Stop`
+и после `Free` `Accept` отвечает `Unavailable` (503), а не обращается к освобождённому боту. Так устроен и
+`TTgWebhookServer`.
+
+```pascal
+var
+  GReceiver: ITgWebhookReceiver; // хранит HTTP-сервер вместо ссылки на бота
+
+procedure StartBot;
+begin
+  GBot := TTgBot.Create(GetEnvironmentVariable('TGBOT_TOKEN'));
+  GBot.Mode := TTgReceiveMode.Webhook;
+  GBot.WebhookUrl := 'https://bots.example.com/tg/hook';
+  // ... обработчики ...
+  GReceiver := GBot.WebhookReceiver; // можно и до Start
+  GBot.Start;
+end;
+
+// обработчик POST /tg/hook вашего сервера (любой поток)
+function TelegramPost(const ABody: TBytes; const ASecretHeader: string): Integer;
+begin
+  Result := TgWebhookHttpStatus(GReceiver.Accept(ABody, ASecretHeader));
+end;
+
+procedure StopAll;
+begin
+  FreeAndNil(GBot);   // сервер ещё работает: Accept отвечает 503, Telegram повторит позже
+  // ... остановите HTTP-сервер ...
+  GReceiver := nil;   // последняя ссылка: освобождается webhook-источник бота
+end;
+```
+
+**Webhook зарегистрирован вне бота.** Если `setWebhook` выполняет другой процесс или скрипт развёртывания,
+выключите регистрацию при запуске — бот только принимает запросы:
+
+```pascal
+  GBot.WebhookRegisterOnStart := False;        // без setWebhook и OnWebhookRegistered; WebhookUrl не нужен
+  GBot.WebhookSecretToken := 'тот-же-секрет';  // тот, что передан в setWebhook; пусто — заголовок не проверяется
+```
+
+У компонента — `Webhook.RegisterOnStart` и `Webhook.SecretToken`.
 
 ### Самоподписанный сертификат и IP-адрес
 
@@ -841,8 +919,9 @@ end;
 - **Не включайте токен бота в путь** (`Path`) — для проверки отправителя служит секрет.
 - Сервер по умолчанию слушает только `127.0.0.1` — наружу смотрит лишь прокси. `BindAddress = '0.0.0.0'` —
   только если понимаете зачем.
-- Тело больше `MaxBodySize` (1 МБ) отклоняется (413/400); повторы одного `update_id` отбрасываются
-  (`WebhookSource.DedupWindow`).
+- Тело больше 1 МБ отклоняется: сервером — 413 (`TTgWebhookServer.MaxBodySize`), ботом — 400
+  (`WebhookMaxBodySize` у `TTgBot`, `Webhook.MaxBodySize` у компонента). Повторы одного `update_id`
+  отбрасываются (`WebhookDedupWindow` / `Webhook.DedupWindow`, последние 1000; 0 — без дедупликации).
 - URL webhook должен быть `https://`; `http://` допускается только с Local Bot API (у `TTgBot.WebhookUrl` и
   `Webhook.Url`; `PublicUrl` сервера — всегда `https://`).
 - Переход webhook → polling: включите `Webhook.DeleteOnStop` (`DeleteWebhookOnStop` у `TTgBot`) или
@@ -1098,7 +1177,7 @@ webhook-сервера тоже: `TgBotIndyRT` берёт их оттуда). Е
   выбросит `EConvertError`;
 - не переводите имена модулей, методов, свойств и полей Bot API внутри текстов (`WebhookUrl`, `AllowedUpdates`,
   `file_path`, `RequestStop` и т.п.);
-- после обновления библиотеки обновите перевод: в 0.2.1 все строки переехали в `TgBot.Consts`, и имена
+- после обновления библиотеки обновите перевод: в 0.3.0 все строки переехали в `TgBot.Consts`, и имена
   ресурсов изменились (см. `CHANGELOG.md`).
 
 ### Что не переводится
@@ -1120,8 +1199,9 @@ webhook-сервера тоже: `TgBotIndyRT` берёт их оттуда). Е
   `TTelegramBot` и `TTgWebhookServer` (владелец — форма). `TTgApi` не подсчитывается: клиентом, созданным
   вами, владеете вы, а `TTgBot.Api` и `ACtx.Api` принадлежат боту — не освобождайте их.
 - **Интерфейсы — только интерфейсная ссылка.** `ITgContext`, `ITgCancellation` / `ITgCancellationSource`,
-  подписка `Register` (освобождение ссылки — отписка), `ITgStateStorage`, DTO Bot API (`ITgMessage` и др.).
-  Объект освобождается вместе с последней ссылкой; `Free` не нужен.
+  подписка `Register` (освобождение ссылки — отписка), `ITgStateStorage`, DTO Bot API (`ITgMessage` и др.),
+  `ITgWebhookReceiver`, источники и диспетчер нижнего слоя (`ITgLongPollSource`, `ITgWebhookSource`,
+  `ITgUpdateDispatcher`). Объект освобождается вместе с последней ссылкой; `Free` не нужен.
 - **Отписка не останавливает уже идущую отмену.** Освобождение ссылки, возвращённой `Register`, снимает
   подписку, но колбэк, уже скопированный идущим в другом потоке `Cancel`, может быть вызван и после этого.
   Объекты, нужные колбэку, держите в самом колбэке (интерфейсной ссылкой) или защищайте флагом.
@@ -1134,11 +1214,18 @@ webhook-сервера тоже: `TgBotIndyRT` берёт их оттуда). Е
   `ACtx.Api` (класс `TTgApi`) не храните дольше самого контекста.
 - **Источник отмены — как `ITgCancellationSource`**, созданный через `TTgCancellationSource.New`
   ([раздел 5, «Отмена»](#отмена)); потребителям отдавайте его как `ITgCancellation`.
+- **Источники и диспетчер нижнего слоя — через `New` и как интерфейс.** `TTgLongPollSource.New`,
+  `TTgWebhookSource.New`, `TTgUpdateDispatcher.New` возвращают `ITgLongPollSource`, `ITgWebhookSource`,
+  `ITgUpdateDispatcher`; храните именно их, объект освобождается вместе с последней ссылкой. Источники и
+  диспетчер самого `TTgBot` наружу не отдаются — их настройки задаются свойствами бота
+  ([«Настройки приёма»](#настройки-приёма)).
+- **`TTgBot.WebhookReceiver` — и после `Free` бота.** Ссылка держит webhook-источник бота; после `Stop` и
+  `Free` `Accept` отвечает `Unavailable`. Отпустите её, когда HTTP-сервер больше не принимает запросы.
 
 ### Чего делать нельзя
 
-- Вызывать `Free` для `Bot.Source`, `Bot.WebhookSource` и `Bot.Dispatcher`: это объекты со счётчиком ссылок,
-  ими владеет бот (свойства отдают классы для тонкой настройки; перевод на интерфейсы запланирован в 0.3.0).
+- Хранить `TTgLongPollSource`, `TTgWebhookSource`, `TTgUpdateDispatcher` как класс (`LSource:
+  TTgLongPollSource`) и вызывать для них `Free` — используйте `New` и интерфейс.
 - Хранить `TTgCancellationSource` как класс (`LSource: TTgCancellationSource`) и вызывать для него `Free`.
 - Обращаться после `Free` бота к переменной бота, захваченной в обработчике (`LBot` — уже освобождённый
   объект).
