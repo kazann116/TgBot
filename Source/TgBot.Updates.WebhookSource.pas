@@ -15,8 +15,8 @@
   висящим setWebhook/deleteWebhook.
 
   Пользователю достаточно uses TgBot.Updates (или TgBot): TTgWebhookSource
-  реэкспортируется там псевдонимом. ITgWebhookCore — служебный, не
-  используйте его напрямую.
+  и ITgWebhookSource (создание — TTgWebhookSource.New) реэкспортируются там
+  псевдонимами. ITgWebhookCore — служебный, не используйте его напрямую.
 }
 
 {$SCOPEDENUMS ON}
@@ -67,6 +67,87 @@ type
   end;
 
   /// <summary>
+  ///   Webhook-источник как интерфейс: все настройки и события
+  ///   TTgWebhookSource (описание — у класса), Accept, WaitForThread и
+  ///   Receiver. Создавайте через TTgWebhookSource.New и храните как
+  ///   интерфейс; не храните ссылку на класс — объект освобождается по
+  ///   счётчику ссылок. Настройки задаются до Start.
+  /// </summary>
+  ITgWebhookSource = interface(ITgUpdateSource)
+    ['{7E49F47D-6569-4AF4-8FA1-1D51B7817E7D}']
+    function GetUrl: string;
+    procedure SetUrl(const AValue: string);
+    function GetSecretToken: string;
+    procedure SetSecretToken(const AValue: string);
+    function GetMaxConnections: Integer;
+    procedure SetMaxConnections(AValue: Integer);
+    function GetDropPendingUpdates: Boolean;
+    procedure SetDropPendingUpdates(AValue: Boolean);
+    function GetIpAddress: string;
+    procedure SetIpAddress(const AValue: string);
+    function GetCertificate: TTgInputFile;
+    procedure SetCertificate(const AValue: TTgInputFile);
+    function GetAllowedUpdates: TTgOptional<TArray<string>>;
+    procedure SetAllowedUpdates(const AValue: TTgOptional<TArray<string>>);
+    function GetRegisterOnStart: Boolean;
+    procedure SetRegisterOnStart(AValue: Boolean);
+    function GetDeleteOnStop: Boolean;
+    procedure SetDeleteOnStop(AValue: Boolean);
+    function GetMaxBodySize: Integer;
+    procedure SetMaxBodySize(AValue: Integer);
+    function GetPostTimeoutMs: Cardinal;
+    procedure SetPostTimeoutMs(AValue: Cardinal);
+    function GetDedupWindow: Integer;
+    procedure SetDedupWindow(AValue: Integer);
+    function GetOnError: TProc<Exception>;
+    procedure SetOnError(const AValue: TProc<Exception>);
+    function GetOnFault: TProc<Exception>;
+    procedure SetOnFault(const AValue: TProc<Exception>);
+    /// <summary>Тело — байты UTF-8 (как пришли по сети); см. ITgWebhookReceiver.</summary>
+    function Accept(const ABody: TBytes; const ASecretHeader: string): TTgWebhookResult; overload;
+    /// <summary>Тело — уже декодированная строка; см. ITgWebhookReceiver.</summary>
+    function Accept(const ABody, ASecretHeader: string): TTgWebhookResult; overload;
+    /// <summary>
+    ///   Ждёт завершения служебного потока (в т.ч. отпущенного при Stop =
+    ///   False). True — завершён или не запускался.
+    /// </summary>
+    function WaitForThread(AMs: Cardinal): Boolean;
+    /// <summary>
+    ///   Этот же источник как приёмник тела webhook-запроса (для HTTP-сервера
+    ///   приложения). Держит источник, как и сам интерфейс.
+    /// </summary>
+    function Receiver: ITgWebhookReceiver;
+    /// <summary>Внешний HTTPS-URL webhook (параметр url setWebhook).</summary>
+    property Url: string read GetUrl write SetUrl;
+    /// <summary>secret_token: Accept сверяет его с заголовком; пусто — не передаётся и не проверяется.</summary>
+    property SecretToken: string read GetSecretToken write SetSecretToken;
+    /// <summary>max_connections (1–100); 0 — не передаётся (значение сервера, 40).</summary>
+    property MaxConnections: Integer read GetMaxConnections write SetMaxConnections;
+    /// <summary>drop_pending_updates setWebhook: пропустить накопившиеся обновления.</summary>
+    property DropPendingUpdates: Boolean read GetDropPendingUpdates write SetDropPendingUpdates;
+    /// <summary>ip_address setWebhook (вместо адреса из DNS); пусто — не передаётся.</summary>
+    property IpAddress: string read GetIpAddress write SetIpAddress;
+    /// <summary>Публичный ключ самоподписанного сертификата (certificate); пусто — нет.</summary>
+    property Certificate: TTgInputFile read GetCertificate write SetCertificate;
+    /// <summary>allowed_updates; не задано — не передаётся.</summary>
+    property AllowedUpdates: TTgOptional<TArray<string>> read GetAllowedUpdates write SetAllowedUpdates;
+    /// <summary>Вызывать setWebhook при Start (по умолчанию True).</summary>
+    property RegisterOnStart: Boolean read GetRegisterOnStart write SetRegisterOnStart;
+    /// <summary>Вызывать deleteWebhook при Stop (по умолчанию False).</summary>
+    property DeleteOnStop: Boolean read GetDeleteOnStop write SetDeleteOnStop;
+    /// <summary>Наибольший размер тела, байт UTF-8 (по умолчанию 1 МБ); больше — BadRequest.</summary>
+    property MaxBodySize: Integer read GetMaxBodySize write SetMaxBodySize;
+    /// <summary>Сколько Accept ждёт места в очереди, мс (по умолчанию 250).</summary>
+    property PostTimeoutMs: Cardinal read GetPostTimeoutMs write SetPostTimeoutMs;
+    /// <summary>Сколько последних update_id помнить для дедупликации (0 — без неё).</summary>
+    property DedupWindow: Integer read GetDedupWindow write SetDedupWindow;
+    /// <summary>Ошибка deleteWebhook при Stop (в служебном потоке; исключения поглощаются).</summary>
+    property OnError: TProc<Exception> read GetOnError write SetOnError;
+    /// <summary>Ошибка setWebhook: источник перешёл в Faulted (в служебном потоке).</summary>
+    property OnFault: TProc<Exception> read GetOnFault write SetOnFault;
+  end;
+
+  /// <summary>
   ///   Webhook без собственного HTTP-сервера: тело запроса передаёт Accept
   ///   (из потока любого сервера — WebBroker, Horse, mORMot, Indy…), ответ
   ///   серверу Telegram — TgWebhookHttpStatus(результат). Настройки задаются
@@ -90,8 +171,11 @@ type
   ///   освобождаются; незавершённый setWebhook дожидается (≈AWaitMs, затем
   ///   отмена); при DeleteOnStop — deleteWebhook в пределах того же бюджета.
   ///   Секрет и токен в тексты исключений и событий не попадают.
+  ///
+  ///   Создавайте через New и храните как ITgWebhookSource; не храните
+  ///   ссылку на класс (объект освобождается по счётчику ссылок).
   /// </summary>
-  TTgWebhookSource = class(TInterfacedObject, ITgUpdateSource, ITgWebhookReceiver)
+  TTgWebhookSource = class(TInterfacedObject, ITgUpdateSource, ITgWebhookReceiver, ITgWebhookSource)
   private
     FLock: TCriticalSection;
     FTransport: ITgTransport;
@@ -120,13 +204,49 @@ type
     function Deliver(const ACore: ITgWebhookCore; AJson: TJSONObject): TTgWebhookResult;
     /// <summary>Проверки до разбора тела: состояние и секрет.</summary>
     function Admit(out ACore: ITgWebhookCore; const ASecretHeader: string): TTgWebhookResult;
+    function GetUrl: string;
+    procedure SetUrl(const AValue: string);
+    function GetSecretToken: string;
+    procedure SetSecretToken(const AValue: string);
+    function GetMaxConnections: Integer;
+    procedure SetMaxConnections(AValue: Integer);
+    function GetDropPendingUpdates: Boolean;
+    procedure SetDropPendingUpdates(AValue: Boolean);
+    function GetIpAddress: string;
+    procedure SetIpAddress(const AValue: string);
+    function GetCertificate: TTgInputFile;
+    procedure SetCertificate(const AValue: TTgInputFile);
+    function GetAllowedUpdates: TTgOptional<TArray<string>>;
+    procedure SetAllowedUpdates(const AValue: TTgOptional<TArray<string>>);
+    function GetRegisterOnStart: Boolean;
+    procedure SetRegisterOnStart(AValue: Boolean);
+    function GetDeleteOnStop: Boolean;
+    procedure SetDeleteOnStop(AValue: Boolean);
+    function GetMaxBodySize: Integer;
+    procedure SetMaxBodySize(AValue: Integer);
+    function GetPostTimeoutMs: Cardinal;
+    procedure SetPostTimeoutMs(AValue: Cardinal);
+    function GetDedupWindow: Integer;
+    procedure SetDedupWindow(AValue: Integer);
+    function GetOnError: TProc<Exception>;
+    procedure SetOnError(const AValue: TProc<Exception>);
+    function GetOnFault: TProc<Exception>;
+    procedure SetOnFault(const AValue: TProc<Exception>);
   public
     /// <summary>
     ///   Источник поверх транспорта ATransport (тот же, что у TTgApi): через
     ///   него идут setWebhook и deleteWebhook. Вызовы прерываются и отменой
-    ///   AParentCancel (например, TTgApi.CancelToken).
+    ///   AParentCancel (например, TTgApi.CancelToken). Предпочтительно
+    ///   создавать через New.
     /// </summary>
     constructor Create(const ATransport: ITgTransport; const AParentCancel: ITgCancellation = nil);
+    /// <summary>
+    ///   Создаёт источник (параметры — как у Create) и возвращает его как
+    ///   ITgWebhookSource. Создавайте через New и храните как интерфейс;
+    ///   не храните ссылку на класс.
+    /// </summary>
+    class function New(const ATransport: ITgTransport;
+      const AParentCancel: ITgCancellation = nil): ITgWebhookSource; static;
     /// <summary>
     ///   Не блокирует: запрашивает остановку и ждёт служебный поток не дольше
     ///   30 мс; незавершившийся поток (висящий setWebhook/deleteWebhook)
@@ -145,6 +265,8 @@ type
     ///   False). True — завершён или не запускался.
     /// </summary>
     function WaitForThread(AMs: Cardinal): Boolean;
+    /// <summary>Этот же источник как приёмник тела webhook-запроса (ITgWebhookReceiver).</summary>
+    function Receiver: ITgWebhookReceiver;
     /// <summary>
     ///   Случайный секрет длины ALength (1–256) из символов [A-Za-z0-9_-]
     ///   (криптостойкий генератор ОС). Недоступен генератор — ETgError.
@@ -155,40 +277,40 @@ type
     /// <summary>Состояние источника.</summary>
     property State: TTgSourceState read GetState;
     /// <summary>Внешний HTTPS-URL webhook (параметр url setWebhook).</summary>
-    property Url: string read FUrl write FUrl;
+    property Url: string read GetUrl write SetUrl;
     /// <summary>
     ///   secret_token: Telegram присылает его в заголовке
     ///   X-Telegram-Bot-Api-Secret-Token, Accept сверяет. Пусто — не
     ///   передаётся и не проверяется (TTgBot всегда задаёт значение).
     /// </summary>
-    property SecretToken: string read FSecretToken write FSecretToken;
+    property SecretToken: string read GetSecretToken write SetSecretToken;
     /// <summary>max_connections (1–100); 0 — не передаётся (значение сервера, 40).</summary>
-    property MaxConnections: Integer read FMaxConnections write FMaxConnections;
+    property MaxConnections: Integer read GetMaxConnections write SetMaxConnections;
     /// <summary>drop_pending_updates setWebhook: пропустить накопившиеся обновления.</summary>
-    property DropPendingUpdates: Boolean read FDropPendingUpdates write FDropPendingUpdates;
+    property DropPendingUpdates: Boolean read GetDropPendingUpdates write SetDropPendingUpdates;
     /// <summary>ip_address setWebhook (вместо адреса из DNS); пусто — не передаётся.</summary>
-    property IpAddress: string read FIpAddress write FIpAddress;
+    property IpAddress: string read GetIpAddress write SetIpAddress;
     /// <summary>Публичный ключ самоподписанного сертификата (certificate); пусто — нет.</summary>
-    property Certificate: TTgInputFile read FCertificate write FCertificate;
+    property Certificate: TTgInputFile read GetCertificate write SetCertificate;
     /// <summary>allowed_updates; не задано — не передаётся (см. TTgLongPollSource.AllowedUpdates).</summary>
-    property AllowedUpdates: TTgOptional<TArray<string>> read FAllowedUpdates write FAllowedUpdates;
+    property AllowedUpdates: TTgOptional<TArray<string>> read GetAllowedUpdates write SetAllowedUpdates;
     /// <summary>
     ///   Вызывать setWebhook при Start (по умолчанию True). False — webhook
     ///   зарегистрирован заранее (вручную или другим процессом).
     /// </summary>
-    property RegisterOnStart: Boolean read FRegisterOnStart write FRegisterOnStart;
+    property RegisterOnStart: Boolean read GetRegisterOnStart write SetRegisterOnStart;
     /// <summary>Вызывать deleteWebhook при Stop (по умолчанию False).</summary>
-    property DeleteOnStop: Boolean read FDeleteOnStop write FDeleteOnStop;
+    property DeleteOnStop: Boolean read GetDeleteOnStop write SetDeleteOnStop;
     /// <summary>Наибольший размер тела, байт UTF-8 (по умолчанию 1 МБ); больше — BadRequest.</summary>
-    property MaxBodySize: Integer read FMaxBodySize write FMaxBodySize;
+    property MaxBodySize: Integer read GetMaxBodySize write SetMaxBodySize;
     /// <summary>Сколько Accept ждёт места в очереди, мс (по умолчанию 250).</summary>
-    property PostTimeoutMs: Cardinal read FPostTimeoutMs write FPostTimeoutMs;
+    property PostTimeoutMs: Cardinal read GetPostTimeoutMs write SetPostTimeoutMs;
     /// <summary>Сколько последних update_id помнить для дедупликации (0 — без неё).</summary>
-    property DedupWindow: Integer read FDedupWindow write FDedupWindow;
+    property DedupWindow: Integer read GetDedupWindow write SetDedupWindow;
     /// <summary>Ошибка deleteWebhook при Stop (в служебном потоке; исключения поглощаются).</summary>
-    property OnError: TProc<Exception> read FOnError write FOnError;
+    property OnError: TProc<Exception> read GetOnError write SetOnError;
     /// <summary>Ошибка setWebhook: источник перешёл в Faulted (в служебном потоке).</summary>
-    property OnFault: TProc<Exception> read FOnFault write FOnFault;
+    property OnFault: TProc<Exception> read GetOnFault write SetOnFault;
   end;
 
 implementation
@@ -615,6 +737,12 @@ begin
   FDedupWindow := TgDefaultWebhookDedupWindow;
 end;
 
+class function TTgWebhookSource.New(const ATransport: ITgTransport;
+  const AParentCancel: ITgCancellation): ITgWebhookSource;
+begin
+  Result := TTgWebhookSource.Create(ATransport, AParentCancel);
+end;
+
 destructor TTgWebhookSource.Destroy;
 var
   LCore: ITgWebhookCore;
@@ -844,6 +972,152 @@ begin
     for C in AValue do
       if not CharInSet(C, ['A'..'Z', 'a'..'z', '0'..'9', '_', '-']) then
         Exit(False);
+end;
+
+function TTgWebhookSource.Receiver: ITgWebhookReceiver;
+begin
+  // Неявное приведение: класс реализует ITgWebhookReceiver (без as и QueryInterface).
+  Result := Self;
+end;
+
+function TTgWebhookSource.GetUrl: string;
+begin
+  Result := FUrl;
+end;
+
+procedure TTgWebhookSource.SetUrl(const AValue: string);
+begin
+  FUrl := AValue;
+end;
+
+function TTgWebhookSource.GetSecretToken: string;
+begin
+  Result := FSecretToken;
+end;
+
+procedure TTgWebhookSource.SetSecretToken(const AValue: string);
+begin
+  FSecretToken := AValue;
+end;
+
+function TTgWebhookSource.GetMaxConnections: Integer;
+begin
+  Result := FMaxConnections;
+end;
+
+procedure TTgWebhookSource.SetMaxConnections(AValue: Integer);
+begin
+  FMaxConnections := AValue;
+end;
+
+function TTgWebhookSource.GetDropPendingUpdates: Boolean;
+begin
+  Result := FDropPendingUpdates;
+end;
+
+procedure TTgWebhookSource.SetDropPendingUpdates(AValue: Boolean);
+begin
+  FDropPendingUpdates := AValue;
+end;
+
+function TTgWebhookSource.GetIpAddress: string;
+begin
+  Result := FIpAddress;
+end;
+
+procedure TTgWebhookSource.SetIpAddress(const AValue: string);
+begin
+  FIpAddress := AValue;
+end;
+
+function TTgWebhookSource.GetCertificate: TTgInputFile;
+begin
+  Result := FCertificate;
+end;
+
+procedure TTgWebhookSource.SetCertificate(const AValue: TTgInputFile);
+begin
+  FCertificate := AValue;
+end;
+
+function TTgWebhookSource.GetAllowedUpdates: TTgOptional<TArray<string>>;
+begin
+  Result := FAllowedUpdates;
+end;
+
+procedure TTgWebhookSource.SetAllowedUpdates(const AValue: TTgOptional<TArray<string>>);
+begin
+  FAllowedUpdates := AValue;
+end;
+
+function TTgWebhookSource.GetRegisterOnStart: Boolean;
+begin
+  Result := FRegisterOnStart;
+end;
+
+procedure TTgWebhookSource.SetRegisterOnStart(AValue: Boolean);
+begin
+  FRegisterOnStart := AValue;
+end;
+
+function TTgWebhookSource.GetDeleteOnStop: Boolean;
+begin
+  Result := FDeleteOnStop;
+end;
+
+procedure TTgWebhookSource.SetDeleteOnStop(AValue: Boolean);
+begin
+  FDeleteOnStop := AValue;
+end;
+
+function TTgWebhookSource.GetMaxBodySize: Integer;
+begin
+  Result := FMaxBodySize;
+end;
+
+procedure TTgWebhookSource.SetMaxBodySize(AValue: Integer);
+begin
+  FMaxBodySize := AValue;
+end;
+
+function TTgWebhookSource.GetPostTimeoutMs: Cardinal;
+begin
+  Result := FPostTimeoutMs;
+end;
+
+procedure TTgWebhookSource.SetPostTimeoutMs(AValue: Cardinal);
+begin
+  FPostTimeoutMs := AValue;
+end;
+
+function TTgWebhookSource.GetDedupWindow: Integer;
+begin
+  Result := FDedupWindow;
+end;
+
+procedure TTgWebhookSource.SetDedupWindow(AValue: Integer);
+begin
+  FDedupWindow := AValue;
+end;
+
+function TTgWebhookSource.GetOnError: TProc<Exception>;
+begin
+  Result := FOnError;
+end;
+
+procedure TTgWebhookSource.SetOnError(const AValue: TProc<Exception>);
+begin
+  FOnError := AValue;
+end;
+
+function TTgWebhookSource.GetOnFault: TProc<Exception>;
+begin
+  Result := FOnFault;
+end;
+
+procedure TTgWebhookSource.SetOnFault(const AValue: TProc<Exception>);
+begin
+  FOnFault := AValue;
 end;
 
 end.

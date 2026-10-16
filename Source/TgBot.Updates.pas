@@ -7,14 +7,19 @@
 
   - общие типы (ITgRawUpdate, ITgUpdateSink, ITgUpdateSource, перечисления,
     константы, тексты, TTgShutdownSignal) — TgBot.Updates.Types;
-  - диспетчер TTgUpdateDispatcher — TgBot.Updates.Dispatcher;
-  - long polling TTgLongPollSource (getUpdates в собственном потоке:
-    offset, политики подтверждения, паузы при ошибках, 401/404/409,
-    остановка с дренажом и итоговым подтверждением) — TgBot.Updates.Polling;
-  - webhook TTgWebhookSource без HTTP-сервера (setWebhook/deleteWebhook,
-    приём тела запроса из любого сервера — Accept, проверка секрета,
-    дедупликация update_id, ограниченное ожидание очереди) —
-    TgBot.Updates.WebhookSource.
+  - диспетчер TTgUpdateDispatcher и ITgUpdateDispatcher —
+    TgBot.Updates.Dispatcher;
+  - long polling TTgLongPollSource и ITgLongPollSource (getUpdates в
+    собственном потоке: offset, политики подтверждения, паузы при ошибках,
+    401/404/409, остановка с дренажом и итоговым подтверждением) —
+    TgBot.Updates.Polling;
+  - webhook TTgWebhookSource и ITgWebhookSource без HTTP-сервера
+    (setWebhook/deleteWebhook, приём тела запроса из любого сервера —
+    Accept, проверка секрета, дедупликация update_id, ограниченное ожидание
+    очереди) — TgBot.Updates.WebhookSource.
+
+  Диспетчер и источники создавайте фабриками New (TTgUpdateDispatcher.New,
+  TTgLongPollSource.New, TTgWebhookSource.New) и храните как интерфейсы.
 
   Типы и константы реэкспортируются псевдонимами, функции — обёртками,
   поэтому достаточно uses TgBot.Updates.
@@ -106,20 +111,29 @@ type
   /// <summary>Сигнал завершения консольной программы (Ctrl+C, SIGINT/SIGTERM).</summary>
   TTgShutdownSignal = TgBot.Updates.Types.TTgShutdownSignal;
 
-  { Псевдоним диспетчера TgBot.Updates.Dispatcher }
+  { Псевдонимы диспетчера TgBot.Updates.Dispatcher }
 
   /// <summary>Диспетчер обновлений: порядок внутри чата, параллельность между чатами.</summary>
   TTgUpdateDispatcher = TgBot.Updates.Dispatcher.TTgUpdateDispatcher;
+  /// <summary>
+  ///   Диспетчер как интерфейс (создание — TTgUpdateDispatcher.New; храните
+  ///   интерфейс, не класс). Не путать со служебным ITgDispatchCore.
+  /// </summary>
+  ITgUpdateDispatcher = TgBot.Updates.Dispatcher.ITgUpdateDispatcher;
 
-  { Псевдоним источника long polling TgBot.Updates.Polling }
+  { Псевдонимы источника long polling TgBot.Updates.Polling }
 
   /// <summary>Long polling (getUpdates) в собственном потоке: offset, паузы при ошибках, 401/404/409, остановка с дренажом.</summary>
   TTgLongPollSource = TgBot.Updates.Polling.TTgLongPollSource;
+  /// <summary>Источник long polling как интерфейс (создание — TTgLongPollSource.New; храните интерфейс, не класс).</summary>
+  ITgLongPollSource = TgBot.Updates.Polling.ITgLongPollSource;
 
-  { Псевдоним webhook-источника TgBot.Updates.WebhookSource }
+  { Псевдонимы webhook-источника TgBot.Updates.WebhookSource }
 
   /// <summary>Webhook без HTTP-сервера: setWebhook/deleteWebhook, Accept из любого сервера, секрет, дедупликация update_id.</summary>
   TTgWebhookSource = TgBot.Updates.WebhookSource.TTgWebhookSource;
+  /// <summary>Webhook-источник как интерфейс (создание — TTgWebhookSource.New; храните интерфейс, не класс).</summary>
+  ITgWebhookSource = TgBot.Updates.WebhookSource.ITgWebhookSource;
 
 { Обёртки функций TgBot.Updates.Types (не inline: inline-обёртка дала бы
   пользователю подсказку H2443 о модуле, не указанном в uses). }
