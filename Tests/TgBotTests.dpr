@@ -2088,6 +2088,371 @@ begin
     'кнопка Cancel: после Free владельца всё освобождено');
 end;
 
+type
+  /// <summary>
+  ///   Замок-часовой детектора гонки отмены (TestCancelLinkRace): им
+  ///   заполняется память освобождённого TRaceChildSource, поэтому Cancel
+  ///   по висячей ссылке входит в этот замок и считается в GRaceAfterFree.
+  /// </summary>
+  TRaceSentinelLock = class(TCriticalSection)
+  public
+    procedure Acquire; override;
+  end;
+
+  /// <summary>
+  ///   Дочерний источник теста гонки «отмена родителя / освобождение
+  ///   ребёнка»: живые экземпляры считаются в GRaceChildLive. Пока детектор
+  ///   включён (GRaceQuarantineLock), освобождённая память не отдаётся сразу:
+  ///   слот VMT обнуляется, остальные слоты указывают на GRaceSentinel (поле
+  ///   FCancelled становится ненулевым — Cancel выходит сразу после входа
+  ///   в замок), блок лежит в карантине GRaceQuarantine. Так обращение
+  ///   к уже освобождённому ребёнку обнаруживается, а не проходит молча по
+  ///   памяти нового объекта.
+  /// </summary>
+  TRaceChildSource = class(TTgCancellationSource)
+  public
+    constructor Create(const AParent: ITgCancellation);
+    destructor Destroy; override;
+    procedure FreeInstance; override;
+  end;
+
+const
+  CRaceQuarantineSize = 4096;
+
+var
+  GRaceChildLive: Integer = 0;
+  GRaceAfterFree: Integer = 0;
+  GRaceSentinel: TRaceSentinelLock = nil;
+  GRaceQuarantineLock: TCriticalSection = nil;
+  GRaceQuarantine: array[0..CRaceQuarantineSize - 1] of Pointer;
+  GRaceQuarantineNext: Integer = 0;
+  // Замеры WEAK (последний прогон гонки: облегчённый или STRESS).
+  GRaceTag: string = 'не запускалась';
+  GRaceMs: Int64 = -1;
+  GRaceCancels: Integer = -1;
+  GRaceHits: Integer = -1;
+{$IFDEF MSWINDOWS}
+  // Прежний ExceptObjProc на время теста гонки и число перехваченных AV.
+  GRaceOldExceptObjProc: Pointer = nil;
+  GRaceAVs: Integer = 0;
+{$ENDIF}
+
+{ TRaceSentinelLock }
+
+procedure TRaceSentinelLock.Acquire;
+begin
+  TInterlocked.Increment(GRaceAfterFree);
+  inherited Acquire;
+end;
+
+{ TRaceChildSource }
+
+constructor TRaceChildSource.Create(const AParent: ITgCancellation);
+begin
+  // До inherited: если конструктор упадёт, деструктор уменьшит счётчик.
+  TInterlocked.Increment(GRaceChildLive);
+  inherited Create(AParent);
+end;
+
+destructor TRaceChildSource.Destroy;
+begin
+  TInterlocked.Decrement(GRaceChildLive);
+  inherited Destroy;
+end;
+
+procedure TRaceChildSource.FreeInstance;
+var
+  LSize, I: Integer;
+  LSlot: PPointer;
+  LEvicted: Pointer;
+begin
+  // Детектор выключен — обычное освобождение.
+  if not Assigned(GRaceQuarantineLock) then
+  begin
+    inherited FreeInstance;
+    Exit;
+  end;
+  // Как TObject.FreeInstance, но вместо FreeMem — отравление и карантин.
+  LSize := InstanceSize;
+  CleanupInstance;
+  LSlot := PPointer(Self);
+  LSlot^ := nil;
+  for I := 1 to LSize div SizeOf(Pointer) - 1 do
+  begin
+    Inc(LSlot);
+    LSlot^ := Pointer(GRaceSentinel);
+  end;
+  GRaceQuarantineLock.Enter;
+  try
+    LEvicted := GRaceQuarantine[GRaceQuarantineNext];
+    GRaceQuarantine[GRaceQuarantineNext] := Pointer(Self);
+    GRaceQuarantineNext := (GRaceQuarantineNext + 1) mod CRaceQuarantineSize;
+  finally
+    GRaceQuarantineLock.Leave;
+  end;
+  if Assigned(LEvicted) then
+    FreeMem(LEvicted);
+end;
+
+/// <summary>Освобождает блоки карантина TRaceChildSource (дети уже освобождены).</summary>
+procedure RaceQuarantineFlush;
+var
+  I: Integer;
+begin
+  for I := 0 to High(GRaceQuarantine) do
+    if Assigned(GRaceQuarantine[I]) then
+    begin
+      FreeMem(GRaceQuarantine[I]);
+      GRaceQuarantine[I] := nil;
+    end;
+  GRaceQuarantineNext := 0;
+end;
+
+{$IFDEF MSWINDOWS}
+/// <summary>
+///   Перехватчик ExceptObjProc на время теста гонки: считает аппаратные AV
+///   во всех потоках, в том числе поглощённые (InvokeQuietly глушит
+///   исключения колбэков отмены, а значит, и AV внутри Fire в потоке Cancel
+///   родителя), затем передаёт запись прежнему обработчику.
+/// </summary>
+function RaceExceptObj(P: System.PExceptionRecord): Pointer;
+begin
+  if P.ExceptionCode = STATUS_ACCESS_VIOLATION then
+    TInterlocked.Increment(GRaceAVs);
+  Result := TExceptObjProc(GRaceOldExceptObjProc)(P);
+end;
+{$ENDIF}
+
+/// <summary>
+///   Медленный подписчик родителя (≈ AMicroseconds мкс активного ожидания).
+///   Подписан первым и вызывается первым: пока он работает, потоки успевают
+///   отпустить детей, чьи колбэки Cancel родителя уже скопировал, — окно
+///   гонки шире.
+/// </summary>
+function RaceSlowCallback(AMicroseconds: Integer): TProc;
+begin
+  Result :=
+    procedure
+    var
+      LWatch: TStopwatch;
+      LTicks: Int64;
+    begin
+      // Frequency заполняется при первом StartNew/Create.
+      LWatch := TStopwatch.StartNew;
+      LTicks := TStopwatch.Frequency * AMicroseconds div 1000000;
+      while LWatch.ElapsedTicks < LTicks do
+        TThread.SpinWait(10);
+    end;
+end;
+
+/// <summary>
+///   Гонка «отмена родителя / освобождение ребёнка» (слабая связь
+///   TTgCancelLink): AThreads потоков по AIterations раз создают ребёнка
+///   текущего общего родителя, подписывают на него зонд, иногда отписываются
+///   и отпускают ребёнка; главный поток тем временем подменяет родителя
+///   (под блокировкой) и отменяет прежнего. Проверки: детектор
+///   TRaceChildSource не видит Cancel по освобождённому ребёнку, исключений
+///   в потоках и AV (в том числе поглощённых) нет, отмена родителя доходит
+///   до живых детей, все дети и зонды освобождены, время в пределах.
+/// </summary>
+procedure RunCancelLinkRace(AThreads, AIterations: Integer; const ATag: string);
+const
+  CWaitMs = 5000;
+  CSlowUs = 50;
+  CLimitMs = 60000;
+var
+  LLock: TCriticalSection;
+  LCurrent, LNext, LOld, LDead: ITgCancellationSource;
+  LCurrentSlow, LOldSlow: IInterface;
+  LDeadObj: TTgCancellationSource;
+  LThreads: TArray<TThread>;
+  LDone, LErrors, LNilWithoutCall, LMissed, LHits, LCancels: Integer;
+  LFirstError: string;
+  LChildBefore, LProbeBefore: Integer;
+  LWatch: TStopwatch;
+  I: Integer;
+{$IFDEF MSWINDOWS}
+  LNil: PInteger;
+{$ENDIF}
+begin
+  LChildBefore := TInterlocked.CompareExchange(GRaceChildLive, 0, 0);
+  LProbeBefore := TInterlocked.CompareExchange(GCancelProbeLive, 0, 0);
+  GRaceSentinel := TRaceSentinelLock.Create;
+  GRaceQuarantineLock := TCriticalSection.Create;
+  try
+{$IFDEF MSWINDOWS}
+    // Перехват AV (RaceExceptObj) и его самопроверка.
+    TInterlocked.Exchange(GRaceAVs, 0);
+    GRaceOldExceptObjProc := ExceptObjProc;
+    ExceptObjProc := @RaceExceptObj;
+    LNil := nil;
+    try
+      LNil^ := 1;
+    except
+      // Ожидаемое AV самопроверки.
+    end;
+    Check(TInterlocked.Exchange(GRaceAVs, 0) > 0, ATag + ': перехват AV работает');
+{$ENDIF}
+    // Самопроверка детектора: Cancel по освобождённому (отравленному)
+    // ребёнку входит в замок-часовой и не падает.
+    LDead := TRaceChildSource.Create(nil);
+    LDeadObj := LDead as TTgCancellationSource;
+    LDead := nil;
+    TInterlocked.Exchange(GRaceAfterFree, 0);
+    LDeadObj.Cancel;
+    CheckEquals(1, TInterlocked.Exchange(GRaceAfterFree, 0),
+      ATag + ': детектор видит Cancel по освобождённому ребёнку');
+
+    LDone := 0;
+    LErrors := 0;
+    LNilWithoutCall := 0;
+    LMissed := 0;
+    LHits := 0;
+    LCancels := 0;
+    LFirstError := '';
+    SetLength(LThreads, AThreads);
+    LLock := TCriticalSection.Create;
+    try
+      LCurrent := TTgCancellationSource.New;
+      LCurrentSlow := LCurrent.Register(RaceSlowCallback(CSlowUs));
+      LWatch := TStopwatch.StartNew;
+      try
+        for I := 0 to High(LThreads) do
+        begin
+          LThreads[I] := TThread.CreateAnonymousThread(
+            procedure
+            var
+              N: Integer;
+              LParent, LChild: ITgCancellationSource;
+              LProbe: ICancelProbe;
+              LReg: IInterface;
+            begin
+              try
+                for N := 1 to AIterations do
+                begin
+                  LLock.Enter;
+                  try
+                    LParent := LCurrent;
+                  finally
+                    LLock.Leave;
+                  end;
+                  LChild := TRaceChildSource.Create(LParent);
+                  LProbe := TCancelProbe.Create;
+                  LReg := RegisterProbe(LChild, LProbe);
+                  // nil — только если ребёнок уже отменён: колбэк обязан быть вызван.
+                  if not Assigned(LReg) and (LProbe.Calls <> 1) then
+                    TInterlocked.Increment(LNilWithoutCall);
+                  // Иногда отписка до отпускания ребёнка.
+                  if N mod 3 = 0 then
+                    LReg := nil;
+                  // Родитель отменён, пока ребёнок жив, — отмена обязана дойти
+                  // до ребёнка (Fire идёт в потоке Cancel родителя). Проверка —
+                  // на каждой 4-й итерации: ожидание задерживает отпускание
+                  // ребёнка до Fire и сужает окно гонки.
+                  if (N mod 4 = 0) and LParent.IsCancelled and not LChild.WaitFor(CWaitMs) then
+                    TInterlocked.Increment(LMissed);
+                  LParent := nil;
+                  // Ребёнок освобождается то при отпускании ссылки, то при
+                  // отпускании подписки (она удерживает источник).
+                  if Odd(N) then
+                  begin
+                    LReg := nil;
+                    LChild := nil;
+                  end
+                  else
+                  begin
+                    LChild := nil;
+                    LReg := nil;
+                  end;
+                  TInterlocked.Add(LHits, LProbe.Calls);
+                  LProbe := nil;
+                end;
+              except
+                on E: Exception do
+                  if TInterlocked.Increment(LErrors) = 1 then
+                    LFirstError := E.ClassName + ': ' + E.Message;
+              end;
+              TInterlocked.Increment(LDone);
+            end);
+          LThreads[I].FreeOnTerminate := False;
+        end;
+        for I := 0 to High(LThreads) do
+          LThreads[I].Start;
+        // Подмена родителя: новый публикуется под блокировкой, прежний отменяется.
+        while TInterlocked.CompareExchange(LDone, 0, 0) < AThreads do
+        begin
+          LNext := TTgCancellationSource.New;
+          LOldSlow := LCurrentSlow;
+          LCurrentSlow := LNext.Register(RaceSlowCallback(CSlowUs));
+          LLock.Enter;
+          try
+            LOld := LCurrent;
+            LCurrent := LNext;
+          finally
+            LLock.Leave;
+          end;
+          LNext := nil;
+          LOld.Cancel;
+          LOld := nil;
+          LOldSlow := nil;
+          Inc(LCancels);
+        end;
+      finally
+        for I := 0 to High(LThreads) do
+          LThreads[I].Free;
+      end;
+      LWatch.Stop;
+      LCurrent.Cancel;
+      LCurrent := nil;
+      LCurrentSlow := nil;
+    finally
+      LLock.Free;
+    end;
+    GRaceTag := Format('%d x %d', [AThreads, AIterations]);
+    GRaceMs := LWatch.ElapsedMilliseconds;
+    GRaceCancels := LCancels;
+    GRaceHits := LHits;
+    CheckEquals(0, LErrors, ATag + ': исключений (AV) в потоках нет (' + LFirstError + ')');
+{$IFDEF MSWINDOWS}
+    CheckEquals(0, TInterlocked.CompareExchange(GRaceAVs, 0, 0),
+      ATag + ': AV нет ни в одном потоке, включая поглощённые колбэками отмены');
+{$ENDIF}
+    CheckEquals(0, TInterlocked.CompareExchange(GRaceAfterFree, 0, 0),
+      ATag + ': Cancel не дошёл до освобождённого ребёнка');
+    CheckEquals(0, LNilWithoutCall, ATag + ': Register вернул nil только с уже вызванным колбэком');
+    CheckEquals(0, LMissed, ATag + ': отмена родителя дошла до живых детей');
+    Check(LCancels > 0, ATag + ': родитель отменялся параллельно с детьми');
+    CheckEquals(LChildBefore, TInterlocked.CompareExchange(GRaceChildLive, 0, 0),
+      Format('%s: все %d детей освобождены (%d отмен родителя)',
+      [ATag, AThreads * AIterations, LCancels]));
+    CheckEquals(LProbeBefore, TInterlocked.CompareExchange(GCancelProbeLive, 0, 0),
+      ATag + ': зонды и колбэки освобождены');
+    Check(LWatch.ElapsedMilliseconds < CLimitMs,
+      Format('%s: время %d мс < %d мс', [ATag, LWatch.ElapsedMilliseconds, CLimitMs]));
+  finally
+{$IFDEF MSWINDOWS}
+    if Assigned(GRaceOldExceptObjProc) then
+      ExceptObjProc := GRaceOldExceptObjProc;
+    GRaceOldExceptObjProc := nil;
+{$ENDIF}
+    RaceQuarantineFlush;
+    FreeAndNil(GRaceQuarantineLock);
+    FreeAndNil(GRaceSentinel);
+  end;
+end;
+
+/// <summary>Облегчённая гонка для каждого прогона: 4 потока x 1000.</summary>
+procedure TestCancelLinkRace;
+begin
+  RunCancelLinkRace(4, 1000, 'гонка 4 x 1000');
+end;
+
+/// <summary>Полная гонка (только по TG_ONLY, см. RunAll): 4 потока x 10000.</summary>
+procedure TestCancelLinkRaceStress;
+begin
+  RunCancelLinkRace(4, 10000, 'гонка 4 x 10000');
+end;
+
 procedure TestCancelScope;
 var
   A, B, C: ITgCancellation;
@@ -10506,6 +10871,12 @@ begin
   RunTest('Токены отмены: Cancel, Register, отписка, связанные, Linked, WaitFor', TestCancellationTokens);
   RunTest('Владение: ITgCancellationSource — New, Cancel, связанные, отписка, ' +
     'стресс 4 потока x 10000, кнопка Cancel', TestCancellationSourceOwnership);
+  RunTest('Слабая связь отмены: гонка отмены родителя и освобождения ребёнка, ' +
+    '4 потока x 1000, детектор обращений к освобождённому', TestCancelLinkRace);
+  // Полная гонка — только явно: TG_ONLY=STRESS (или «STRESS Слабая связь»).
+  if GetEnvironmentVariable('TG_ONLY') <> '' then
+    RunTest('STRESS Слабая связь отмены: гонка отмены родителя и освобождения ребёнка, ' +
+      '4 потока x 10000', TestCancelLinkRaceStress);
   RunTest('TTgCancelScope: вложенность и разные потоки', TestCancelScope);
   RunTest('Call: окружающий и явный токен, транспорт без токенов', TestCallCancellation);
   RunTest('HTTP-транспорт: retry_after и лимитёр прерываются токеном; Cancel/ResetCancel',
@@ -10664,6 +11035,8 @@ begin
     [GOwnAbaSameAddress, GOwnAbaRestarts]));
   Writeln(Format('Замеры 0.3.0, мс: HandleWebhook при переполнении, WebhookPostTimeoutMs = 600: %d',
     [GWebhookPostTimeoutMs]));
+  Writeln(Format('Замеры WEAK: гонка отмены родителя и освобождения ребёнка (%s) = %d мс, ' +
+    'отмен родителя = %d, вызовов колбэков детей = %d', [GRaceTag, GRaceMs, GRaceCancels, GRaceHits]));
   Writeln(Format('Тестов: %d, не прошло: %d; проверок: %d, ошибок: %d',
     [GTests, GTestsFailed, GPassed + GFailed, GFailed]));
   if GFailed > 0 then
