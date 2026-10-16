@@ -155,6 +155,11 @@ const
   TgWebhookSecretLength = TgBot.Updates.TgWebhookSecretLength;
   /// <summary>Таймаут TTgBot.Stop по умолчанию, мс.</summary>
   TgDefaultBotStopTimeoutMs = TgBot.Bot.TgDefaultBotStopTimeoutMs;
+  /// <summary>
+  ///   Сколько Free бота ждёт фоновую подготовку (getMe/setMyCommands)
+  ///   перед её отменой, мс; описание — TgBot.Bot.TgDefaultBotFreeStartJobWaitMs.
+  /// </summary>
+  TgDefaultBotFreeStartJobWaitMs = TgBot.Bot.TgDefaultBotFreeStartJobWaitMs;
 
 type
   { Псевдонимы типов ядра (TgBot.Base) }
