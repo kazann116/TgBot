@@ -4637,6 +4637,8 @@ begin
   end;
   Check(LWatch.ElapsedMilliseconds < 1000,
     Format('Free после Shutdown быстрый (%d мс)', [LWatch.ElapsedMilliseconds]));
+  // Задача GetMeAsync могла ещё не отпустить свои ссылки — ждём, а не проверяем мгновенно.
+  WaitTransportReleased(LTransport, 2000);
   CheckEquals(1, LTransport.RefCount, 'клиент отпустил транспорт');
 end;
 
@@ -4803,8 +4805,15 @@ begin
       end, ETgCancelledError), 'ACtx.Api.GetMe после Free бота → ETgCancelledError');
     Check(LTransport.RefCount > 1, 'контекст удерживает клиент (транспорт)');
     LSaved := nil;
+    // Последнюю ссылку на ядро мог отпустить поток обработчика — ждём, а не проверяем мгновенно.
+    WaitTransportReleased(LTransport, 2000);
     CheckEquals(1, LTransport.RefCount, 'последний контекст освободил ядро и клиент');
 {$IFDEF TGBOT_TESTHOOKS}
+    WaitUntil(
+      function: Boolean
+      begin
+        Result := TgTestLiveBotCores <= LCores0;
+      end, 2000);
     CheckEquals(LCores0, TgTestLiveBotCores, 'ядро освобождено вместе с последним контекстом');
 {$ENDIF}
     CheckEquals(0, LTransport.Count('sendMessage'), 'sendMessage не отправлялся');
@@ -4883,6 +4892,8 @@ begin
     CheckEquals('', LSecondSeen, 'следующее обновление — с новым хранилищем (B)');
     Check(LStorageB.TryGet('100:7', 'k3', LValue) and (LValue = 'y'), 'следующее обновление пишет в B');
     Check(not LStorageA.TryGet('100:7', 'k3', LValue), 'A не получило запись следующего обновления');
+    // Ядро могло освободиться в потоке обработчика — ждём, а не проверяем мгновенно.
+    WaitTransportReleased(LTransport, 2000);
     CheckEquals(1, LTransport.RefCount, 'бот отпустил транспорт');
   finally
     LSecondDone.Free;
@@ -4979,6 +4990,8 @@ begin
   finally
     LBot.Free;
   end;
+  // Ядро могло освободиться в потоке обработчика — ждём, а не проверяем мгновенно.
+  WaitTransportReleased(LTransport, 2000);
   CheckEquals(1, LTransport.RefCount, 'бот отпустил транспорт');
   Result := TInterlocked.CompareExchange(LCount, 0, 0);
 end;
@@ -6321,6 +6334,8 @@ begin
   finally
     LBot.Free;
   end;
+  // Ядро могло освободиться в потоке обработчика — ждём, а не проверяем мгновенно.
+  WaitTransportReleased(LTransport, 2000);
   CheckEquals(1, LTransport.RefCount, 'бот отпустил транспорт');
   AErrors := TInterlocked.CompareExchange(LErrorCount, 0, 0);
   AFirstError := LFirstError;
@@ -8975,6 +8990,9 @@ const
     (Name: 'WhsBadPath'; Ru: @SRuWhsBadPath; En: @SEnWhsBadPath),
     (Name: 'WhsPublicUrlNotHttps'; Ru: @SRuWhsPublicUrlNotHttps; En: @SEnWhsPublicUrlNotHttps)
   );
+  // Всего пар SRu…/SEn… в TgBot.Consts: перечисления TTgText, TTgUpdatesText,
+  // TTgRouterText и CConstPairs. Обновите при добавлении пары в TgBot.Consts.
+  CExpectedConstPairs = 60;
 
 { TTestDto }
 
@@ -9114,8 +9132,8 @@ var
   LText: TTgText;
   LUpdText: TTgUpdatesText;
   LRouteText: TTgRouterText;
-  LRu, LEn: string;
-  I: Integer;
+  LRu, LEn, LDuplicate: string;
+  I, J: Integer;
 begin
   LLanguage := TgGetLanguage;
   try
@@ -9155,7 +9173,17 @@ begin
       TgSetLanguage(TTgLanguage.En);
       CheckEquals(LEn, TgLangText(CConstPairs[I].Ru, CConstPairs[I].En),
         'Consts.' + CConstPairs[I].Name + ': TgLangText (En)');
+      // Повтор пары завысил бы счёт полноты ниже.
+      LDuplicate := '';
+      for J := Low(CConstPairs) to I - 1 do
+        if CConstPairs[J].Ru = CConstPairs[I].Ru then
+          LDuplicate := CConstPairs[J].Name;
+      Check(LDuplicate = '', 'Consts.' + CConstPairs[I].Name + ': повтор пары ' + LDuplicate);
     end;
+    // Полнота: пары перечислений и CConstPairs покрывают все пары TgBot.Consts.
+    CheckEquals(CExpectedConstPairs, (Ord(High(TTgText)) + 1) + (Ord(High(TTgUpdatesText)) + 1) +
+      (Ord(High(TTgRouterText)) + 1) + Length(CConstPairs),
+      'число проверенных пар = CExpectedConstPairs (новую пару TgBot.Consts — в перечисление или CConstPairs)');
   finally
     TgSetLanguage(LLanguage);
   end;
