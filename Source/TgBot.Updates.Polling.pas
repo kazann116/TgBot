@@ -727,6 +727,8 @@ begin
 end;
 
 procedure TTgPollCore.Fault(AError: Exception);
+var
+  LHandler: TProc<Exception>;
 begin
   FLock.Enter;
   try
@@ -737,31 +739,41 @@ begin
   finally
     FLock.Leave;
   end;
-  if Assigned(FOnFault) then
+  // Обработчик — в локальной переменной: замыкание не захватывает Self.
+  LHandler := FOnFault;
+  if Assigned(LHandler) then
     TgInvokeQuietly(
       procedure
       begin
-        FOnFault(AError);
+        LHandler(AError);
       end);
 end;
 
 procedure TTgPollCore.NotifyError(AError: Exception);
+var
+  LHandler: TProc<Exception>;
 begin
-  if Assigned(FOnError) then
+  // Обработчик — в локальной переменной: замыкание не захватывает Self.
+  LHandler := FOnError;
+  if Assigned(LHandler) then
     TgInvokeQuietly(
       procedure
       begin
-        FOnError(AError);
+        LHandler(AError);
       end);
 end;
 
 procedure TTgPollCore.NotifyConflict(AError: ETgConflictError);
+var
+  LHandler: TTgConflictHandler;
 begin
-  if Assigned(FOnConflict) then
+  // Обработчик — в локальной переменной: замыкание не захватывает Self.
+  LHandler := FOnConflict;
+  if Assigned(LHandler) then
     TgInvokeQuietly(
       procedure
       begin
-        FOnConflict(AError);
+        LHandler(AError);
       end);
 end;
 

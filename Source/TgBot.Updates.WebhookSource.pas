@@ -601,6 +601,8 @@ begin
 end;
 
 procedure TTgWebhookCore.Fault(AError: Exception);
+var
+  LHandler: TProc<Exception>;
 begin
   FLock.Enter;
   try
@@ -612,21 +614,27 @@ begin
   finally
     FLock.Leave;
   end;
-  if Assigned(FOnFault) then
+  // Обработчик — в локальной переменной: замыкание не захватывает Self.
+  LHandler := FOnFault;
+  if Assigned(LHandler) then
     TgInvokeQuietly(
       procedure
       begin
-        FOnFault(AError);
+        LHandler(AError);
       end);
 end;
 
 procedure TTgWebhookCore.NotifyError(AError: Exception);
+var
+  LHandler: TProc<Exception>;
 begin
-  if Assigned(FOnError) then
+  // Обработчик — в локальной переменной: замыкание не захватывает Self.
+  LHandler := FOnError;
+  if Assigned(LHandler) then
     TgInvokeQuietly(
       procedure
       begin
-        FOnError(AError);
+        LHandler(AError);
       end);
 end;
 

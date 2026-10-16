@@ -406,14 +406,23 @@ begin
   Result := True;
 end;
 
+/// <summary>Тождество объектов за интерфейсами (канонический IInterface).</summary>
+function SameIntf(const A, B: IInterface): Boolean;
+begin
+  Result := Assigned(A) and Assigned(B) and ((A as IInterface) = (B as IInterface));
+end;
+
 /// <summary>Отменяет источник через ADelayMs мс в отдельном потоке.</summary>
 procedure CancelLater(const ASource: ITgCancellation; ADelayMs: Integer);
+var
+  LSource: ITgCancellationSource;
 begin
+  LSource := ASource as ITgCancellationSource;
   TThread.CreateAnonymousThread(
     procedure
     begin
       TThread.Sleep(ADelayMs);
-      (ASource as TTgCancellationSource).Cancel;
+      LSource.Cancel;
     end).Start;
 end;
 
@@ -485,6 +494,9 @@ end;
 /// <summary>Клиент с подменным транспортом; транспорт — в ATransport.</summary>
 function NewApi(const AHandler: TFakeHandler; out ATransport: TFakeTransport): TTgApi;
 begin
+  // Намеренно класс: тесты проверяют RefCount и внутреннее состояние
+  // транспорта (Calls, LastMethod…); объект держит интерфейсная ссылка
+  // клиента (TTgApi), ATransport — несчитаемая ссылка на время его жизни.
   ATransport := TFakeTransport.Create(AHandler);
   Result := TTgApi.Create(ATransport as ITgTransport);
 end;
@@ -1068,7 +1080,7 @@ begin
   LUpdate := TTgUpdate.FromJson(CUpdateJson);
   LDetached := TTgDto.Detach<ITgMessage>(LUpdate.Message);
   LMessage := LUpdate.Message;
-  Check((LDetached as TObject) <> (LMessage as TObject), 'Detach — новый объект');
+  Check(not SameIntf(LDetached, LMessage), 'Detach — новый объект');
   LMessage := nil;
   LUpdate := nil;
   CheckEquals('Привет, мир! 👋', LDetached.Text, 'Detach: текст');
@@ -2266,6 +2278,9 @@ var
   LLock: TCriticalSection;
   LCurrent, LNext, LOld, LDead: ITgCancellationSource;
   LCurrentSlow, LOldSlow: IInterface;
+  // Намеренно класс, а не интерфейс: самопроверка детектора вызывает Cancel
+  // по уже освобождённому (карантинному) объекту — интерфейсная ссылка
+  // трогала бы счётчик ссылок в освобождённой памяти.
   LDeadObj: TTgCancellationSource;
   LThreads: TArray<TThread>;
   LDone, LErrors, LNilWithoutCall, LMissed, LHits, LCancels: Integer;
@@ -4292,6 +4307,8 @@ end;
 
 procedure TestStateStorage;
 var
+  // Намеренно: класс нужен для проверки внутреннего состояния (KeyCount нет
+  // в ITgStateStorage); объект держит интерфейсная ссылка LRef.
   LStorage: TTgMemoryStateStorage;
   LRef: ITgStateStorage;
   LValue: string;
@@ -4656,7 +4673,10 @@ end;
 {$IFDEF MSWINDOWS}
 /// <summary>Отменяет источник через AMicros мкс (активное ожидание в отдельном потоке).</summary>
 procedure CancelAfterMicros(const ASource: ITgCancellation; AMicros: Int64);
+var
+  LSource: ITgCancellationSource;
 begin
+  LSource := ASource as ITgCancellationSource;
   TThread.CreateAnonymousThread(
     procedure
     var
@@ -4665,7 +4685,7 @@ begin
       LWatch := TStopwatch.StartNew;
       while LWatch.ElapsedTicks * 1000000 div TStopwatch.Frequency < AMicros do
         ;
-      (ASource as TTgCancellationSource).Cancel;
+      LSource.Cancel;
     end).Start;
 end;
 
@@ -9784,12 +9804,6 @@ destructor TOwnerProbe.Destroy;
 begin
   Inc(FFreed^);
   inherited Destroy;
-end;
-
-/// <summary>Тождество объектов за интерфейсами (канонический IInterface).</summary>
-function SameIntf(const A, B: IInterface): Boolean;
-begin
-  Result := Assigned(A) and Assigned(B) and ((A as IInterface) = (B as IInterface));
 end;
 
 { Хелперы TestJsonHolderIntf: временные ссылки на держателя живут до выхода
