@@ -55,7 +55,9 @@ uses
 {$ENDIF}
   TgBot,
   TgBot.Component,
-  TgBot.Webhook;
+  TgBot.Webhook,
+  // Прокси: локальный HTTP-прокси и фейковый Bot API (Indy).
+  TgBotTests.Proxy in 'TgBotTests.Proxy.pas';
 
 type
   /// <summary>
@@ -9541,7 +9543,7 @@ const
   );
   // Всего пар SRu…/SEn… в TgBot.Consts: перечисления TTgText, TTgUpdatesText,
   // TTgRouterText и CConstPairs. Обновите при добавлении пары в TgBot.Consts.
-  CExpectedConstPairs = 61;
+  CExpectedConstPairs = 62;
 
 { TTestDto }
 
@@ -10837,6 +10839,300 @@ begin
   end;
 end;
 
+const
+  CProxyToken = '123456:TEST';
+
+/// <summary>Настройки транспорта: Bot API AApiUrl через прокси 127.0.0.1:APort (Scheme = AScheme).</summary>
+function ProxySettings(const AApiUrl: string; APort: Integer; const AScheme: string): TTgHttpSettings;
+begin
+  Result := TTgHttpSettings.Create(CProxyToken);
+  Result.ApiUrl := AApiUrl;
+  Result.ConnectionTimeoutMs := 5000;
+  Result.ResponseTimeoutMs := 10000;
+  Result.PerChatIntervalMs := 0;
+  // Как в сообщении клиента: поле-запись меняется через with.
+  with Result.Proxy do
+  begin
+    Host := '127.0.0.1';
+    Port := APort;
+    Scheme := AScheme;
+  end;
+end;
+
+/// <summary>
+///   Код клиента из сообщения об ошибке (with LSettings.Proxy do …): поле-запись
+///   меняется на месте, транспорт получает те же значения.
+/// </summary>
+procedure TestProxyClientCode;
+var
+  LSettings: TTgHttpSettings;
+  LApi: TTgApi;
+begin
+  LSettings := TTgHttpSettings.Create(CProxyToken);
+  Check(not LSettings.Proxy.IsEnabled, 'по умолчанию прокси не задан');
+  with LSettings.Proxy do begin
+    Host := '192.168.1.1';
+    Port := 8021;
+    Scheme := '';
+  end;
+  CheckEquals('192.168.1.1', LSettings.Proxy.Host, 'with: Host сохранён');
+  CheckEquals(8021, LSettings.Proxy.Port, 'with: Port сохранён');
+  CheckEquals('', LSettings.Proxy.Scheme, 'with: Scheme сохранён');
+  Check(LSettings.Proxy.IsEnabled, 'with: прокси задан');
+  LApi := TTgApi.Create(LSettings);
+  try
+    CheckEquals('192.168.1.1', LApi.Settings.Proxy.Host, 'транспорт: Host');
+    CheckEquals(8021, LApi.Settings.Proxy.Port, 'транспорт: Port');
+  finally
+    LApi.Free;
+  end;
+end;
+
+/// <summary>Все запросы бота (Scheme = AScheme) — через локальный прокси.</summary>
+procedure RunProxyBot(const AScheme: string);
+var
+  LProxy: TTestHttpProxy;
+  LServer: TTestBotApiServer;
+  LBot: TTgBot;
+  LFile: ITgFile;
+  LData: TBytesStream;
+  LTag: string;
+begin
+  LTag := 'Scheme = ''' + AScheme + ''': ';
+  LProxy := TTestHttpProxy.Create;
+  try
+    LServer := TTestBotApiServer.Create;
+    try
+      LBot := TTgBot.Create(ProxySettings(LServer.Url, LProxy.Port, AScheme));
+      try
+        CheckEquals('proxy_test_bot', LBot.Api.GetMe.Username, LTag + 'getMe');
+        LBot.Api.SendMessage(42, 'hi');
+        LFile := LBot.Api.GetFile('F1');
+        LData := TBytesStream.Create;
+        try
+          LBot.Api.DownloadFile(LFile.FilePath, LData);
+          CheckEquals(TestFileData, TEncoding.ASCII.GetString(LData.Bytes, 0, LData.Size),
+            LTag + 'DownloadFile');
+        finally
+          LData.Free;
+        end;
+        // Long polling: обновление "ping" → ответ "pong" (второй sendMessage).
+        LBot.Text(
+          procedure(ACtx: ITgContext)
+          begin
+            ACtx.Reply('pong');
+          end);
+        LBot.Start;
+        Check(WaitUntil(
+          function: Boolean
+          begin
+            Result := LServer.Log.Count('sendMessage') >= 2;
+          end, 10000), LTag + 'long polling: getUpdates и ответ обработчика');
+        LBot.Stop;
+      finally
+        LBot.Free;
+      end;
+      Check(LServer.Log.Count('getMe [via]') >= 1, LTag + 'getMe через прокси');
+      Check(LServer.Log.Count('getUpdates [via]') >= 1, LTag + 'getUpdates через прокси');
+      CheckEquals(2, LServer.Log.Count('sendMessage [via]'), LTag + 'sendMessage через прокси');
+      CheckEquals(1, LServer.Log.Count('getFile [via]'), LTag + 'getFile через прокси');
+      CheckEquals(1, LServer.Log.Count('/file/bot' + CProxyToken + '/docs/f.bin [via]'),
+        LTag + 'DownloadFile через прокси');
+      CheckEquals(0, LServer.Log.Count('[direct]'), LTag + 'запросов мимо прокси нет: ' + LServer.Log.Text);
+      Check(LProxy.Log.Count('http://' + TestApiHost) >= 6, LTag + 'журнал прокси: ' + LProxy.Log.Text);
+    finally
+      LServer.Free;
+    end;
+  finally
+    LProxy.Free;
+  end;
+end;
+
+procedure TestProxyRequests;
+begin
+  RunProxyBot('');
+  RunProxyBot('http');
+end;
+
+/// <summary>
+///   HTTPS (облачный ApiUrl): прокси получает CONNECT api.telegram.org:443.
+///   Прокси стенда туннель не открывает (502) — в Telegram запрос не уходит;
+///   текст ошибки содержит адрес прокси.
+/// </summary>
+procedure TestProxyHttpsConnect;
+var
+  LProxy: TTestHttpProxy;
+  LServer: TTestBotApiServer;
+  LApi: TTgApi;
+  LSettings: TTgHttpSettings;
+  LError: string;
+begin
+  LProxy := TTestHttpProxy.Create;
+  try
+    LServer := TTestBotApiServer.Create;
+    try
+      LSettings := ProxySettings(LServer.Url, LProxy.Port, '');
+      // Сначала — что прокси применяется: без него запрос к облачному
+      // ApiUrl ушёл бы в настоящий api.telegram.org.
+      LApi := TTgApi.Create(LSettings);
+      try
+        LApi.GetMe;
+      finally
+        LApi.Free;
+      end;
+      Check(LServer.Log.Count('getMe [via]') = 1, 'проверочный getMe прошёл через прокси');
+      if LServer.Log.Count('getMe [via]') <> 1 then
+        Exit;
+      LSettings.ApiUrl := TgDefaultApiUrl;
+      LApi := TTgApi.Create(LSettings);
+      try
+        LError := RaisedText(
+          procedure
+          begin
+            LApi.GetMe;
+          end, ETgNetworkError);
+      finally
+        LApi.Free;
+      end;
+      CheckEquals(1, LProxy.Log.Count('CONNECT api.telegram.org:443'),
+        'CONNECT api.telegram.org:443: ' + LProxy.Log.Text);
+      Check(Contains(TgTextFmt(TTgText.ViaProxy, ['', '127.0.0.1:' + IntToStr(LProxy.Port)]), LError),
+        'отказ прокси (502) — адрес прокси в тексте: ' + LError);
+    finally
+      LServer.Free;
+    end;
+  finally
+    LProxy.Free;
+  end;
+end;
+
+/// <summary>
+///   Неверный порт прокси (как 8021 вместо 2081): ETgNetworkError с адресом
+///   прокси; без прокси текст прежний; 404 при скачивании через прокси.
+/// </summary>
+procedure TestProxyErrorText;
+var
+  LProxy: TTestHttpProxy;
+  LServer: TTestBotApiServer;
+  LClosedPort: Integer;
+  LApi: TTgApi;
+  LSettings: TTgHttpSettings;
+  LData: TBytesStream;
+  LError, LMarker: string;
+  LStatus: Integer;
+begin
+  // Свободный порт, на котором никто не слушает.
+  LProxy := TTestHttpProxy.Create;
+  LClosedPort := LProxy.Port;
+  LProxy.Free;
+  LMarker := TgTextFmt(TTgText.ViaProxy, ['', '']);
+  LApi := TTgApi.Create(ProxySettings('http://' + TestApiHost + ':80', LClosedPort, ''));
+  try
+    LError := RaisedText(
+      procedure
+      begin
+        LApi.GetMe;
+      end, ETgNetworkError);
+  finally
+    LApi.Free;
+  end;
+  Check(Contains(TgTextFmt(TTgText.ViaProxy, ['', '127.0.0.1:' + IntToStr(LClosedPort)]), LError),
+    'прокси недоступен — адрес прокси в тексте: ' + LError);
+  Check(not Contains(CProxyToken, LError), 'токен в тексте скрыт');
+  // Без прокси — текст без дополнения.
+  LSettings := TTgHttpSettings.Create(CProxyToken);
+  LSettings.ApiUrl := 'http://127.0.0.1:' + IntToStr(LClosedPort);
+  LSettings.ConnectionTimeoutMs := 5000;
+  LApi := TTgApi.Create(LSettings);
+  try
+    LError := RaisedText(
+      procedure
+      begin
+        LApi.GetMe;
+      end, ETgNetworkError);
+  finally
+    LApi.Free;
+  end;
+  Check((LError <> '') and (LError[1] <> '<') and not Contains(LMarker, LError),
+    'без прокси — ETgNetworkError без адреса прокси: ' + LError);
+  // Ответ 404 при скачивании через прокси.
+  LProxy := TTestHttpProxy.Create;
+  try
+    LServer := TTestBotApiServer.Create;
+    try
+      LApi := TTgApi.Create(ProxySettings(LServer.Url, LProxy.Port, ''));
+      LData := TBytesStream.Create;
+      try
+        LStatus := 0;
+        LError := '';
+        try
+          LApi.DownloadFile('docs/missing.bin', LData);
+        except
+          on E: ETgNetworkError do
+          begin
+            LStatus := E.StatusCode;
+            LError := E.Message;
+          end;
+        end;
+      finally
+        LData.Free;
+        LApi.Free;
+      end;
+      CheckEquals(404, LStatus, 'DownloadFile 404 → ETgNetworkError.StatusCode');
+      Check(Contains(TgTextFmt(TTgText.ViaProxy, ['', '127.0.0.1:' + IntToStr(LProxy.Port)]), LError),
+        'DownloadFile 404 — адрес прокси в тексте: ' + LError);
+    finally
+      LServer.Free;
+    end;
+  finally
+    LProxy.Free;
+  end;
+end;
+
+/// <summary>Компонент: TTelegramBot.Proxy → все запросы бота через прокси.</summary>
+procedure TestComponentProxy;
+var
+  LProxy: TTestHttpProxy;
+  LServer: TTestBotApiServer;
+  LBot: TTelegramBot;
+begin
+  LProxy := TTestHttpProxy.Create;
+  try
+    LServer := TTestBotApiServer.Create;
+    try
+      LBot := TTelegramBot.Create(nil);
+      try
+        LBot.Token := CProxyToken;
+        LBot.ApiUrl := LServer.Url;
+        LBot.Proxy.Host := '127.0.0.1';
+        LBot.Proxy.Port := LProxy.Port;
+        LBot.Active := True;
+        // Без команд getMe при запуске не вызывается (ленивый) — только приём.
+        Check(PumpUntil(
+          function: Boolean
+          begin
+            Result := LServer.Log.Count('getUpdates [via]') >= 2;
+          end, 10000), 'компонент: getUpdates через прокси: ' + LServer.Log.Text);
+        CheckEquals(LProxy.Port, LBot.Api.Settings.Proxy.Port, 'компонент: Proxy.Port в настройках');
+        CheckEquals('proxy_test_bot', LBot.Api.GetMe.Username, 'компонент: getMe');
+        LBot.Api.SendMessage(42, 'hi');
+        LBot.Active := False;
+      finally
+        LBot.Free;
+      end;
+      CheckSynchronize(0);
+      CheckEquals(1, LServer.Log.Count('getMe [via]'), 'компонент: getMe через прокси');
+      CheckEquals(1, LServer.Log.Count('sendMessage [via]'), 'компонент: sendMessage через прокси');
+      CheckEquals(0, LServer.Log.Count('[direct]'), 'компонент: запросов мимо прокси нет: ' +
+        LServer.Log.Text);
+    finally
+      LServer.Free;
+    end;
+  finally
+    LProxy.Free;
+  end;
+end;
+
 procedure RunAll;
 begin
   Writeln('TgBot ', TgBotVersion, ' (Bot API ', TgBotApiVersion, ') — офлайн-тесты');
@@ -10992,6 +11288,14 @@ begin
     'загрузка', TestComponentOptionsStreaming);
   RunTest('0.3.0: компонент Polling/Webhook → TTgBot (limit в getUpdates, RegisterOnStart = False, ' +
     'MaxBodySize, DedupWindow), смена при работе → ETgError', TestComponentOptionsApply);
+  RunTest('Прокси: код клиента with LSettings.Proxy do — значения сохраняются и доходят до транспорта',
+    TestProxyClientCode);
+  RunTest('Прокси: getMe, sendMessage, getFile, DownloadFile, long polling — через локальный прокси ' +
+    '(Scheme '''' и ''http'')', TestProxyRequests);
+  RunTest('Прокси: HTTPS — CONNECT api.telegram.org:443, адрес прокси в тексте ошибки', TestProxyHttpsConnect);
+  RunTest('Прокси: недоступный прокси и 404 при скачивании — адрес прокси в ETgNetworkError, без прокси — нет',
+    TestProxyErrorText);
+  RunTest('Прокси: компонент TTelegramBot.Proxy — запросы бота через прокси', TestComponentProxy);
 {$IFDEF MSWINDOWS}
   RunTest('Завершение процесса при висящих обработчиках: < 2 с, код 0',
     TestProcessExitWithHangingHandlers);

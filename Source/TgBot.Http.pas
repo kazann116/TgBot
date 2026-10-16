@@ -59,9 +59,25 @@ const
   TgMaxIdleClients = 8;
 
 type
-  /// <summary>Настройки HTTP(S)-прокси бота.</summary>
+  /// <summary>
+  ///   Настройки HTTP-прокси бота (применяются ко всем запросам транспорта:
+  ///   методы Bot API, long polling, скачивание файлов). Запросы к https://
+  ///   (облачный Bot API) идут через прокси туннелем CONNECT — прокси должен
+  ///   его поддерживать. SOCKS-прокси на Windows (WinHTTP) не поддерживается.
+  ///   Поле записи меняется на месте, в том числе через with:
+  ///   <code>
+  ///   LSettings := TTgHttpSettings.Create(LToken);
+  ///   with LSettings.Proxy do begin Host := '192.168.1.1'; Port := 3128; end;
+  ///   LBot := TTgBot.Create(LSettings);
+  ///   </code>
+  ///   При сетевой ошибке текст ETgNetworkError содержит адрес прокси.
+  /// </summary>
   TTgProxySettings = record
-    /// <summary>Хост прокси; пусто — прокси не используется.</summary>
+    /// <summary>
+    ///   Хост прокси; пусто — прокси бота не задан (Windows: системные
+    ///   настройки прокси WinHTTP/IE). Адреса 127.0.0.1/localhost в ApiUrl
+    ///   WinHTTP запрашивает напрямую, минуя прокси.
+    /// </summary>
     Host: string;
     /// <summary>Порт прокси.</summary>
     Port: Integer;
@@ -69,7 +85,10 @@ type
     UserName: string;
     /// <summary>Пароль (необязательно).</summary>
     Password: string;
-    /// <summary>Схема прокси ('http' или 'https'); пусто — по умолчанию RTL.</summary>
+    /// <summary>
+    ///   Схема прокси: пусто или 'http' — HTTP-прокси (равнозначно). Linux
+    ///   (curl) схему не использует.
+    /// </summary>
     Scheme: string;
     /// <summary>Создаёт настройки прокси.</summary>
     class function Create(const AHost: string; APort: Integer;
@@ -253,6 +272,11 @@ type
     ///   Сетевая ошибка по исключению транспорта; токен в тексте маскируется.
     /// </summary>
     function NetworkErrorFrom(const AMethod: string; AError: Exception): ETgNetworkError;
+    /// <summary>
+    ///   Текст сетевой ошибки с адресом прокси (host:port, без учётных данных),
+    ///   если прокси задан; иначе AMessage без изменений.
+    /// </summary>
+    function WithProxyInfo(const AMessage: string): string;
     /// <summary>URL метода Bot API.</summary>
     function MethodUrl(const AMethod: string): string;
     /// <summary>
@@ -727,7 +751,21 @@ function TTgHttpTransport.NetworkErrorFrom(const AMethod: string;
   AError: Exception): ETgNetworkError;
 begin
   Result := ETgNetworkError.Create(
-    TgTextFmt(TTgText.NetworkError, [AMethod, MaskToken(AError.Message)]), 0, AMethod);
+    WithProxyInfo(TgTextFmt(TTgText.NetworkError, [AMethod, MaskToken(AError.Message)])),
+    0, AMethod);
+end;
+
+function TTgHttpTransport.WithProxyInfo(const AMessage: string): string;
+var
+  LAddress: string;
+begin
+  if not FSettings.Proxy.IsEnabled then
+    Exit(AMessage);
+  // Неверный адрес прокси иначе неотличим от недоступного сервера Bot API.
+  LAddress := FSettings.Proxy.Host;
+  if FSettings.Proxy.Port > 0 then
+    LAddress := LAddress + ':' + IntToStr(FSettings.Proxy.Port);
+  Result := TgTextFmt(TTgText.ViaProxy, [AMessage, LAddress]);
 end;
 
 function TTgHttpTransport.MethodUrl(const AMethod: string): string;
@@ -1016,7 +1054,7 @@ begin
     LRoot := TTgJson.ParseObjectUtf8(LResponse.Body);
     if not Assigned(LRoot) then
       raise ETgNetworkError.Create(
-        TgTextFmt(TTgText.InvalidResponse, [AMethod, LResponse.StatusCode]),
+        WithProxyInfo(TgTextFmt(TTgText.InvalidResponse, [AMethod, LResponse.StatusCode])),
         LResponse.StatusCode, AMethod);
     try
       if TTgJson.GetBool(LRoot, 'ok') then
@@ -1104,8 +1142,8 @@ begin
     end;
     if LResponse.StatusCode <> 200 then
       raise ETgNetworkError.Create(
-        TgTextFmt(TTgText.DownloadFailed, [LResponse.StatusCode]), LResponse.StatusCode,
-        CMethod);
+        WithProxyInfo(TgTextFmt(TTgText.DownloadFailed, [LResponse.StatusCode])),
+        LResponse.StatusCode, CMethod);
   finally
     LResponse := nil;
     LRequest := nil;

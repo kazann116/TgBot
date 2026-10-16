@@ -228,7 +228,10 @@ type
       write SetConflictNotifyIntervalMs default TgDefaultConflictNotifyMs;
   end;
 
-  /// <summary>HTTP(S)-прокси бота (TTgHttpSettings.Proxy); пустой Host — без прокси.</summary>
+  /// <summary>
+  ///   HTTP-прокси бота (TTgHttpSettings.Proxy, см. TTgProxySettings); пустой
+  ///   Host — без прокси. Для https:// прокси должен поддерживать CONNECT.
+  /// </summary>
   TTgProxyOptions = class(TPersistent)
   private
     FOwner: TTelegramBot;

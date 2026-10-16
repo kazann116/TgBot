@@ -61,7 +61,8 @@ type
     DownloadFailed,
     TransportRequired,
     Conflict,
-    ClientClosed
+    ClientClosed,
+    ViaProxy
   );
 
   /// <summary>Базовое исключение библиотеки.</summary>
@@ -531,7 +532,8 @@ const
     (@SRuDownloadFailed, @SEnDownloadFailed),
     (@SRuTransportRequired, @SEnTransportRequired),
     (@SRuConflict, @SEnConflict),
-    (@SRuClientClosed, @SEnClientClosed)
+    (@SRuClientClosed, @SEnClientClosed),
+    (@SRuViaProxy, @SEnViaProxy)
   );
 
   // Внутренние метки вида TTgInputFile (см. FKindTag).
