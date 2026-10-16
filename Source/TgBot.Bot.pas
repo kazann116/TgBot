@@ -20,7 +20,7 @@ uses
   System.SysUtils,
   System.SyncObjs,
   TgBot.Base,
-  TgBot.Http,
+  TgBot.Intf,
   TgBot.Types,
   TgBot.Updates,
   TgBot.State,

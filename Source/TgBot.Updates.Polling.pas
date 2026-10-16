@@ -28,7 +28,6 @@ uses
   System.SyncObjs,
   TgBot.Base,
   TgBot.Intf,
-  TgBot.Http,
   TgBot.Updates.Types;
 
 type

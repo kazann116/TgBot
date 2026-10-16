@@ -31,7 +31,7 @@ uses
   System.Threading,
   TgBot.Base,
   TgBot.Json,
-  TgBot.Http;
+  TgBot.Intf;
 
 const
   /// <summary>Сколько деструктор клиента ждёт завершения начатых Async-вызовов, мс.</summary>
@@ -227,7 +227,8 @@ implementation
 
 uses
   System.Math,
-  TgBot.Consts;
+  TgBot.Consts,
+  TgBot.Http;
 
 type
   /// <summary>Реализация ITgParamsBox.</summary>

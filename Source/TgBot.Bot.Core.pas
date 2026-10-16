@@ -19,7 +19,7 @@ interface
 uses
   System.SysUtils,
   TgBot.Base,
-  TgBot.Http,
+  TgBot.Intf,
   TgBot.Types,
   TgBot.Updates,
   TgBot.State,
