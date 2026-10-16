@@ -1329,7 +1329,7 @@ begin
     if FMode = TTgReceiveMode.Webhook then
     begin
       // До Start: запросы, пришедшие раньше, получат Unavailable, а не 404.
-      SetReceiver(LBot.WebhookSource);
+      SetReceiver(LBot.WebhookReceiver);
       RegisterWithServer;
     end;
     LBot.Start;

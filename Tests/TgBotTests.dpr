@@ -50,6 +50,8 @@ uses
 {$IFDEF TGBOT_TESTHOOKS}
   // Счётчики живых ядер и задач подготовки (TgTestLiveBotCores/TgTestLiveStartJobs).
   TgBot.Bot.Core,
+  // Источник long polling бота (TgTestBotPollSource): настройки Poll*.
+  TgBot.Bot,
 {$ENDIF}
   TgBot,
   TgBot.Component,
@@ -4231,7 +4233,6 @@ begin
         Result := LTransport.Count('getUpdates') >= 1;
       end, 5000), 'getUpdates отправлен');
     Check(AAllowed.HasValue = LBot.AllowedUpdates.HasValue, 'Start не меняет AllowedUpdates бота');
-    Check(LBot.Source.AllowedUpdates.HasValue, 'источнику всегда задан allowed_updates');
     Check(LBot.Stop, 'Stop = True');
   finally
     LBot.Free;
@@ -9715,6 +9716,345 @@ begin
   end;
 end;
 
+var
+  // Замеры 0.3.0: HandleWebhook при переполнении очереди с WebhookPostTimeoutMs = 600, мс.
+  GWebhookPostTimeoutMs: Int64 = -1;
+
+/// <summary>
+///   Все ли запросы getUpdates long polling (timeout ≠ 0) из ACalls, начиная
+///   с AFrom, содержат AText; False и при отсутствии таких запросов.
+/// </summary>
+function LongPollCallsHave(const ACalls: TArray<string>; AFrom: Integer; const AText: string): Boolean;
+var
+  I: Integer;
+  LFound: Boolean;
+begin
+  LFound := False;
+  for I := AFrom to High(ACalls) do
+    if not Contains('"timeout":0', ACalls[I]) then
+    begin
+      if not Contains(AText, ACalls[I]) then
+        Exit(False);
+      LFound := True;
+    end;
+  Result := LFound;
+end;
+
+/// <summary>
+///   0.3.0, фаза 2: настройки Poll* бота — значения по умолчанию (как у
+///   источников), PollLimit → limit в getUpdates, применение PollJitterPercent
+///   и PollConflictNotifyIntervalMs при Start (хук TGBOT_TESTHOOKS), новые
+///   значения — при следующем Start.
+/// </summary>
+procedure TestBotPollSettings;
+var
+  LTransport: TScriptCancellableTransport;
+  LTransportRef: ITgTransport;
+  LBot: TTgBot;
+  LLog: TTextLog;
+  LGets: TArray<string>;
+  LCount: Integer;
+{$IFDEF TGBOT_TESTHOOKS}
+  LPoll: ITgLongPollSource;
+{$ENDIF}
+begin
+  LLog := TTextLog.Create;
+  try
+    // Без настройки — limit = TgDefaultPollLimit.
+    LGets := RunIdleBot(TTgOptionalStrings.Empty, LLog);
+    Check(LongPollCallsHave(LGets, 0, Format('"limit":%d', [TgDefaultPollLimit])),
+      'по умолчанию: limit = TgDefaultPollLimit');
+    LTransport := TScriptCancellableTransport.Create(
+      function(const AMethod: string; AParams: TTgParams): TJSONValue
+      begin
+        if (AMethod = 'getUpdates') and (TTgJson.GetInt(AParams.Json, 'timeout') <> 0) then
+          Exit(HangUntilCancelled);
+        Result := TJSONArray.Create;
+      end);
+    LTransportRef := LTransport;
+    LBot := TTgBot.Create(LTransportRef);
+    try
+      CheckEquals(TgDefaultPollLimit, LBot.PollLimit, 'PollLimit по умолчанию');
+      CheckEquals(TgDefaultBackoffJitterPercent, LBot.PollJitterPercent, 'PollJitterPercent по умолчанию');
+      CheckEquals(TgDefaultConflictNotifyMs, LBot.PollConflictNotifyIntervalMs,
+        'PollConflictNotifyIntervalMs по умолчанию');
+      CheckEquals(TgDefaultWebhookMaxBodySize, LBot.WebhookMaxBodySize, 'WebhookMaxBodySize по умолчанию');
+      CheckEquals(TgDefaultWebhookPostTimeoutMs, LBot.WebhookPostTimeoutMs, 'WebhookPostTimeoutMs по умолчанию');
+      CheckEquals(TgDefaultWebhookDedupWindow, LBot.WebhookDedupWindow, 'WebhookDedupWindow по умолчанию');
+      Check(LBot.WebhookRegisterOnStart, 'WebhookRegisterOnStart по умолчанию True');
+      LBot.PollLimit := 7;
+      LBot.PollJitterPercent := 0;
+      LBot.PollConflictNotifyIntervalMs := 1234;
+      LBot.Start;
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := LTransport.Count('getUpdates') >= 1;
+        end, 5000), 'getUpdates отправлен');
+      LGets := LTransport.Calls('getUpdates');
+      Check(LongPollCallsHave(LGets, 0, '"limit":7'), 'PollLimit = 7 → "limit":7 в getUpdates');
+{$IFDEF TGBOT_TESTHOOKS}
+      LPoll := TgTestBotPollSource(LBot);
+      CheckEquals(7, LPoll.Limit, 'PollLimit применён к источнику');
+      CheckEquals(0, LPoll.JitterPercent, 'PollJitterPercent применён к источнику');
+      CheckEquals(1234, LPoll.ConflictNotifyIntervalMs, 'PollConflictNotifyIntervalMs применён к источнику');
+      LPoll := nil;
+{$ENDIF}
+      Check(LBot.Stop, 'Stop = True');
+      // Новые значения действуют со следующего Start.
+      LBot.PollLimit := 3;
+      LBot.PollJitterPercent := 50;
+      LBot.PollConflictNotifyIntervalMs := 0;
+      LCount := LTransport.Count('getUpdates');
+      LBot.Start;
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := LongPollCallsHave(LTransport.Calls('getUpdates'), LCount, '"limit"');
+        end, 5000), 'повторный Start: getUpdates отправлен');
+      Check(LongPollCallsHave(LTransport.Calls('getUpdates'), LCount, '"limit":3'),
+        'повторный Start: PollLimit = 3 → "limit":3');
+{$IFDEF TGBOT_TESTHOOKS}
+      LPoll := TgTestBotPollSource(LBot);
+      CheckEquals(50, LPoll.JitterPercent, 'повторный Start: PollJitterPercent = 50');
+      CheckEquals(0, LPoll.ConflictNotifyIntervalMs, 'повторный Start: PollConflictNotifyIntervalMs = 0');
+      LPoll := nil;
+{$ENDIF}
+      Check(LBot.Stop, 'повторный Stop = True');
+    finally
+      LBot.Free;
+    end;
+  finally
+    LLog.Free;
+  end;
+end;
+
+/// <summary>
+///   0.3.0, фаза 2: WebhookRegisterOnStart = False (без setWebhook и
+///   OnWebhookRegistered, URL не обязателен, секрет — заданный или без
+///   проверки); WebhookMaxBodySize, WebhookDedupWindow = 0 и
+///   WebhookPostTimeoutMs применяются при Start.
+/// </summary>
+procedure TestWebhookBotSettings;
+const
+  CSecret = 'opt_Secret-1';
+var
+  LTransport: TScriptCancellableTransport;
+  LTransportRef: ITgTransport;
+  LBot: TTgBot;
+  LLog: TTextLog;
+  LHang: TEvent;
+  LBig: string;
+  LWatch: TStopwatch;
+  LResult: TTgWebhookResult;
+begin
+  LLog := TTextLog.Create;
+  LHang := TEvent.Create(nil, True, False, '');
+  try
+    // Регистрация вне бота: ни setWebhook, ни OnWebhookRegistered.
+    LTransport := TScriptCancellableTransport.Create(WebhookScript(False));
+    LTransportRef := LTransport;
+    LBot := TTgBot.Create(LTransportRef);
+    try
+      LBot.Mode := TTgReceiveMode.Webhook;
+      LBot.WebhookRegisterOnStart := False;
+      // WebhookUrl не задан: без регистрации он не нужен.
+      LBot.WebhookSecretToken := CSecret;
+      LBot.OnWebhookRegistered :=
+        procedure
+        begin
+          LLog.Add('registered');
+        end;
+      LBot.OnMessage :=
+        procedure(ACtx: ITgContext)
+        begin
+          LLog.Add('msg ' + ACtx.Text);
+        end;
+      LBot.Start;
+      Check(LBot.State = TTgBotState.Running, 'без регистрации: Start → Running без WebhookUrl');
+      Check(LBot.HandleWebhook(MsgUpdate(1, 100, 7, 'one'), CSecret) = TTgWebhookResult.Accepted,
+        'без регистрации: заданный секрет → Accepted');
+      Check(WaitLogHas(LLog, 'msg one'), 'без регистрации: обработчик вызван');
+      Check(LBot.HandleWebhook(MsgUpdate(2, 100, 7, 'two'), CSecret + 'x') = TTgWebhookResult.Forbidden,
+        'без регистрации: чужой секрет → Forbidden');
+      TThread.Sleep(200);
+      CheckEquals(0, LTransport.Count('setWebhook'), 'без регистрации: setWebhook не вызван');
+      Check(not LLog.Has('registered'), 'без регистрации: OnWebhookRegistered не вызван');
+      Check(LBot.Stop, 'без регистрации: Stop = True');
+      // Пустой секрет без регистрации: случайный серверу не сообщить — без проверки.
+      LBot.WebhookSecretToken := '';
+      LBot.Start;
+      Check(LBot.HandleWebhook(MsgUpdate(3, 100, 7, 'three'), '') = TTgWebhookResult.Accepted,
+        'без регистрации, пустой секрет: заголовок не проверяется');
+      Check(WaitLogHas(LLog, 'msg three'), 'без регистрации, пустой секрет: обработчик вызван');
+      Check(LBot.Stop, 'без регистрации, пустой секрет: Stop = True');
+      CheckEquals(0, LTransport.Count('setWebhook'), 'без регистрации (2 запуска): setWebhook не вызван');
+      Check(not LLog.Has('registered'), 'без регистрации (2 запуска): OnWebhookRegistered не вызван');
+      // Контроль: с регистрацией (True) setWebhook и событие есть — проверки выше не пустые.
+      LBot.WebhookRegisterOnStart := True;
+      LBot.WebhookUrl := 'https://example.org/hook';
+      LBot.Start;
+      Check(WaitSetWebhook(LTransport, 1), 'WebhookRegisterOnStart = True: setWebhook');
+      Check(WaitLogHas(LLog, 'registered'), 'WebhookRegisterOnStart = True: OnWebhookRegistered');
+      Check(LBot.Stop, 'WebhookRegisterOnStart = True: Stop = True');
+    finally
+      LBot.Free;
+    end;
+    // Размер тела, дедупликация и ожидание места в очереди.
+    LLog.Clear;
+    LTransport := TScriptCancellableTransport.Create(WebhookScript(False));
+    LTransportRef := LTransport;
+    LBot := TTgBot.Create(LTransportRef);
+    try
+      LBot.Mode := TTgReceiveMode.Webhook;
+      LBot.WebhookUrl := 'https://example.org/hook';
+      LBot.WebhookSecretToken := CSecret;
+      LBot.WebhookMaxBodySize := 400;
+      LBot.WebhookDedupWindow := 0;
+      LBot.WebhookPostTimeoutMs := 600;
+      LBot.QueueCapacity := 1;
+      LBot.MaxParallel := 1;
+      LBot.OnMessage :=
+        procedure(ACtx: ITgContext)
+        begin
+          if ACtx.Text = 'hang' then
+          begin
+            LLog.Add('hang-begin');
+            LHang.WaitFor(10000);
+          end;
+          LLog.Add('msg ' + ACtx.Text);
+        end;
+      LBot.Start;
+      LBig := MsgUpdate(10, 100, 7, StringOfChar('a', 400));
+      Check(LBot.HandleWebhook(LBig, CSecret) = TTgWebhookResult.BadRequest,
+        'тело больше WebhookMaxBodySize = 400: BadRequest');
+      Check(LBot.HandleWebhook(TEncoding.UTF8.GetBytes(LBig), CSecret) = TTgWebhookResult.BadRequest,
+        'тело больше WebhookMaxBodySize = 400 (TBytes): BadRequest');
+      Check(LBot.HandleWebhook(MsgUpdate(11, 100, 7, 'small'), CSecret) = TTgWebhookResult.Accepted,
+        'тело меньше WebhookMaxBodySize: Accepted');
+      Check(WaitLogHas(LLog, 'msg small'), 'малое тело обработано');
+      // WebhookDedupWindow = 0: повтор того же update_id обрабатывается снова.
+      Check(LBot.HandleWebhook(MsgUpdate(11, 100, 7, 'small'), CSecret) = TTgWebhookResult.Accepted,
+        'WebhookDedupWindow = 0: повтор Accepted');
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := LLog.CountOf('msg small') = 2;
+        end, 5000), 'WebhookDedupWindow = 0: повтор update_id обработан повторно');
+      // WebhookPostTimeoutMs = 600: переполнение отвечает не раньше ≈600 мс.
+      Check(LBot.HandleWebhook(MsgUpdate(12, 100, 7, 'hang'), CSecret) = TTgWebhookResult.Accepted,
+        'u12 (зависнет): Accepted');
+      Check(WaitLogHas(LLog, 'hang-begin'), 'обработчик u12 завис');
+      Check(LBot.HandleWebhook(MsgUpdate(13, 200, 7, 'q'), CSecret) = TTgWebhookResult.Accepted,
+        'u13 занял очередь (ёмкость 1): Accepted');
+      LWatch := TStopwatch.StartNew;
+      LResult := LBot.HandleWebhook(MsgUpdate(14, 300, 7, 'over'), CSecret);
+      GWebhookPostTimeoutMs := LWatch.ElapsedMilliseconds;
+      Check(LResult = TTgWebhookResult.Unavailable, 'переполнение: Unavailable');
+      Check((GWebhookPostTimeoutMs >= 500) and (GWebhookPostTimeoutMs < 2000),
+        'WebhookPostTimeoutMs = 600: ответ через ≈600 мс: ' + IntToStr(GWebhookPostTimeoutMs));
+      LHang.SetEvent;
+      Check(WaitLogHas(LLog, 'msg q'), 'очередь разобрана');
+      Check(LBot.Stop, 'Stop = True');
+    finally
+      LBot.Free;
+    end;
+  finally
+    LHang.Free;
+    LLog.Free;
+  end;
+end;
+
+/// <summary>
+///   0.3.0, фаза 2: TTgBot.WebhookReceiver — Accept при запущенном боте,
+///   Unavailable до Start, после Stop и после Free бота (ссылка удержана);
+///   после отпускания ссылки ядро бота освобождено (счётчики TGBOT_TESTHOOKS).
+/// </summary>
+procedure TestBotWebhookReceiver;
+const
+  CSecret = 'recv_Secret-1';
+var
+  LTransport: TScriptCancellableTransport;
+  LTransportRef: ITgTransport;
+  LBot: TTgBot;
+  LLog: TTextLog;
+  LReceiver, LSame: ITgWebhookReceiver;
+  LCores0, LJobs0: Integer;
+begin
+  LCores0 := LiveBotCores;
+  LJobs0 := LiveStartJobs;
+  LLog := TTextLog.Create;
+  try
+    LTransport := TScriptCancellableTransport.Create(WebhookScript(False));
+    LTransportRef := LTransport;
+    LBot := TTgBot.Create(LTransportRef);
+    try
+      LReceiver := LBot.WebhookReceiver;
+      Check(Assigned(LReceiver), 'WebhookReceiver задан');
+      // Через локальную переменную: скрытая временная ссылка выражения
+      // держала бы источник до выхода из процедуры.
+      LSame := LBot.WebhookReceiver;
+      Check(LSame = LReceiver, 'WebhookReceiver — один и тот же');
+      LSame := nil;
+      Check(LReceiver.Accept(MsgUpdate(1, 100, 7, 'one'), '') = TTgWebhookResult.Unavailable,
+        'Polling, до Start: Unavailable');
+      LBot.Mode := TTgReceiveMode.Webhook;
+      LBot.WebhookUrl := 'https://example.org/hook';
+      LBot.WebhookSecretToken := CSecret;
+      LBot.OnMessage :=
+        procedure(ACtx: ITgContext)
+        begin
+          LLog.Add('msg ' + ACtx.Text);
+        end;
+      LBot.Start;
+      Check(LReceiver.Accept(MsgUpdate(1, 100, 7, 'one'), CSecret) = TTgWebhookResult.Accepted,
+        'запущен: Accept (строка) → Accepted');
+      Check(WaitLogHas(LLog, 'msg one'), 'запущен: обработчик вызван (строка)');
+      Check(LReceiver.Accept(TEncoding.UTF8.GetBytes(MsgUpdate(2, 100, 7, 'two')), CSecret) =
+        TTgWebhookResult.Accepted, 'запущен: Accept (TBytes) → Accepted');
+      Check(WaitLogHas(LLog, 'msg two'), 'запущен: обработчик вызван (TBytes)');
+      Check(LReceiver.Accept(MsgUpdate(3, 100, 7, 'three'), 'bad') = TTgWebhookResult.Forbidden,
+        'запущен: чужой секрет → Forbidden');
+      Check(LBot.Stop, 'Stop = True');
+      Check(LReceiver.Accept(MsgUpdate(4, 100, 7, 'four'), CSecret) = TTgWebhookResult.Unavailable,
+        'после Stop: Unavailable');
+      // Тот же приёмник работает и в следующем запуске.
+      LBot.Start;
+      Check(LReceiver.Accept(MsgUpdate(5, 100, 7, 'five'), CSecret) = TTgWebhookResult.Accepted,
+        'повторный Start: Accepted');
+      Check(WaitLogHas(LLog, 'msg five'), 'повторный Start: обработчик вызван');
+    finally
+      // Free работающего бота (Stop внутри).
+      LBot.Free;
+    end;
+    Check(LReceiver.Accept(MsgUpdate(6, 100, 7, 'six'), CSecret) = TTgWebhookResult.Unavailable,
+      'после Free бота: Unavailable (строка)');
+    Check(LReceiver.Accept(TEncoding.UTF8.GetBytes(MsgUpdate(7, 100, 7, 'seven')), CSecret) =
+      TTgWebhookResult.Unavailable, 'после Free бота: Unavailable (TBytes)');
+    TThread.Sleep(100);
+    Check(not LLog.Has('msg six') and not LLog.Has('msg seven'), 'после Free бота: обработчик не вызван');
+    LReceiver := nil;
+    Check(WaitLiveAtMost(LCores0, LJobs0, 5000),
+      'после отпускания приёмника ядро бота освобождено (счётчики)');
+    // Бот, ни разу не запущенный: приёмник после Free — тоже Unavailable.
+    LTransportRef := TScriptCancellableTransport.Create(WebhookScript(False));
+    LBot := TTgBot.Create(LTransportRef);
+    try
+      LBot.Mode := TTgReceiveMode.Webhook;
+      LReceiver := LBot.WebhookReceiver;
+    finally
+      LBot.Free;
+    end;
+    Check(LReceiver.Accept(MsgUpdate(8, 100, 7, 'eight'), '') = TTgWebhookResult.Unavailable,
+      'без Start, после Free бота: Unavailable');
+    LReceiver := nil;
+    Check(WaitLiveAtMost(LCores0, LJobs0, 5000),
+      'без Start: после отпускания приёмника ядро освобождено (счётчики)');
+  finally
+    LLog.Free;
+  end;
+end;
+
 procedure RunAll;
 begin
   Writeln('TgBot ', TgBotVersion, ' (Bot API ', TgBotApiVersion, ') — офлайн-тесты');
@@ -9852,6 +10192,12 @@ begin
   RunTest('Владение, фаза 5: компонент (Main) — поздние события старого запуска после ' +
     'Stop → Start не срабатывают для нового (номер запуска, а не указатель)',
     TestComponentGenerationABA);
+  RunTest('0.3.0: TTgBot.PollLimit → limit getUpdates; PollJitterPercent, PollConflictNotifyIntervalMs ' +
+    'применяются при Start; значения по умолчанию', TestBotPollSettings);
+  RunTest('0.3.0: TTgBot.WebhookRegisterOnStart = False (без setWebhook/OnWebhookRegistered), ' +
+    'WebhookMaxBodySize, WebhookDedupWindow = 0, WebhookPostTimeoutMs', TestWebhookBotSettings);
+  RunTest('0.3.0: TTgBot.WebhookReceiver — Accept при работе, Unavailable после Stop и Free, ' +
+    'без утечек после отпускания', TestBotWebhookReceiver);
 {$IFDEF MSWINDOWS}
   RunTest('Завершение процесса при висящих обработчиках: < 2 с, код 0',
     TestProcessExitWithHangingHandlers);
@@ -9893,6 +10239,8 @@ begin
     'TTelegramBot.Free при висящем getMe = %d', [GFreeWaitStopMs, GFreeWaitCompMs]));
   Writeln(Format('Замеры OWN5: новый бот по адресу прежнего — %d из %d перезапусков',
     [GOwnAbaSameAddress, GOwnAbaRestarts]));
+  Writeln(Format('Замеры 0.3.0, мс: HandleWebhook при переполнении, WebhookPostTimeoutMs = 600: %d',
+    [GWebhookPostTimeoutMs]));
   Writeln(Format('Тестов: %d, не прошло: %d; проверок: %d, ошибок: %d',
     [GTests, GTestsFailed, GPassed + GFailed, GFailed]));
   if GFailed > 0 then
