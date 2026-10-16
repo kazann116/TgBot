@@ -113,8 +113,10 @@ type
     /// </summary>
     function WaitForThread(AMs: Cardinal): Boolean;
     /// <summary>
-    ///   Этот же источник как приёмник тела webhook-запроса (для HTTP-сервера
-    ///   приложения). Держит источник, как и сам интерфейс.
+    ///   Приёмник тела webhook-запроса для HTTP-сервера приложения: новая
+    ///   тонкая обёртка, которая реализует только ITgWebhookReceiver и
+    ///   передаёт Accept источнику (получить из неё ITgWebhookSource и
+    ///   остановить источник нельзя). Держит источник, как и сам интерфейс.
     /// </summary>
     function Receiver: ITgWebhookReceiver;
     /// <summary>Внешний HTTPS-URL webhook (параметр url setWebhook).</summary>
@@ -265,7 +267,10 @@ type
     ///   False). True — завершён или не запускался.
     /// </summary>
     function WaitForThread(AMs: Cardinal): Boolean;
-    /// <summary>Этот же источник как приёмник тела webhook-запроса (ITgWebhookReceiver).</summary>
+    /// <summary>
+    ///   Приёмник тела webhook-запроса: тонкая обёртка только с
+    ///   ITgWebhookReceiver (см. ITgWebhookSource.Receiver).
+    /// </summary>
     function Receiver: ITgWebhookReceiver;
     /// <summary>
     ///   Случайный секрет длины ALength (1–256) из символов [A-Za-z0-9_-]
@@ -281,7 +286,9 @@ type
     /// <summary>
     ///   secret_token: Telegram присылает его в заголовке
     ///   X-Telegram-Bot-Api-Secret-Token, Accept сверяет. Пусто — не
-    ///   передаётся и не проверяется (TTgBot всегда задаёт значение).
+    ///   передаётся и не проверяется. TTgBot передаёт WebhookSecretToken, а
+    ///   если он пуст — случайный секрет при WebhookRegisterOnStart = True и
+    ///   пустую строку (без проверки, с предупреждением) при False.
     /// </summary>
     property SecretToken: string read GetSecretToken write SetSecretToken;
     /// <summary>max_connections (1–100); 0 — не передаётся (значение сервера, 40).</summary>
@@ -452,6 +459,39 @@ type
   public
     constructor Create(const ACore: ITgWebhookCore);
   end;
+
+  /// <summary>
+  ///   Приёмник для HTTP-сервера (TTgWebhookSource.Receiver): реализует только
+  ///   ITgWebhookReceiver, держит источник и передаёт ему Accept. Отдельный
+  ///   объект — через него нельзя получить ITgWebhookSource (Stop, настройки).
+  /// </summary>
+  TTgWebhookReceiverAdapter = class(TInterfacedObject, ITgWebhookReceiver)
+  private
+    FSource: ITgWebhookSource;
+  public
+    constructor Create(const ASource: ITgWebhookSource);
+    function Accept(const ABody: TBytes; const ASecretHeader: string): TTgWebhookResult; overload;
+    function Accept(const ABody, ASecretHeader: string): TTgWebhookResult; overload;
+  end;
+
+{ TTgWebhookReceiverAdapter }
+
+constructor TTgWebhookReceiverAdapter.Create(const ASource: ITgWebhookSource);
+begin
+  inherited Create;
+  FSource := ASource;
+end;
+
+function TTgWebhookReceiverAdapter.Accept(const ABody: TBytes;
+  const ASecretHeader: string): TTgWebhookResult;
+begin
+  Result := FSource.Accept(ABody, ASecretHeader);
+end;
+
+function TTgWebhookReceiverAdapter.Accept(const ABody, ASecretHeader: string): TTgWebhookResult;
+begin
+  Result := FSource.Accept(ABody, ASecretHeader);
+end;
 
 { TTgWebhookThread }
 
@@ -976,8 +1016,9 @@ end;
 
 function TTgWebhookSource.Receiver: ITgWebhookReceiver;
 begin
-  // Неявное приведение: класс реализует ITgWebhookReceiver (без as и QueryInterface).
-  Result := Self;
+  // Не Self: через Supports(Self, ITgWebhookSource) HTTP-сервер мог бы
+  // остановить источник или поменять его настройки.
+  Result := TTgWebhookReceiverAdapter.Create(Self);
 end;
 
 function TTgWebhookSource.GetUrl: string;

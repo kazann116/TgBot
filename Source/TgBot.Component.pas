@@ -116,8 +116,11 @@ type
     /// <summary>
     ///   secret_token (1–256 символов [A-Za-z0-9_-]); пусто — случайный при
     ///   каждом запуске (рекомендуется: в форме не хранится). При
-    ///   RegisterOnStart = False пустой секрет не генерируется и заголовок
-    ///   не проверяется.
+    ///   RegisterOnStart = False случайный не генерируется: задайте тот же
+    ///   secret_token, что передан в setWebhook при регистрации. Внимание:
+    ///   пусто при RegisterOnStart = False — заголовок не проверяется, и
+    ///   обновление может прислать любой, кто знает URL; это небезопасно,
+    ///   при запуске вызывается OnError (Ctx = nil) с предупреждением.
     /// </summary>
     property SecretToken: string read FSecretToken write SetSecretToken;
     /// <summary>max_connections (1–100); 0 — по умолчанию сервера (40).</summary>
@@ -144,7 +147,8 @@ type
     ///   Путь к файлу публичного сертификата (.pem) для самоподписанного
     ///   сертификата сервера: при запуске передаётся в setWebhook
     ///   (certificate, multipart). Пусто — не передаётся; файла нет — ETgError
-    ///   при запуске.
+    ///   при запуске. При RegisterOnStart = False не используется и не
+    ///   проверяется.
     /// </summary>
     property Certificate: string read FCertificate write SetCertificate;
     /// <summary>
@@ -165,15 +169,17 @@ type
     ///   Сколько последних принятых update_id помнить: повторная доставка того
     ///   же update_id — Accepted без повторной обработки; 0 — без
     ///   дедупликации (TTgBot.WebhookDedupWindow). По умолчанию
-    ///   TgDefaultWebhookDedupWindow.
+    ///   TgDefaultWebhookDedupWindow. Разумный предел — до 10 000: большие
+    ///   значения замедляют каждый запрос и расходуют память.
     /// </summary>
     property DedupWindow: Integer read FDedupWindow write SetDedupWindow
       default TgDefaultWebhookDedupWindow;
     /// <summary>
     ///   Вызывать setWebhook при запуске (по умолчанию True). False — webhook
     ///   зарегистрирован вне бота: setWebhook не выполняется,
-    ///   OnWebhookRegistered не вызывается, Url не обязателен, пустой
-    ///   SecretToken не проверяется (TTgBot.WebhookRegisterOnStart).
+    ///   OnWebhookRegistered не вызывается, Url и Certificate не используются,
+    ///   пустой SecretToken не проверяется — небезопасно, см. SecretToken
+    ///   (TTgBot.WebhookRegisterOnStart).
     ///   deleteWebhook при остановке — по-прежнему DeleteOnStop.
     /// </summary>
     property RegisterOnStart: Boolean read FRegisterOnStart write SetRegisterOnStart default True;
@@ -1415,8 +1421,10 @@ begin
   ABot.WebhookMaxConnections := FWebhook.MaxConnections;
   ABot.WebhookDropPendingUpdates := FWebhook.DropPendingUpdates;
   ABot.WebhookIpAddress := Trim(FWebhook.IpAddress);
-  // Публичный ключ самоподписанного сертификата — файлом (multipart).
-  if (FMode = TTgReceiveMode.Webhook) and (Trim(FWebhook.Certificate) <> '') then
+  // Публичный ключ самоподписанного сертификата — файлом (multipart). Нужен
+  // только setWebhook: без регистрации при запуске файл не используется.
+  if (FMode = TTgReceiveMode.Webhook) and FWebhook.RegisterOnStart and
+    (Trim(FWebhook.Certificate) <> '') then
   begin
     if not FileExists(Trim(FWebhook.Certificate)) then
       raise ETgError.Create(TgLangTextFmt(@SRuCompNoCertificate, @SEnCompNoCertificate,
