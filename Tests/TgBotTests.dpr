@@ -9650,11 +9650,12 @@ type
 const
   // Пары TgBot.Consts, не покрытые TTgText, TTgUpdatesText и TTgRouterText
   // (модули берут их через TgLangText напрямую). Новую такую пару — сюда.
-  CConstPairs: array[0..30] of TTextPair = (
+  CConstPairs: array[0..31] of TTextPair = (
     (Name: 'ProxyScheme'; Ru: @SRuProxyScheme; En: @SEnProxyScheme),
     (Name: 'ProxyBadHost'; Ru: @SRuProxyBadHost; En: @SEnProxyBadHost),
     (Name: 'ProxyPort'; Ru: @SRuProxyPort; En: @SEnProxyPort),
     (Name: 'ProxyPortConflict'; Ru: @SRuProxyPortConflict; En: @SEnProxyPortConflict),
+    (Name: 'DefaultTransportMissing'; Ru: @SRuDefaultTransportMissing; En: @SEnDefaultTransportMissing),
     (Name: 'ArgNil'; Ru: @SRuArgNil; En: @SEnArgNil),
     (Name: 'ArgOutOfRange'; Ru: @SRuArgOutOfRange; En: @SEnArgOutOfRange),
     (Name: 'JsonNotInteger'; Ru: @SRuJsonNotInteger; En: @SEnJsonNotInteger),
@@ -9685,7 +9686,7 @@ const
   );
   // Всего пар SRu…/SEn… в TgBot.Consts: перечисления TTgText, TTgUpdatesText,
   // TTgRouterText и CConstPairs. Обновите при добавлении пары в TgBot.Consts.
-  CExpectedConstPairs = 66;
+  CExpectedConstPairs = 67;
 
 { TTestDto }
 
@@ -11506,6 +11507,127 @@ begin
   LProbeRef := nil;
 end;
 
+{ 0.4.0: реестр транспорта по умолчанию (TgBot.Transport) }
+
+/// <summary>Идентичность фабрики: указатель ссылки на функцию (как в реестре).</summary>
+function FactoryPtr(const AFactory): Pointer;
+begin
+  Result := Pointer(AFactory);
+end;
+
+/// <summary>Идентичность текущей фабрики по умолчанию (nil — нет).</summary>
+function CurrentFactoryPtr: Pointer;
+var
+  LFactory: TTgTransportFactory;
+begin
+  LFactory := TgDefaultTransportFactory();
+  Result := FactoryPtr(LFactory);
+end;
+
+procedure TestDefaultTransportRegistry;
+const
+  CToken = '123456:REGISTRY';
+var
+  LSaved, LMine, LOther, LNil: TTgTransportFactory;
+  LFakeRef: ITgTransport;
+  LMineCalls: Integer;
+  LMineToken: string;
+  LApi: TTgApi;
+  LMessage: string;
+begin
+  LSaved := TgDefaultTransportFactory();
+  Check(Assigned(LSaved), 'uses TgBot: фабрика по умолчанию зарегистрирована');
+  LFakeRef := TFakeTransport.Create(
+    function(const AMethod: string; AParams: TTgParams): TJSONValue
+    begin
+      Result := JsonOf('{"id":7,"is_bot":true,"first_name":"Фабрика"}');
+    end);
+  LMineCalls := 0;
+  LMine :=
+    function(const ASettings: TTgHttpSettings): ITgTransport
+    begin
+      Inc(LMineCalls);
+      LMineToken := ASettings.Token;
+      Result := LFakeRef;
+    end;
+  LOther :=
+    function(const ASettings: TTgHttpSettings): ITgTransport
+    begin
+      Result := nil;
+    end;
+  try
+    // (а) TgBot.Http: клиент по токену — TTgHttpTransport.
+    LApi := TTgApi.Create(CToken);
+    try
+      Check((LApi.Transport as TObject) is TTgHttpTransport, '(а) TTgApi.Create(Token) → TTgHttpTransport');
+    finally
+      LApi.Free;
+    end;
+    // (б) Фабрики нет → ETgError с понятным текстом.
+    TgUnregisterDefaultTransport(LSaved);
+    Check(CurrentFactoryPtr = nil, '(б) после снятия фабрики нет');
+    LMessage := '';
+    try
+      TTgApi.Create(CToken).Free;
+    except
+      on E: Exception do
+        LMessage := E.ClassName + ': ' + E.Message;
+    end;
+    CheckEquals('ETgError: ' + TgLangText(@SRuDefaultTransportMissing, @SEnDefaultTransportMissing),
+      LMessage, '(б) TTgApi.Create(Token) без фабрики → ETgError DefaultTransportMissing');
+    Check(Raises(
+      procedure
+      begin
+        TgCreateDefaultTransport(TTgHttpSettings.Create(CToken));
+      end, ETgError), '(б) TgCreateDefaultTransport без фабрики → ETgError');
+    TgRegisterDefaultTransport(LSaved);
+    // (в) Своя фабрика: клиент получает её транспорт и настройки.
+    TgRegisterDefaultTransport(LMine);
+    Check(CurrentFactoryPtr = FactoryPtr(LMine), '(в) своя фабрика — текущая');
+    LApi := TTgApi.Create(CToken);
+    try
+      Check(LApi.Transport = LFakeRef, '(в) TTgApi.Create(Token) → транспорт своей фабрики');
+      CheckEquals(1, LMineCalls, '(в) фабрика вызвана один раз');
+      CheckEquals(CToken, LMineToken, '(в) фабрика получила токен');
+      CheckEquals('Фабрика', LApi.GetMe.FirstName, '(в) GetMe через транспорт фабрики');
+    finally
+      LApi.Free;
+    end;
+    // (г) Снятие чужой (не зарегистрированной) фабрики и nil ничего не меняет.
+    TgUnregisterDefaultTransport(LOther);
+    LNil := nil;
+    TgUnregisterDefaultTransport(LNil);
+    Check(CurrentFactoryPtr = FactoryPtr(LMine), '(г) чужая/nil: текущая не изменилась');
+    // Стек: последняя — текущая; снятие не текущей её не меняет; снятие
+    // текущей возвращает предыдущую; повторная регистрация поднимает наверх.
+    TgRegisterDefaultTransport(LOther);
+    Check(CurrentFactoryPtr = FactoryPtr(LOther), 'стек: последняя — текущая');
+    Check(Raises(
+      procedure
+      begin
+        TTgApi.Create(CToken).Free;
+      end, ETgError), 'фабрика вернула nil → ETgError');
+    TgRegisterDefaultTransport(LMine);
+    Check(CurrentFactoryPtr = FactoryPtr(LMine), 'стек: повторная регистрация — наверх');
+    TgUnregisterDefaultTransport(LOther);
+    Check(CurrentFactoryPtr = FactoryPtr(LMine), 'стек: снятие не текущей — текущая та же');
+    TgUnregisterDefaultTransport(LMine);
+    Check(CurrentFactoryPtr = FactoryPtr(LSaved), 'стек: снятие текущей → прежняя (HTTP)');
+    Check(Raises(
+      procedure
+      begin
+        TgRegisterDefaultTransport(LNil);
+      end, EArgumentNilException), 'регистрация nil → EArgumentNilException');
+  finally
+    TgUnregisterDefaultTransport(LMine);
+    TgUnregisterDefaultTransport(LOther);
+    if CurrentFactoryPtr <> FactoryPtr(LSaved) then
+      TgRegisterDefaultTransport(LSaved);
+    LFakeRef := nil;
+  end;
+  Check(CurrentFactoryPtr = FactoryPtr(LSaved), 'фабрика по умолчанию восстановлена');
+end;
+
 procedure RunAll;
 begin
   Writeln('TgBot ', TgBotVersion, ' (Bot API ', TgBotApiVersion, ') — офлайн-тесты');
@@ -11673,6 +11795,8 @@ begin
     'SOCKS/HTTPS и учётные данные в Host — ETgError без пароля', TestProxyNormalize);
   RunTest('Прокси: в RTL пустая схема, ошибки настройки из конструктора транспорта и компонента, ' +
     'адрес прокси без учётных данных в сетевой ошибке', TestProxyTransportSettings);
+  RunTest('0.4.0: реестр транспорта по умолчанию — TTgHttpTransport при uses TgBot, без фабрики ETgError, ' +
+    'своя фабрика, стек регистраций, снятие чужой не меняет текущую', TestDefaultTransportRegistry);
 {$IFDEF MSWINDOWS}
   RunTest('Завершение процесса при висящих обработчиках: < 2 с, код 0',
     TestProcessExitWithHangingHandlers);

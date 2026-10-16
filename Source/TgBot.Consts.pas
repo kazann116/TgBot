@@ -100,6 +100,14 @@ resourcestring
   SRuProxyPortConflict = 'Прокси %s: порт в Host (%d) не совпадает с Port (%d)';
   SEnProxyPortConflict = 'Proxy %s: the port in Host (%d) does not match Port (%d)';
 
+  { Ядро: реестр транспорта по умолчанию (TgCreateDefaultTransport,
+    TgBot.Transport; TgLangText). }
+
+  SRuDefaultTransportMissing = 'Транспорт по умолчанию не зарегистрирован: подключите ' +
+    'TgBot.Http (или TgBot) или передайте свой транспорт';
+  SEnDefaultTransportMissing = 'No default transport is registered: add TgBot.Http ' +
+    '(or TgBot) to uses or pass your own transport';
+
   { Ядро: проверка аргументов (EArgumentNilException, EArgumentOutOfRangeException).
     Первая подстановка — имя параметра (не переводится). }
 

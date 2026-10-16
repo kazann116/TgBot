@@ -14,7 +14,12 @@
     THTTPClient (THTTPClient не потокобезопасен — каждый запрос берёт
     клиент из пула в монопольное пользование), прерывание идущего запроса;
   - псевдонимы перенесённых в TgBot.Transport типов (TTgRateLimiter,
-    TgLongPollReserveSec) — для совместимости.
+    TgLongPollReserveSec) — для совместимости;
+  - фабрика транспорта по умолчанию: модуль регистрирует TTgHttpTransport
+    в реестре TgBot.Transport (initialization) и снимает при завершении
+    (finalization; в том числе при выгрузке пакета). Клиент, созданный по
+    токену или настройкам, получает TTgHttpTransport, если модуль подключён
+    (напрямую или фасадом TgBot).
 
   Отмена операции (токен ITgCancellation):
   - ожидания лимитёра и retry_after прерываются сразу (WaitFor токена);
@@ -151,6 +156,17 @@ implementation
 
 uses
   System.NetConsts;
+
+var
+  // Фабрика TTgHttpTransport в реестре транспорта по умолчанию: одна и та же
+  // ссылка регистрируется и снимается (реестр сравнивает ссылки).
+  GHttpTransportFactory: TTgTransportFactory;
+
+/// <summary>Фабрика транспорта по умолчанию: TTgHttpTransport.</summary>
+function NewHttpTransport(const ASettings: TTgHttpSettings): ITgTransport;
+begin
+  Result := TTgHttpTransport.Create(ASettings);
+end;
 
 /// <summary>
 ///   Таймаут ответа клиента: AMs <= 0 — значение RTL по умолчанию (как у нового
@@ -554,5 +570,13 @@ begin
   if AToken.IsCancelled or ARequest.IsCancelled then
     raise ETgCancelledError.Create(TgText(TTgText.Cancelled));
 end;
+
+initialization
+  GHttpTransportFactory := NewHttpTransport;
+  TgRegisterDefaultTransport(GHttpTransportFactory);
+
+finalization
+  TgUnregisterDefaultTransport(GHttpTransportFactory);
+  GHttpTransportFactory := nil;
 
 end.
