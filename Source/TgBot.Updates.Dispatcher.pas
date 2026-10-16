@@ -12,8 +12,9 @@
   поток с зависшим обработчиком может пережить сам диспетчер.
 
   Пользователю достаточно uses TgBot.Updates (или TgBot): TTgUpdateDispatcher
-  реэкспортируется там псевдонимом. ITgDispatchCore — служебный, не
-  используйте его напрямую.
+  и публичный ITgUpdateDispatcher (создание — TTgUpdateDispatcher.New)
+  реэкспортируются там псевдонимами. ITgDispatchCore — служебный (не путать
+  с ITgUpdateDispatcher), не используйте его напрямую.
 }
 
 {$SCOPEDENUMS ON}
@@ -65,6 +66,54 @@ type
   end;
 
   /// <summary>
+  ///   Диспетчер обновлений как интерфейс (публичный): запуск, остановка,
+  ///   ожидание и все настройки и события TTgUpdateDispatcher (описание —
+  ///   у класса). Не путать со служебным ITgDispatchCore (ядро одного
+  ///   запуска, не часть публичного API). Ограниченное ожидание места в
+  ///   очереди (TryPost) — по-прежнему через Supports(…, ITgTimedUpdateSink).
+  ///   Создавайте через TTgUpdateDispatcher.New и храните как интерфейс; не
+  ///   храните ссылку на класс — объект освобождается по счётчику ссылок.
+  /// </summary>
+  ITgUpdateDispatcher = interface(ITgUpdateSink)
+    ['{49ACBBD3-EBE0-41BB-B4BE-62EDDE0946FE}']
+    function GetActive: Boolean;
+    function GetCancel: ITgCancellation;
+    function GetMaxParallel: Integer;
+    procedure SetMaxParallel(AValue: Integer);
+    function GetQueueCapacity: Integer;
+    procedure SetQueueCapacity(AValue: Integer);
+    function GetDelivery: TTgDelivery;
+    procedure SetDelivery(AValue: TTgDelivery);
+    function GetOnError: TTgRawErrorHandler;
+    procedure SetOnError(const AValue: TTgRawErrorHandler);
+    function GetOnProcessed: TProc<Int64>;
+    procedure SetOnProcessed(const AValue: TProc<Int64>);
+    /// <summary>Запускает потоки. Повторный Start работающего диспетчера — ETgError.</summary>
+    procedure Start;
+    /// <summary>
+    ///   Отменяет токен диспетчера, выбрасывает необработанную очередь и ждёт
+    ///   потоки не дольше AWaitMs. False — потоки с зависшими обработчиками отпущены.
+    /// </summary>
+    function Stop(AWaitMs: Cardinal): Boolean;
+    /// <summary>Ждёт, пока очередь опустеет и обработчики завершатся; True — дождались.</summary>
+    function WaitIdle(AMs: Cardinal): Boolean;
+    /// <summary>Диспетчер запущен и не останавливается.</summary>
+    property Active: Boolean read GetActive;
+    /// <summary>Токен отмены текущего запуска (nil — не запущен).</summary>
+    property Cancel: ITgCancellation read GetCancel;
+    /// <summary>Число потоков (1–64), по умолчанию TgDefaultMaxParallel; задаётся до Start.</summary>
+    property MaxParallel: Integer read GetMaxParallel write SetMaxParallel;
+    /// <summary>Ёмкость очереди, по умолчанию TgDefaultQueueCapacity; задаётся до Start.</summary>
+    property QueueCapacity: Integer read GetQueueCapacity write SetQueueCapacity;
+    /// <summary>Где выполнять обработчик; задаётся до Start.</summary>
+    property Delivery: TTgDelivery read GetDelivery write SetDelivery;
+    /// <summary>Исключение обработчика (в потоке обработчика); задаётся до Start.</summary>
+    property OnError: TTgRawErrorHandler read GetOnError write SetOnError;
+    /// <summary>Обновление обработано (в т.ч. с исключением); задаётся до Start.</summary>
+    property OnProcessed: TProc<Int64> read GetOnProcessed write SetOnProcessed;
+  end;
+
+  /// <summary>
   ///   Диспетчер обновлений: «полосы» по ChatKey (обновления одного чата —
   ///   строго по порядку, разных — параллельно), MaxParallel собственных
   ///   потоков, общая очередь готовых полос, ёмкость QueueCapacity.
@@ -72,8 +121,11 @@ type
   ///   (вызовы TTgApi без явного токена прерываются при Stop). Исключение
   ///   обработчика передаётся в OnError (исключения OnError поглощаются),
   ///   обновление считается обработанным (OnProcessed).
+  ///
+  ///   Создавайте через New и храните как ITgUpdateDispatcher; не храните
+  ///   ссылку на класс (объект освобождается по счётчику ссылок).
   /// </summary>
-  TTgUpdateDispatcher = class(TInterfacedObject, ITgUpdateSink, ITgTimedUpdateSink)
+  TTgUpdateDispatcher = class(TInterfacedObject, ITgUpdateSink, ITgTimedUpdateSink, ITgUpdateDispatcher)
   private
     FLock: TCriticalSection;
     // Ядро текущего (или последнего) запуска, под FLock; nil — Start не вызывался.
@@ -87,9 +139,25 @@ type
     function CurrentCore: ITgDispatchCore;
     function GetActive: Boolean;
     function GetCancel: ITgCancellation;
+    function GetMaxParallel: Integer;
+    procedure SetMaxParallel(AValue: Integer);
+    function GetQueueCapacity: Integer;
+    procedure SetQueueCapacity(AValue: Integer);
+    function GetDelivery: TTgDelivery;
+    procedure SetDelivery(AValue: TTgDelivery);
+    function GetOnError: TTgRawErrorHandler;
+    procedure SetOnError(const AValue: TTgRawErrorHandler);
+    function GetOnProcessed: TProc<Int64>;
+    procedure SetOnProcessed(const AValue: TProc<Int64>);
   public
-    /// <summary>Диспетчер с обработчиком AHandler.</summary>
+    /// <summary>Диспетчер с обработчиком AHandler. Предпочтительно создавать через New.</summary>
     constructor Create(const AHandler: TTgRawHandler);
+    /// <summary>
+    ///   Создаёт диспетчер (параметры — как у Create) и возвращает его как
+    ///   ITgUpdateDispatcher. Создавайте через New и храните как интерфейс;
+    ///   не храните ссылку на класс.
+    /// </summary>
+    class function New(const AHandler: TTgRawHandler): ITgUpdateDispatcher; static;
     /// <summary>
     ///   Не блокирует: отменяет токен, выбрасывает очередь и ждёт потоки не
     ///   дольше 30 мс (без CheckSynchronize). Поток с зависшим обработчиком
@@ -117,15 +185,15 @@ type
     /// <summary>Токен отмены текущего запуска (nil — не запущен).</summary>
     property Cancel: ITgCancellation read GetCancel;
     /// <summary>Число потоков (1–64), по умолчанию TgDefaultMaxParallel; задаётся до Start.</summary>
-    property MaxParallel: Integer read FMaxParallel write FMaxParallel;
+    property MaxParallel: Integer read GetMaxParallel write SetMaxParallel;
     /// <summary>Ёмкость очереди, по умолчанию TgDefaultQueueCapacity; задаётся до Start.</summary>
-    property QueueCapacity: Integer read FQueueCapacity write FQueueCapacity;
+    property QueueCapacity: Integer read GetQueueCapacity write SetQueueCapacity;
     /// <summary>Где выполнять обработчик; задаётся до Start.</summary>
-    property Delivery: TTgDelivery read FDelivery write FDelivery;
+    property Delivery: TTgDelivery read GetDelivery write SetDelivery;
     /// <summary>Исключение обработчика (в потоке обработчика); задаётся до Start.</summary>
-    property OnError: TTgRawErrorHandler read FOnError write FOnError;
+    property OnError: TTgRawErrorHandler read GetOnError write SetOnError;
     /// <summary>Обновление обработано (в т.ч. с исключением); задаётся до Start.</summary>
-    property OnProcessed: TProc<Int64> read FOnProcessed write FOnProcessed;
+    property OnProcessed: TProc<Int64> read GetOnProcessed write SetOnProcessed;
   end;
 
 implementation
@@ -699,6 +767,11 @@ begin
   FDelivery := TTgDelivery.Worker;
 end;
 
+class function TTgUpdateDispatcher.New(const AHandler: TTgRawHandler): ITgUpdateDispatcher;
+begin
+  Result := TTgUpdateDispatcher.Create(AHandler);
+end;
+
 destructor TTgUpdateDispatcher.Destroy;
 var
   LCore: ITgDispatchCore;
@@ -829,6 +902,56 @@ begin
     Result := LCore.Cancel
   else
     Result := nil;
+end;
+
+function TTgUpdateDispatcher.GetMaxParallel: Integer;
+begin
+  Result := FMaxParallel;
+end;
+
+procedure TTgUpdateDispatcher.SetMaxParallel(AValue: Integer);
+begin
+  FMaxParallel := AValue;
+end;
+
+function TTgUpdateDispatcher.GetQueueCapacity: Integer;
+begin
+  Result := FQueueCapacity;
+end;
+
+procedure TTgUpdateDispatcher.SetQueueCapacity(AValue: Integer);
+begin
+  FQueueCapacity := AValue;
+end;
+
+function TTgUpdateDispatcher.GetDelivery: TTgDelivery;
+begin
+  Result := FDelivery;
+end;
+
+procedure TTgUpdateDispatcher.SetDelivery(AValue: TTgDelivery);
+begin
+  FDelivery := AValue;
+end;
+
+function TTgUpdateDispatcher.GetOnError: TTgRawErrorHandler;
+begin
+  Result := FOnError;
+end;
+
+procedure TTgUpdateDispatcher.SetOnError(const AValue: TTgRawErrorHandler);
+begin
+  FOnError := AValue;
+end;
+
+function TTgUpdateDispatcher.GetOnProcessed: TProc<Int64>;
+begin
+  Result := FOnProcessed;
+end;
+
+procedure TTgUpdateDispatcher.SetOnProcessed(const AValue: TProc<Int64>);
+begin
+  FOnProcessed := AValue;
 end;
 
 end.

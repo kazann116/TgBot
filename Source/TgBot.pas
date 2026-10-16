@@ -260,6 +260,11 @@ type
   ITgRawUpdate = TgBot.Updates.ITgRawUpdate;
   /// <summary>Приёмник обновлений (очередь диспетчера).</summary>
   ITgUpdateSink = TgBot.Updates.ITgUpdateSink;
+  /// <summary>
+  ///   Приёмник с ограниченным ожиданием места в очереди (TryPost); диспетчер
+  ///   поддерживает его — Supports(ITgUpdateDispatcher, ITgTimedUpdateSink).
+  /// </summary>
+  ITgTimedUpdateSink = TgBot.Updates.ITgTimedUpdateSink;
   /// <summary>Источник обновлений.</summary>
   ITgUpdateSource = TgBot.Updates.ITgUpdateSource;
   /// <summary>Часы и паузы источника (подменяются в тестах).</summary>
@@ -274,14 +279,23 @@ type
   TTgRawUpdate = TgBot.Updates.TTgRawUpdate;
   /// <summary>Long polling (getUpdates) в собственном потоке.</summary>
   TTgLongPollSource = TgBot.Updates.TTgLongPollSource;
+  /// <summary>Источник long polling как интерфейс (создание — TTgLongPollSource.New; храните интерфейс, не класс).</summary>
+  ITgLongPollSource = TgBot.Updates.ITgLongPollSource;
   /// <summary>Итог приёма webhook-запроса (Accepted, Forbidden, BadRequest, Unavailable).</summary>
   TTgWebhookResult = TgBot.Updates.TTgWebhookResult;
   /// <summary>Приём тела webhook-запроса из любого HTTP-сервера.</summary>
   ITgWebhookReceiver = TgBot.Updates.ITgWebhookReceiver;
   /// <summary>Webhook без собственного HTTP-сервера (setWebhook, Accept).</summary>
   TTgWebhookSource = TgBot.Updates.TTgWebhookSource;
+  /// <summary>Webhook-источник как интерфейс (создание — TTgWebhookSource.New; храните интерфейс, не класс).</summary>
+  ITgWebhookSource = TgBot.Updates.ITgWebhookSource;
   /// <summary>Диспетчер обновлений: порядок внутри чата, параллельность между чатами.</summary>
   TTgUpdateDispatcher = TgBot.Updates.TTgUpdateDispatcher;
+  /// <summary>
+  ///   Диспетчер как интерфейс (создание — TTgUpdateDispatcher.New; храните
+  ///   интерфейс, не класс). Не путать со служебным ITgDispatchCore.
+  /// </summary>
+  ITgUpdateDispatcher = TgBot.Updates.ITgUpdateDispatcher;
   /// <summary>Сигнал завершения консольной программы (Ctrl+C, SIGTERM).</summary>
   TTgShutdownSignal = TgBot.Updates.TTgShutdownSignal;
   /// <summary>Хранилище состояния диалогов.</summary>

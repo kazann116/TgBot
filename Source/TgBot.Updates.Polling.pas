@@ -14,8 +14,8 @@
   выбрасывается.
 
   Пользователю достаточно uses TgBot.Updates (или TgBot): TTgLongPollSource
-  реэкспортируется там псевдонимом. ITgPollCore — служебный, не
-  используйте его напрямую.
+  и ITgLongPollSource (создание — TTgLongPollSource.New) реэкспортируются
+  там псевдонимами. ITgPollCore — служебный, не используйте его напрямую.
 }
 
 {$SCOPEDENUMS ON}
@@ -65,6 +65,81 @@ type
   end;
 
   /// <summary>
+  ///   Источник long polling как интерфейс: все настройки и события
+  ///   TTgLongPollSource (описание — у класса), Offset, ConfirmedOffset и
+  ///   WaitForThread. Создавайте через TTgLongPollSource.New и храните как
+  ///   интерфейс; не храните ссылку на класс — объект освобождается по
+  ///   счётчику ссылок. Настройки задаются до Start.
+  /// </summary>
+  ITgLongPollSource = interface(ITgUpdateSource)
+    ['{5CD90BA7-B869-4CA5-AD10-8388B5EB380D}']
+    function GetOffset: Int64;
+    function GetConfirmedOffset: Int64;
+    function GetLimit: Integer;
+    procedure SetLimit(AValue: Integer);
+    function GetTimeoutSec: Integer;
+    procedure SetTimeoutSec(AValue: Integer);
+    function GetAllowedUpdates: TTgOptional<TArray<string>>;
+    procedure SetAllowedUpdates(const AValue: TTgOptional<TArray<string>>);
+    function GetDropPendingUpdates: Boolean;
+    procedure SetDropPendingUpdates(AValue: Boolean);
+    function GetAutoDeleteWebhook: Boolean;
+    procedure SetAutoDeleteWebhook(AValue: Boolean);
+    function GetAckPolicy: TTgAckPolicy;
+    procedure SetAckPolicy(AValue: TTgAckPolicy);
+    function GetDrainTimeoutMs: Cardinal;
+    procedure SetDrainTimeoutMs(AValue: Cardinal);
+    function GetConflictNotifyIntervalMs: Cardinal;
+    procedure SetConflictNotifyIntervalMs(AValue: Cardinal);
+    function GetJitterPercent: Integer;
+    procedure SetJitterPercent(AValue: Integer);
+    function GetTimer: ITgPollTimer;
+    procedure SetTimer(const AValue: ITgPollTimer);
+    function GetOnConflict: TTgConflictHandler;
+    procedure SetOnConflict(const AValue: TTgConflictHandler);
+    function GetOnError: TProc<Exception>;
+    procedure SetOnError(const AValue: TProc<Exception>);
+    function GetOnFault: TProc<Exception>;
+    procedure SetOnFault(const AValue: TProc<Exception>);
+    /// <summary>
+    ///   Ждёт фактического завершения потока источника (в т.ч. отпущенного
+    ///   при Stop = False). True — поток завершён или не запускался.
+    /// </summary>
+    function WaitForThread(AMs: Cardinal): Boolean;
+    /// <summary>offset следующего запроса getUpdates (последний принятый update_id + 1; 0 — не было).</summary>
+    property Offset: Int64 read GetOffset;
+    /// <summary>offset, подтверждённый серверу (последний успешный getUpdates или итоговый).</summary>
+    property ConfirmedOffset: Int64 read GetConfirmedOffset;
+    /// <summary>limit getUpdates (1–100), по умолчанию TgDefaultPollLimit.</summary>
+    property Limit: Integer read GetLimit write SetLimit;
+    /// <summary>timeout getUpdates, с (0 — короткий опрос), по умолчанию TgDefaultPollTimeoutSec.</summary>
+    property TimeoutSec: Integer read GetTimeoutSec write SetTimeoutSec;
+    /// <summary>allowed_updates (TTgUpdateType.*); не задано — не передаётся.</summary>
+    property AllowedUpdates: TTgOptional<TArray<string>> read GetAllowedUpdates write SetAllowedUpdates;
+    /// <summary>При старте вызвать deleteWebhook(drop_pending_updates = true): пропустить накопившееся.</summary>
+    property DropPendingUpdates: Boolean read GetDropPendingUpdates write SetDropPendingUpdates;
+    /// <summary>При 409 «webhook is active» удалить webhook и продолжить (по умолчанию False).</summary>
+    property AutoDeleteWebhook: Boolean read GetAutoDeleteWebhook write SetAutoDeleteWebhook;
+    /// <summary>Политика подтверждения, по умолчанию AfterReceive.</summary>
+    property AckPolicy: TTgAckPolicy read GetAckPolicy write SetAckPolicy;
+    /// <summary>Дренаж при Stop, мс (по умолчанию TgDefaultDrainTimeoutMs).</summary>
+    property DrainTimeoutMs: Cardinal read GetDrainTimeoutMs write SetDrainTimeoutMs;
+    /// <summary>Минимальный интервал OnConflict для «другого getUpdates», мс.</summary>
+    property ConflictNotifyIntervalMs: Cardinal read GetConflictNotifyIntervalMs
+      write SetConflictNotifyIntervalMs;
+    /// <summary>Разброс пауз, ± процентов (0–50), по умолчанию 20.</summary>
+    property JitterPercent: Integer read GetJitterPercent write SetJitterPercent;
+    /// <summary>Часы и паузы (nil — системные).</summary>
+    property Timer: ITgPollTimer read GetTimer write SetTimer;
+    /// <summary>409: другой экземпляр бота или установлен webhook.</summary>
+    property OnConflict: TTgConflictHandler read GetOnConflict write SetOnConflict;
+    /// <summary>Временная ошибка getUpdates (перед паузой и повтором).</summary>
+    property OnError: TProc<Exception> read GetOnError write SetOnError;
+    /// <summary>Неустранимая ошибка: источник перешёл в Faulted.</summary>
+    property OnFault: TProc<Exception> read GetOnFault write SetOnFault;
+  end;
+
+  /// <summary>
   ///   Long polling (getUpdates) в собственном потоке. Настройки задаются до
   ///   Start. События OnConflict/OnError/OnFault вызываются в потоке
   ///   источника, их исключения поглощаются.
@@ -82,8 +157,11 @@ type
   ///   AWaitMs), итоговый getUpdates(offset = наименьший необработанный,
   ///   timeout = 0, limit = 1). Ответ, пришедший после Stop, выбрасывается
   ///   без сдвига offset.
+  ///
+  ///   Создавайте через New и храните как ITgLongPollSource; не храните
+  ///   ссылку на класс (объект освобождается по счётчику ссылок).
   /// </summary>
-  TTgLongPollSource = class(TInterfacedObject, ITgUpdateSource)
+  TTgLongPollSource = class(TInterfacedObject, ITgUpdateSource, ITgLongPollSource)
   private
     FLock: TCriticalSection;
     FTransport: ITgTransport;
@@ -107,12 +185,46 @@ type
     function CurrentCore: ITgPollCore;
     function GetOffset: Int64;
     function GetConfirmedOffset: Int64;
+    function GetLimit: Integer;
+    procedure SetLimit(AValue: Integer);
+    function GetTimeoutSec: Integer;
+    procedure SetTimeoutSec(AValue: Integer);
+    function GetAllowedUpdates: TTgOptional<TArray<string>>;
+    procedure SetAllowedUpdates(const AValue: TTgOptional<TArray<string>>);
+    function GetDropPendingUpdates: Boolean;
+    procedure SetDropPendingUpdates(AValue: Boolean);
+    function GetAutoDeleteWebhook: Boolean;
+    procedure SetAutoDeleteWebhook(AValue: Boolean);
+    function GetAckPolicy: TTgAckPolicy;
+    procedure SetAckPolicy(AValue: TTgAckPolicy);
+    function GetDrainTimeoutMs: Cardinal;
+    procedure SetDrainTimeoutMs(AValue: Cardinal);
+    function GetConflictNotifyIntervalMs: Cardinal;
+    procedure SetConflictNotifyIntervalMs(AValue: Cardinal);
+    function GetJitterPercent: Integer;
+    procedure SetJitterPercent(AValue: Integer);
+    function GetTimer: ITgPollTimer;
+    procedure SetTimer(const AValue: ITgPollTimer);
+    function GetOnConflict: TTgConflictHandler;
+    procedure SetOnConflict(const AValue: TTgConflictHandler);
+    function GetOnError: TProc<Exception>;
+    procedure SetOnError(const AValue: TProc<Exception>);
+    function GetOnFault: TProc<Exception>;
+    procedure SetOnFault(const AValue: TProc<Exception>);
   public
     /// <summary>
     ///   Источник поверх транспорта ATransport (тот же, что у TTgApi). Вызовы
     ///   прерываются и отменой AParentCancel (например, TTgApi.CancelToken).
+    ///   Предпочтительно создавать через New.
     /// </summary>
     constructor Create(const ATransport: ITgTransport; const AParentCancel: ITgCancellation = nil);
+    /// <summary>
+    ///   Создаёт источник (параметры — как у Create) и возвращает его как
+    ///   ITgLongPollSource. Создавайте через New и храните как интерфейс;
+    ///   не храните ссылку на класс.
+    /// </summary>
+    class function New(const ATransport: ITgTransport;
+      const AParentCancel: ITgCancellation = nil): ITgLongPollSource; static;
     /// <summary>
     ///   Не блокирует: запрашивает остановку (отмена висящего getUpdates) и
     ///   ждёт поток не дольше 30 мс. Незавершившийся поток держит своё
@@ -137,37 +249,37 @@ type
     /// <summary>offset, подтверждённый серверу (последний успешный getUpdates или итоговый).</summary>
     property ConfirmedOffset: Int64 read GetConfirmedOffset;
     /// <summary>limit getUpdates (1–100), по умолчанию TgDefaultPollLimit.</summary>
-    property Limit: Integer read FLimit write FLimit;
+    property Limit: Integer read GetLimit write SetLimit;
     /// <summary>timeout getUpdates, с (0 — короткий опрос), по умолчанию TgDefaultPollTimeoutSec.</summary>
-    property TimeoutSec: Integer read FTimeoutSec write FTimeoutSec;
+    property TimeoutSec: Integer read GetTimeoutSec write SetTimeoutSec;
     /// <summary>
     ///   allowed_updates (TTgUpdateType.*). Не задано — не передаётся (сервер
     ///   помнит прежнее значение); пустой массив — все, кроме chat_member,
     ///   message_reaction и message_reaction_count. TTgBot при Start всегда
     ///   задаёт значение (без явного TTgBot.AllowedUpdates — пустой массив).
     /// </summary>
-    property AllowedUpdates: TTgOptional<TArray<string>> read FAllowedUpdates write FAllowedUpdates;
+    property AllowedUpdates: TTgOptional<TArray<string>> read GetAllowedUpdates write SetAllowedUpdates;
     /// <summary>При старте вызвать deleteWebhook(drop_pending_updates = true): пропустить накопившееся.</summary>
-    property DropPendingUpdates: Boolean read FDropPendingUpdates write FDropPendingUpdates;
+    property DropPendingUpdates: Boolean read GetDropPendingUpdates write SetDropPendingUpdates;
     /// <summary>При 409 «webhook is active» удалить webhook и продолжить (по умолчанию False).</summary>
-    property AutoDeleteWebhook: Boolean read FAutoDeleteWebhook write FAutoDeleteWebhook;
+    property AutoDeleteWebhook: Boolean read GetAutoDeleteWebhook write SetAutoDeleteWebhook;
     /// <summary>Политика подтверждения, по умолчанию AfterReceive.</summary>
-    property AckPolicy: TTgAckPolicy read FAckPolicy write FAckPolicy;
+    property AckPolicy: TTgAckPolicy read GetAckPolicy write SetAckPolicy;
     /// <summary>Дренаж при Stop, мс (по умолчанию TgDefaultDrainTimeoutMs).</summary>
-    property DrainTimeoutMs: Cardinal read FDrainTimeoutMs write FDrainTimeoutMs;
+    property DrainTimeoutMs: Cardinal read GetDrainTimeoutMs write SetDrainTimeoutMs;
     /// <summary>Минимальный интервал OnConflict для «другого getUpdates», мс.</summary>
-    property ConflictNotifyIntervalMs: Cardinal read FConflictNotifyIntervalMs
-      write FConflictNotifyIntervalMs;
+    property ConflictNotifyIntervalMs: Cardinal read GetConflictNotifyIntervalMs
+      write SetConflictNotifyIntervalMs;
     /// <summary>Разброс пауз, ± процентов (0–50), по умолчанию 20.</summary>
-    property JitterPercent: Integer read FJitterPercent write FJitterPercent;
+    property JitterPercent: Integer read GetJitterPercent write SetJitterPercent;
     /// <summary>Часы и паузы (nil — системные).</summary>
-    property Timer: ITgPollTimer read FTimer write FTimer;
+    property Timer: ITgPollTimer read GetTimer write SetTimer;
     /// <summary>409: другой экземпляр бота или установлен webhook.</summary>
-    property OnConflict: TTgConflictHandler read FOnConflict write FOnConflict;
+    property OnConflict: TTgConflictHandler read GetOnConflict write SetOnConflict;
     /// <summary>Временная ошибка getUpdates (перед паузой и повтором).</summary>
-    property OnError: TProc<Exception> read FOnError write FOnError;
+    property OnError: TProc<Exception> read GetOnError write SetOnError;
     /// <summary>Неустранимая ошибка: источник перешёл в Faulted.</summary>
-    property OnFault: TProc<Exception> read FOnFault write FOnFault;
+    property OnFault: TProc<Exception> read GetOnFault write SetOnFault;
   end;
 
 implementation
@@ -864,6 +976,12 @@ begin
   FJitterPercent := TgDefaultBackoffJitterPercent;
 end;
 
+class function TTgLongPollSource.New(const ATransport: ITgTransport;
+  const AParentCancel: ITgCancellation): ITgLongPollSource;
+begin
+  Result := TTgLongPollSource.Create(ATransport, AParentCancel);
+end;
+
 destructor TTgLongPollSource.Destroy;
 var
   LCore: ITgPollCore;
@@ -997,6 +1115,136 @@ begin
     Result := LCore.ConfirmedOffset
   else
     Result := 0;
+end;
+
+function TTgLongPollSource.GetLimit: Integer;
+begin
+  Result := FLimit;
+end;
+
+procedure TTgLongPollSource.SetLimit(AValue: Integer);
+begin
+  FLimit := AValue;
+end;
+
+function TTgLongPollSource.GetTimeoutSec: Integer;
+begin
+  Result := FTimeoutSec;
+end;
+
+procedure TTgLongPollSource.SetTimeoutSec(AValue: Integer);
+begin
+  FTimeoutSec := AValue;
+end;
+
+function TTgLongPollSource.GetAllowedUpdates: TTgOptional<TArray<string>>;
+begin
+  Result := FAllowedUpdates;
+end;
+
+procedure TTgLongPollSource.SetAllowedUpdates(const AValue: TTgOptional<TArray<string>>);
+begin
+  FAllowedUpdates := AValue;
+end;
+
+function TTgLongPollSource.GetDropPendingUpdates: Boolean;
+begin
+  Result := FDropPendingUpdates;
+end;
+
+procedure TTgLongPollSource.SetDropPendingUpdates(AValue: Boolean);
+begin
+  FDropPendingUpdates := AValue;
+end;
+
+function TTgLongPollSource.GetAutoDeleteWebhook: Boolean;
+begin
+  Result := FAutoDeleteWebhook;
+end;
+
+procedure TTgLongPollSource.SetAutoDeleteWebhook(AValue: Boolean);
+begin
+  FAutoDeleteWebhook := AValue;
+end;
+
+function TTgLongPollSource.GetAckPolicy: TTgAckPolicy;
+begin
+  Result := FAckPolicy;
+end;
+
+procedure TTgLongPollSource.SetAckPolicy(AValue: TTgAckPolicy);
+begin
+  FAckPolicy := AValue;
+end;
+
+function TTgLongPollSource.GetDrainTimeoutMs: Cardinal;
+begin
+  Result := FDrainTimeoutMs;
+end;
+
+procedure TTgLongPollSource.SetDrainTimeoutMs(AValue: Cardinal);
+begin
+  FDrainTimeoutMs := AValue;
+end;
+
+function TTgLongPollSource.GetConflictNotifyIntervalMs: Cardinal;
+begin
+  Result := FConflictNotifyIntervalMs;
+end;
+
+procedure TTgLongPollSource.SetConflictNotifyIntervalMs(AValue: Cardinal);
+begin
+  FConflictNotifyIntervalMs := AValue;
+end;
+
+function TTgLongPollSource.GetJitterPercent: Integer;
+begin
+  Result := FJitterPercent;
+end;
+
+procedure TTgLongPollSource.SetJitterPercent(AValue: Integer);
+begin
+  FJitterPercent := AValue;
+end;
+
+function TTgLongPollSource.GetTimer: ITgPollTimer;
+begin
+  Result := FTimer;
+end;
+
+procedure TTgLongPollSource.SetTimer(const AValue: ITgPollTimer);
+begin
+  FTimer := AValue;
+end;
+
+function TTgLongPollSource.GetOnConflict: TTgConflictHandler;
+begin
+  Result := FOnConflict;
+end;
+
+procedure TTgLongPollSource.SetOnConflict(const AValue: TTgConflictHandler);
+begin
+  FOnConflict := AValue;
+end;
+
+function TTgLongPollSource.GetOnError: TProc<Exception>;
+begin
+  Result := FOnError;
+end;
+
+procedure TTgLongPollSource.SetOnError(const AValue: TProc<Exception>);
+begin
+  FOnError := AValue;
+end;
+
+function TTgLongPollSource.GetOnFault: TProc<Exception>;
+begin
+  Result := FOnFault;
+end;
+
+procedure TTgLongPollSource.SetOnFault(const AValue: TProc<Exception>);
+begin
+  FOnFault := AValue;
 end;
 
 end.
