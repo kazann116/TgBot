@@ -16,14 +16,20 @@
     ITgWebhookReceiver, ITgUpdateSource, ITgPollTimer; перечисления
     TTgSourceState, TTgAckPolicy, TTgDelivery, TTgWebhookResult; типы
     обработчиков TTgRawHandler, TTgRawErrorHandler, TTgConflictHandler;
+  - источники обновлений и диспетчер как интерфейсы: ITgLongPollSource,
+    ITgWebhookSource, ITgUpdateDispatcher;
   - состояние диалогов: ITgStateStorage;
   - псевдонимы типов из сигнатур контрактов: ITgCancellation,
-    ITgCancellationSource (TgBot.Base), TTgParams (TgBot.Json).
+    ITgCancellationSource, TTgInputFile (TgBot.Base), TTgParams
+    (TgBot.Json). Обобщённый TTgOptional<T> (AllowedUpdates источников)
+    псевдонимом не реэкспортируется (ограничение языка) — для объявления
+    переменных этого типа нужен TgBot.Base в uses.
 
   Реализации — в прежних модулях (TTgHttpTransport — TgBot.Http,
-  TTgMemoryStateStorage — TgBot.State, источники и диспетчер —
-  TgBot.Updates.*). Там же остались псевдонимы перенесённых типов: код с
-  uses TgBot.Http, TgBot.Updates.Types, TgBot.State или фасада TgBot
+  TTgMemoryStateStorage — TgBot.State, источники и диспетчер с фабриками
+  New — TgBot.Updates.Polling, TgBot.Updates.WebhookSource,
+  TgBot.Updates.Dispatcher). Там же остались псевдонимы перенесённых типов:
+  код с uses TgBot.Http, TgBot.Updates.*, TgBot.State или фасада TgBot
   компилируется без изменений, GUID интерфейсов прежние.
 }
 
@@ -61,6 +67,8 @@ type
   ITgCancellation = TgBot.Base.ITgCancellation;
   /// <summary>Источник отмены (TgBot.Base.ITgCancellationSource).</summary>
   ITgCancellationSource = TgBot.Base.ITgCancellationSource;
+  /// <summary>Входной файл (TgBot.Base.TTgInputFile; сертификат ITgWebhookSource).</summary>
+  TTgInputFile = TgBot.Base.TTgInputFile;
   /// <summary>Параметры метода Bot API (TgBot.Json.TTgParams).</summary>
   TTgParams = TgBot.Json.TTgParams;
 
@@ -74,7 +82,8 @@ type
   ///   HTTPS-прокси (TLS до самого прокси) библиотека не поддерживает. Настройки
   ///   проверяет и нормализует TTgHttpTransport.Create (см. Normalized),
   ///   ошибка настройки — ETgError. Преобразование в настройки RTL
-  ///   (TProxySettings) — ToRtlSettings, помощник записи в TgBot.Http.
+  ///   (TProxySettings) — ToRtlSettings, помощник записи в TgBot.Http и
+  ///   фасаде TgBot.
   ///   Поле записи меняется на месте, в том числе через with:
   ///   <code>
   ///   LSettings := TTgHttpSettings.Create(LToken);
@@ -375,6 +384,215 @@ type
   TTgRawErrorHandler = reference to procedure(AError: Exception; const AUpdate: ITgRawUpdate);
   /// <summary>Событие конфликта 409 (объект исключения действителен только внутри).</summary>
   TTgConflictHandler = reference to procedure(AError: ETgConflictError);
+
+  { Источники обновлений и диспетчер (реализации — TTgLongPollSource,
+    TTgWebhookSource, TTgUpdateDispatcher в TgBot.Updates.*) }
+
+  /// <summary>
+  ///   Источник long polling как интерфейс: все настройки и события
+  ///   TTgLongPollSource (описание — у класса), Offset, ConfirmedOffset и
+  ///   WaitForThread. Создавайте через TTgLongPollSource.New и храните как
+  ///   интерфейс; не храните ссылку на класс — объект освобождается по
+  ///   счётчику ссылок. Настройки задаются до Start.
+  /// </summary>
+  ITgLongPollSource = interface(ITgUpdateSource)
+    ['{5CD90BA7-B869-4CA5-AD10-8388B5EB380D}']
+    function GetOffset: Int64;
+    function GetConfirmedOffset: Int64;
+    function GetLimit: Integer;
+    procedure SetLimit(AValue: Integer);
+    function GetTimeoutSec: Integer;
+    procedure SetTimeoutSec(AValue: Integer);
+    function GetAllowedUpdates: TTgOptional<TArray<string>>;
+    procedure SetAllowedUpdates(const AValue: TTgOptional<TArray<string>>);
+    function GetDropPendingUpdates: Boolean;
+    procedure SetDropPendingUpdates(AValue: Boolean);
+    function GetAutoDeleteWebhook: Boolean;
+    procedure SetAutoDeleteWebhook(AValue: Boolean);
+    function GetAckPolicy: TTgAckPolicy;
+    procedure SetAckPolicy(AValue: TTgAckPolicy);
+    function GetDrainTimeoutMs: Cardinal;
+    procedure SetDrainTimeoutMs(AValue: Cardinal);
+    function GetConflictNotifyIntervalMs: Cardinal;
+    procedure SetConflictNotifyIntervalMs(AValue: Cardinal);
+    function GetJitterPercent: Integer;
+    procedure SetJitterPercent(AValue: Integer);
+    function GetTimer: ITgPollTimer;
+    procedure SetTimer(const AValue: ITgPollTimer);
+    function GetOnConflict: TTgConflictHandler;
+    procedure SetOnConflict(const AValue: TTgConflictHandler);
+    function GetOnError: TProc<Exception>;
+    procedure SetOnError(const AValue: TProc<Exception>);
+    function GetOnFault: TProc<Exception>;
+    procedure SetOnFault(const AValue: TProc<Exception>);
+    /// <summary>
+    ///   Ждёт фактического завершения потока источника (в т.ч. отпущенного
+    ///   при Stop = False). True — поток завершён или не запускался.
+    /// </summary>
+    function WaitForThread(AMs: Cardinal): Boolean;
+    /// <summary>offset следующего запроса getUpdates (последний принятый update_id + 1; 0 — не было).</summary>
+    property Offset: Int64 read GetOffset;
+    /// <summary>offset, подтверждённый серверу (последний успешный getUpdates или итоговый).</summary>
+    property ConfirmedOffset: Int64 read GetConfirmedOffset;
+    /// <summary>limit getUpdates (1–100), по умолчанию TgDefaultPollLimit.</summary>
+    property Limit: Integer read GetLimit write SetLimit;
+    /// <summary>timeout getUpdates, с (0 — короткий опрос), по умолчанию TgDefaultPollTimeoutSec.</summary>
+    property TimeoutSec: Integer read GetTimeoutSec write SetTimeoutSec;
+    /// <summary>allowed_updates (TTgUpdateType.*); не задано — не передаётся.</summary>
+    property AllowedUpdates: TTgOptional<TArray<string>> read GetAllowedUpdates write SetAllowedUpdates;
+    /// <summary>При старте вызвать deleteWebhook(drop_pending_updates = true): пропустить накопившееся.</summary>
+    property DropPendingUpdates: Boolean read GetDropPendingUpdates write SetDropPendingUpdates;
+    /// <summary>При 409 «webhook is active» удалить webhook и продолжить (по умолчанию False).</summary>
+    property AutoDeleteWebhook: Boolean read GetAutoDeleteWebhook write SetAutoDeleteWebhook;
+    /// <summary>Политика подтверждения, по умолчанию AfterReceive.</summary>
+    property AckPolicy: TTgAckPolicy read GetAckPolicy write SetAckPolicy;
+    /// <summary>Дренаж при Stop, мс (по умолчанию TgDefaultDrainTimeoutMs).</summary>
+    property DrainTimeoutMs: Cardinal read GetDrainTimeoutMs write SetDrainTimeoutMs;
+    /// <summary>Минимальный интервал OnConflict для «другого getUpdates», мс.</summary>
+    property ConflictNotifyIntervalMs: Cardinal read GetConflictNotifyIntervalMs
+      write SetConflictNotifyIntervalMs;
+    /// <summary>Разброс пауз, ± процентов (0–50), по умолчанию 20.</summary>
+    property JitterPercent: Integer read GetJitterPercent write SetJitterPercent;
+    /// <summary>Часы и паузы (nil — системные).</summary>
+    property Timer: ITgPollTimer read GetTimer write SetTimer;
+    /// <summary>409: другой экземпляр бота или установлен webhook.</summary>
+    property OnConflict: TTgConflictHandler read GetOnConflict write SetOnConflict;
+    /// <summary>Временная ошибка getUpdates (перед паузой и повтором).</summary>
+    property OnError: TProc<Exception> read GetOnError write SetOnError;
+    /// <summary>Неустранимая ошибка: источник перешёл в Faulted.</summary>
+    property OnFault: TProc<Exception> read GetOnFault write SetOnFault;
+  end;
+
+  /// <summary>
+  ///   Webhook-источник как интерфейс: все настройки и события
+  ///   TTgWebhookSource (описание — у класса), Accept, WaitForThread и
+  ///   Receiver. Создавайте через TTgWebhookSource.New и храните как
+  ///   интерфейс; не храните ссылку на класс — объект освобождается по
+  ///   счётчику ссылок. Настройки задаются до Start.
+  /// </summary>
+  ITgWebhookSource = interface(ITgUpdateSource)
+    ['{7E49F47D-6569-4AF4-8FA1-1D51B7817E7D}']
+    function GetUrl: string;
+    procedure SetUrl(const AValue: string);
+    function GetSecretToken: string;
+    procedure SetSecretToken(const AValue: string);
+    function GetMaxConnections: Integer;
+    procedure SetMaxConnections(AValue: Integer);
+    function GetDropPendingUpdates: Boolean;
+    procedure SetDropPendingUpdates(AValue: Boolean);
+    function GetIpAddress: string;
+    procedure SetIpAddress(const AValue: string);
+    function GetCertificate: TTgInputFile;
+    procedure SetCertificate(const AValue: TTgInputFile);
+    function GetAllowedUpdates: TTgOptional<TArray<string>>;
+    procedure SetAllowedUpdates(const AValue: TTgOptional<TArray<string>>);
+    function GetRegisterOnStart: Boolean;
+    procedure SetRegisterOnStart(AValue: Boolean);
+    function GetDeleteOnStop: Boolean;
+    procedure SetDeleteOnStop(AValue: Boolean);
+    function GetMaxBodySize: Integer;
+    procedure SetMaxBodySize(AValue: Integer);
+    function GetPostTimeoutMs: Cardinal;
+    procedure SetPostTimeoutMs(AValue: Cardinal);
+    function GetDedupWindow: Integer;
+    procedure SetDedupWindow(AValue: Integer);
+    function GetOnError: TProc<Exception>;
+    procedure SetOnError(const AValue: TProc<Exception>);
+    function GetOnFault: TProc<Exception>;
+    procedure SetOnFault(const AValue: TProc<Exception>);
+    /// <summary>Тело — байты UTF-8 (как пришли по сети); см. ITgWebhookReceiver.</summary>
+    function Accept(const ABody: TBytes; const ASecretHeader: string): TTgWebhookResult; overload;
+    /// <summary>Тело — уже декодированная строка; см. ITgWebhookReceiver.</summary>
+    function Accept(const ABody, ASecretHeader: string): TTgWebhookResult; overload;
+    /// <summary>
+    ///   Ждёт завершения служебного потока (в т.ч. отпущенного при Stop =
+    ///   False). True — завершён или не запускался.
+    /// </summary>
+    function WaitForThread(AMs: Cardinal): Boolean;
+    /// <summary>
+    ///   Приёмник тела webhook-запроса для HTTP-сервера приложения: новая
+    ///   тонкая обёртка, которая реализует только ITgWebhookReceiver и
+    ///   передаёт Accept источнику (получить из неё ITgWebhookSource и
+    ///   остановить источник нельзя). Держит источник, как и сам интерфейс.
+    /// </summary>
+    function Receiver: ITgWebhookReceiver;
+    /// <summary>Внешний HTTPS-URL webhook (параметр url setWebhook).</summary>
+    property Url: string read GetUrl write SetUrl;
+    /// <summary>secret_token: Accept сверяет его с заголовком; пусто — не передаётся и не проверяется.</summary>
+    property SecretToken: string read GetSecretToken write SetSecretToken;
+    /// <summary>max_connections (1–100); 0 — не передаётся (значение сервера, 40).</summary>
+    property MaxConnections: Integer read GetMaxConnections write SetMaxConnections;
+    /// <summary>drop_pending_updates setWebhook: пропустить накопившиеся обновления.</summary>
+    property DropPendingUpdates: Boolean read GetDropPendingUpdates write SetDropPendingUpdates;
+    /// <summary>ip_address setWebhook (вместо адреса из DNS); пусто — не передаётся.</summary>
+    property IpAddress: string read GetIpAddress write SetIpAddress;
+    /// <summary>Публичный ключ самоподписанного сертификата (certificate); пусто — нет.</summary>
+    property Certificate: TTgInputFile read GetCertificate write SetCertificate;
+    /// <summary>allowed_updates; не задано — не передаётся.</summary>
+    property AllowedUpdates: TTgOptional<TArray<string>> read GetAllowedUpdates write SetAllowedUpdates;
+    /// <summary>Вызывать setWebhook при Start (по умолчанию True).</summary>
+    property RegisterOnStart: Boolean read GetRegisterOnStart write SetRegisterOnStart;
+    /// <summary>Вызывать deleteWebhook при Stop (по умолчанию False).</summary>
+    property DeleteOnStop: Boolean read GetDeleteOnStop write SetDeleteOnStop;
+    /// <summary>Наибольший размер тела, байт UTF-8 (по умолчанию 1 МБ); больше — BadRequest.</summary>
+    property MaxBodySize: Integer read GetMaxBodySize write SetMaxBodySize;
+    /// <summary>Сколько Accept ждёт места в очереди, мс (по умолчанию 250).</summary>
+    property PostTimeoutMs: Cardinal read GetPostTimeoutMs write SetPostTimeoutMs;
+    /// <summary>Сколько последних update_id помнить для дедупликации (0 — без неё).</summary>
+    property DedupWindow: Integer read GetDedupWindow write SetDedupWindow;
+    /// <summary>Ошибка deleteWebhook при Stop (в служебном потоке; исключения поглощаются).</summary>
+    property OnError: TProc<Exception> read GetOnError write SetOnError;
+    /// <summary>Ошибка setWebhook: источник перешёл в Faulted (в служебном потоке).</summary>
+    property OnFault: TProc<Exception> read GetOnFault write SetOnFault;
+  end;
+
+  /// <summary>
+  ///   Диспетчер обновлений как интерфейс (публичный): запуск, остановка,
+  ///   ожидание и все настройки и события TTgUpdateDispatcher (описание —
+  ///   у класса). Не путать со служебным ITgDispatchCore (ядро одного
+  ///   запуска, не часть публичного API). Ограниченное ожидание места в
+  ///   очереди (TryPost) — по-прежнему через Supports(…, ITgTimedUpdateSink).
+  ///   Создавайте через TTgUpdateDispatcher.New и храните как интерфейс; не
+  ///   храните ссылку на класс — объект освобождается по счётчику ссылок.
+  /// </summary>
+  ITgUpdateDispatcher = interface(ITgUpdateSink)
+    ['{49ACBBD3-EBE0-41BB-B4BE-62EDDE0946FE}']
+    function GetActive: Boolean;
+    function GetCancel: ITgCancellation;
+    function GetMaxParallel: Integer;
+    procedure SetMaxParallel(AValue: Integer);
+    function GetQueueCapacity: Integer;
+    procedure SetQueueCapacity(AValue: Integer);
+    function GetDelivery: TTgDelivery;
+    procedure SetDelivery(AValue: TTgDelivery);
+    function GetOnError: TTgRawErrorHandler;
+    procedure SetOnError(const AValue: TTgRawErrorHandler);
+    function GetOnProcessed: TProc<Int64>;
+    procedure SetOnProcessed(const AValue: TProc<Int64>);
+    /// <summary>Запускает потоки. Повторный Start работающего диспетчера — ETgError.</summary>
+    procedure Start;
+    /// <summary>
+    ///   Отменяет токен диспетчера, выбрасывает необработанную очередь и ждёт
+    ///   потоки не дольше AWaitMs. False — потоки с зависшими обработчиками отпущены.
+    /// </summary>
+    function Stop(AWaitMs: Cardinal): Boolean;
+    /// <summary>Ждёт, пока очередь опустеет и обработчики завершатся; True — дождались.</summary>
+    function WaitIdle(AMs: Cardinal): Boolean;
+    /// <summary>Диспетчер запущен и не останавливается.</summary>
+    property Active: Boolean read GetActive;
+    /// <summary>Токен отмены текущего запуска (nil — не запущен).</summary>
+    property Cancel: ITgCancellation read GetCancel;
+    /// <summary>Число потоков (1–64), по умолчанию TgDefaultMaxParallel; задаётся до Start.</summary>
+    property MaxParallel: Integer read GetMaxParallel write SetMaxParallel;
+    /// <summary>Ёмкость очереди, по умолчанию TgDefaultQueueCapacity; задаётся до Start.</summary>
+    property QueueCapacity: Integer read GetQueueCapacity write SetQueueCapacity;
+    /// <summary>Где выполнять обработчик; задаётся до Start.</summary>
+    property Delivery: TTgDelivery read GetDelivery write SetDelivery;
+    /// <summary>Исключение обработчика (в потоке обработчика); задаётся до Start.</summary>
+    property OnError: TTgRawErrorHandler read GetOnError write SetOnError;
+    /// <summary>Обновление обработано (в т.ч. с исключением); задаётся до Start.</summary>
+    property OnProcessed: TProc<Int64> read GetOnProcessed write SetOnProcessed;
+  end;
 
   { Состояние диалогов }
 

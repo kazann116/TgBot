@@ -65,7 +65,11 @@
     не нужен;
   - псевдонимы типов ядра (TgBot.Base, TgBot.Json, TgBot.Http, TgBot.Dto,
     TgBot.Core, TgBot.Updates, TgBot.State), чтобы пользователю не
-    требовались другие модули в uses;
+    требовались другие модули в uses; помощник TTgProxySettings.ToRtlSettings;
+  - контракты (интерфейсы транспорта, источников, диспетчера, хранилища
+    состояния и записи настроек) объявлены в модуле контрактов TgBot.Intf —
+    для своей реализации без зависимости от реализаций библиотеки
+    достаточно uses TgBot.Intf; псевдонимы здесь — те же типы и GUID;
   - псевдонимы построителей клавиатур TTgKeyboard (TgBot.Keyboards) и
     обёртки TgRow;
   - псевдоним контекста обработчика ITgContext (TgBot.Context);
@@ -89,6 +93,7 @@ interface
 uses
   System.SysUtils,
   System.Threading,
+  System.Net.URLClient,
   TgBot.Base,
   TgBot.Json,
   TgBot.Http,
@@ -222,6 +227,21 @@ type
   ITgTransport = TgBot.Http.ITgTransport;
   /// <summary>Транспорт на System.Net.HttpClient.</summary>
   TTgHttpTransport = TgBot.Http.TTgHttpTransport;
+  /// <summary>
+  ///   TTgProxySettings.ToRtlSettings при uses TgBot (без TgBot.Http).
+  ///   Собственный помощник фасада: в области видимости действует один
+  ///   помощник на тип, а псевдоним помощника TgBot.Http его не подключает.
+  ///   При uses TgBot и TgBot.Http в любом порядке действует последний
+  ///   подключённый помощник; оба вызывают TgBot.Http.TgProxyToRtlSettings,
+  ///   результат одинаков.
+  /// </summary>
+  TTgProxySettingsHelper = record helper for TTgProxySettings
+    /// <summary>
+    ///   Настройки прокси для THTTPClient: Normalized, схема всегда пустая
+    ///   (описание — TgBot.Http.TgProxyToRtlSettings).
+    /// </summary>
+    function ToRtlSettings: TProxySettings;
+  end;
 
   { TgBot.Dto, TgBot.Core }
 
@@ -391,6 +411,13 @@ function TgHtmlEscape(const S: string): string;
 function TgMarkdownV2Escape(const S: string): string;
 
 implementation
+
+{ TTgProxySettingsHelper }
+
+function TTgProxySettingsHelper.ToRtlSettings: TProxySettings;
+begin
+  Result := TgBot.Http.TgProxyToRtlSettings(Self);
+end;
 
 function TgHtmlEscape(const S: string): string;
 var

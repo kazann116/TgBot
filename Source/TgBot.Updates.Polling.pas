@@ -16,6 +16,7 @@
   Пользователю достаточно uses TgBot.Updates (или TgBot): TTgLongPollSource
   и ITgLongPollSource (создание — TTgLongPollSource.New) реэкспортируются
   там псевдонимами. ITgPollCore — служебный, не используйте его напрямую.
+  Контракт ITgLongPollSource объявлен в TgBot.Intf, здесь — псевдоним.
 }
 
 {$SCOPEDENUMS ON}
@@ -26,6 +27,7 @@ uses
   System.SysUtils,
   System.SyncObjs,
   TgBot.Base,
+  TgBot.Intf,
   TgBot.Http,
   TgBot.Updates.Types;
 
@@ -65,79 +67,11 @@ type
   end;
 
   /// <summary>
-  ///   Источник long polling как интерфейс: все настройки и события
-  ///   TTgLongPollSource (описание — у класса), Offset, ConfirmedOffset и
-  ///   WaitForThread. Создавайте через TTgLongPollSource.New и храните как
-  ///   интерфейс; не храните ссылку на класс — объект освобождается по
-  ///   счётчику ссылок. Настройки задаются до Start.
+  ///   Источник long polling как интерфейс (описание — TgBot.Intf.ITgLongPollSource;
+  ///   псевдоним для совместимости: тот же тип и GUID). Создание —
+  ///   TTgLongPollSource.New.
   /// </summary>
-  ITgLongPollSource = interface(ITgUpdateSource)
-    ['{5CD90BA7-B869-4CA5-AD10-8388B5EB380D}']
-    function GetOffset: Int64;
-    function GetConfirmedOffset: Int64;
-    function GetLimit: Integer;
-    procedure SetLimit(AValue: Integer);
-    function GetTimeoutSec: Integer;
-    procedure SetTimeoutSec(AValue: Integer);
-    function GetAllowedUpdates: TTgOptional<TArray<string>>;
-    procedure SetAllowedUpdates(const AValue: TTgOptional<TArray<string>>);
-    function GetDropPendingUpdates: Boolean;
-    procedure SetDropPendingUpdates(AValue: Boolean);
-    function GetAutoDeleteWebhook: Boolean;
-    procedure SetAutoDeleteWebhook(AValue: Boolean);
-    function GetAckPolicy: TTgAckPolicy;
-    procedure SetAckPolicy(AValue: TTgAckPolicy);
-    function GetDrainTimeoutMs: Cardinal;
-    procedure SetDrainTimeoutMs(AValue: Cardinal);
-    function GetConflictNotifyIntervalMs: Cardinal;
-    procedure SetConflictNotifyIntervalMs(AValue: Cardinal);
-    function GetJitterPercent: Integer;
-    procedure SetJitterPercent(AValue: Integer);
-    function GetTimer: ITgPollTimer;
-    procedure SetTimer(const AValue: ITgPollTimer);
-    function GetOnConflict: TTgConflictHandler;
-    procedure SetOnConflict(const AValue: TTgConflictHandler);
-    function GetOnError: TProc<Exception>;
-    procedure SetOnError(const AValue: TProc<Exception>);
-    function GetOnFault: TProc<Exception>;
-    procedure SetOnFault(const AValue: TProc<Exception>);
-    /// <summary>
-    ///   Ждёт фактического завершения потока источника (в т.ч. отпущенного
-    ///   при Stop = False). True — поток завершён или не запускался.
-    /// </summary>
-    function WaitForThread(AMs: Cardinal): Boolean;
-    /// <summary>offset следующего запроса getUpdates (последний принятый update_id + 1; 0 — не было).</summary>
-    property Offset: Int64 read GetOffset;
-    /// <summary>offset, подтверждённый серверу (последний успешный getUpdates или итоговый).</summary>
-    property ConfirmedOffset: Int64 read GetConfirmedOffset;
-    /// <summary>limit getUpdates (1–100), по умолчанию TgDefaultPollLimit.</summary>
-    property Limit: Integer read GetLimit write SetLimit;
-    /// <summary>timeout getUpdates, с (0 — короткий опрос), по умолчанию TgDefaultPollTimeoutSec.</summary>
-    property TimeoutSec: Integer read GetTimeoutSec write SetTimeoutSec;
-    /// <summary>allowed_updates (TTgUpdateType.*); не задано — не передаётся.</summary>
-    property AllowedUpdates: TTgOptional<TArray<string>> read GetAllowedUpdates write SetAllowedUpdates;
-    /// <summary>При старте вызвать deleteWebhook(drop_pending_updates = true): пропустить накопившееся.</summary>
-    property DropPendingUpdates: Boolean read GetDropPendingUpdates write SetDropPendingUpdates;
-    /// <summary>При 409 «webhook is active» удалить webhook и продолжить (по умолчанию False).</summary>
-    property AutoDeleteWebhook: Boolean read GetAutoDeleteWebhook write SetAutoDeleteWebhook;
-    /// <summary>Политика подтверждения, по умолчанию AfterReceive.</summary>
-    property AckPolicy: TTgAckPolicy read GetAckPolicy write SetAckPolicy;
-    /// <summary>Дренаж при Stop, мс (по умолчанию TgDefaultDrainTimeoutMs).</summary>
-    property DrainTimeoutMs: Cardinal read GetDrainTimeoutMs write SetDrainTimeoutMs;
-    /// <summary>Минимальный интервал OnConflict для «другого getUpdates», мс.</summary>
-    property ConflictNotifyIntervalMs: Cardinal read GetConflictNotifyIntervalMs
-      write SetConflictNotifyIntervalMs;
-    /// <summary>Разброс пауз, ± процентов (0–50), по умолчанию 20.</summary>
-    property JitterPercent: Integer read GetJitterPercent write SetJitterPercent;
-    /// <summary>Часы и паузы (nil — системные).</summary>
-    property Timer: ITgPollTimer read GetTimer write SetTimer;
-    /// <summary>409: другой экземпляр бота или установлен webhook.</summary>
-    property OnConflict: TTgConflictHandler read GetOnConflict write SetOnConflict;
-    /// <summary>Временная ошибка getUpdates (перед паузой и повтором).</summary>
-    property OnError: TProc<Exception> read GetOnError write SetOnError;
-    /// <summary>Неустранимая ошибка: источник перешёл в Faulted.</summary>
-    property OnFault: TProc<Exception> read GetOnFault write SetOnFault;
-  end;
+  ITgLongPollSource = TgBot.Intf.ITgLongPollSource;
 
   /// <summary>
   ///   Long polling (getUpdates) в собственном потоке. Настройки задаются до

@@ -21,6 +21,12 @@
   Диспетчер и источники создавайте фабриками New (TTgUpdateDispatcher.New,
   TTgLongPollSource.New, TTgWebhookSource.New) и храните как интерфейсы.
 
+  Контракты приёма (ITgRawUpdate, ITgUpdateSink, ITgUpdateSource,
+  ITgLongPollSource, ITgWebhookSource, ITgUpdateDispatcher, перечисления,
+  типы обработчиков) объявлены в модуле контрактов TgBot.Intf: для своего
+  источника или приёмника достаточно uses TgBot.Intf. Псевдонимы здесь и в
+  TgBot.Updates.* — те же типы и GUID.
+
   Типы и константы реэкспортируются псевдонимами, функции — обёртками,
   поэтому достаточно uses TgBot.Updates.
 
