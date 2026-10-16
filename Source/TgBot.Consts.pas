@@ -83,6 +83,23 @@ resourcestring
   SRuViaProxy = '%s; запрос шёл через прокси %s';
   SEnViaProxy = '%s; the request was sent via proxy %s';
 
+  { Ядро: проверка настроек прокси (TTgProxySettings.Normalized, TgLangText).
+    Учётные данные не подставляются. Подстановки: схема (ProxyScheme); хост
+    и порт (ProxyPort); хост, порт из Host и Port (ProxyPortConflict). }
+
+  SRuProxyScheme = 'Схема прокси "%s" не поддерживается: поддерживается только HTTP-прокси ' +
+    '(CONNECT), SOCKS/HTTPS-прокси — нет. Оставьте Scheme пустым, Host — без схемы или с http://';
+  SEnProxyScheme = 'Proxy scheme "%s" is not supported: only an HTTP proxy (CONNECT) is ' +
+    'supported, SOCKS/HTTPS proxies are not. Leave Scheme empty and Host without a scheme or with http://';
+  SRuProxyBadHost = 'Недопустимый адрес прокси (Host): укажите хост или хост:порт без пути ' +
+    'и учётных данных — логин и пароль задаются в UserName/Password';
+  SEnProxyBadHost = 'Invalid proxy address (Host): specify host or host:port without a path ' +
+    'or credentials — set the login and password in UserName/Password';
+  SRuProxyPort = 'Прокси %s: укажите порт прокси 1–65535 (Port или "хост:порт" в Host), задано %d';
+  SEnProxyPort = 'Proxy %s: specify the proxy port 1-65535 (Port or "host:port" in Host), got %d';
+  SRuProxyPortConflict = 'Прокси %s: порт в Host (%d) не совпадает с Port (%d)';
+  SEnProxyPortConflict = 'Proxy %s: the port in Host (%d) does not match Port (%d)';
+
   { Ядро: проверка аргументов (EArgumentNilException, EArgumentOutOfRangeException).
     Первая подстановка — имя параметра (не переводится). }
 
