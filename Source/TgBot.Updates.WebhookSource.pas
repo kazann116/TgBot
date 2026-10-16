@@ -17,6 +17,7 @@
   Пользователю достаточно uses TgBot.Updates (или TgBot): TTgWebhookSource
   и ITgWebhookSource (создание — TTgWebhookSource.New) реэкспортируются там
   псевдонимами. ITgWebhookCore — служебный, не используйте его напрямую.
+  Контракт ITgWebhookSource объявлен в TgBot.Intf, здесь — псевдоним.
 }
 
 {$SCOPEDENUMS ON}
@@ -29,6 +30,7 @@ uses
   System.Generics.Collections,
   System.JSON,
   TgBot.Base,
+  TgBot.Intf,
   TgBot.Http,
   TgBot.Updates.Types;
 
@@ -67,87 +69,11 @@ type
   end;
 
   /// <summary>
-  ///   Webhook-источник как интерфейс: все настройки и события
-  ///   TTgWebhookSource (описание — у класса), Accept, WaitForThread и
-  ///   Receiver. Создавайте через TTgWebhookSource.New и храните как
-  ///   интерфейс; не храните ссылку на класс — объект освобождается по
-  ///   счётчику ссылок. Настройки задаются до Start.
+  ///   Webhook-источник как интерфейс (описание — TgBot.Intf.ITgWebhookSource;
+  ///   псевдоним для совместимости: тот же тип и GUID). Создание —
+  ///   TTgWebhookSource.New.
   /// </summary>
-  ITgWebhookSource = interface(ITgUpdateSource)
-    ['{7E49F47D-6569-4AF4-8FA1-1D51B7817E7D}']
-    function GetUrl: string;
-    procedure SetUrl(const AValue: string);
-    function GetSecretToken: string;
-    procedure SetSecretToken(const AValue: string);
-    function GetMaxConnections: Integer;
-    procedure SetMaxConnections(AValue: Integer);
-    function GetDropPendingUpdates: Boolean;
-    procedure SetDropPendingUpdates(AValue: Boolean);
-    function GetIpAddress: string;
-    procedure SetIpAddress(const AValue: string);
-    function GetCertificate: TTgInputFile;
-    procedure SetCertificate(const AValue: TTgInputFile);
-    function GetAllowedUpdates: TTgOptional<TArray<string>>;
-    procedure SetAllowedUpdates(const AValue: TTgOptional<TArray<string>>);
-    function GetRegisterOnStart: Boolean;
-    procedure SetRegisterOnStart(AValue: Boolean);
-    function GetDeleteOnStop: Boolean;
-    procedure SetDeleteOnStop(AValue: Boolean);
-    function GetMaxBodySize: Integer;
-    procedure SetMaxBodySize(AValue: Integer);
-    function GetPostTimeoutMs: Cardinal;
-    procedure SetPostTimeoutMs(AValue: Cardinal);
-    function GetDedupWindow: Integer;
-    procedure SetDedupWindow(AValue: Integer);
-    function GetOnError: TProc<Exception>;
-    procedure SetOnError(const AValue: TProc<Exception>);
-    function GetOnFault: TProc<Exception>;
-    procedure SetOnFault(const AValue: TProc<Exception>);
-    /// <summary>Тело — байты UTF-8 (как пришли по сети); см. ITgWebhookReceiver.</summary>
-    function Accept(const ABody: TBytes; const ASecretHeader: string): TTgWebhookResult; overload;
-    /// <summary>Тело — уже декодированная строка; см. ITgWebhookReceiver.</summary>
-    function Accept(const ABody, ASecretHeader: string): TTgWebhookResult; overload;
-    /// <summary>
-    ///   Ждёт завершения служебного потока (в т.ч. отпущенного при Stop =
-    ///   False). True — завершён или не запускался.
-    /// </summary>
-    function WaitForThread(AMs: Cardinal): Boolean;
-    /// <summary>
-    ///   Приёмник тела webhook-запроса для HTTP-сервера приложения: новая
-    ///   тонкая обёртка, которая реализует только ITgWebhookReceiver и
-    ///   передаёт Accept источнику (получить из неё ITgWebhookSource и
-    ///   остановить источник нельзя). Держит источник, как и сам интерфейс.
-    /// </summary>
-    function Receiver: ITgWebhookReceiver;
-    /// <summary>Внешний HTTPS-URL webhook (параметр url setWebhook).</summary>
-    property Url: string read GetUrl write SetUrl;
-    /// <summary>secret_token: Accept сверяет его с заголовком; пусто — не передаётся и не проверяется.</summary>
-    property SecretToken: string read GetSecretToken write SetSecretToken;
-    /// <summary>max_connections (1–100); 0 — не передаётся (значение сервера, 40).</summary>
-    property MaxConnections: Integer read GetMaxConnections write SetMaxConnections;
-    /// <summary>drop_pending_updates setWebhook: пропустить накопившиеся обновления.</summary>
-    property DropPendingUpdates: Boolean read GetDropPendingUpdates write SetDropPendingUpdates;
-    /// <summary>ip_address setWebhook (вместо адреса из DNS); пусто — не передаётся.</summary>
-    property IpAddress: string read GetIpAddress write SetIpAddress;
-    /// <summary>Публичный ключ самоподписанного сертификата (certificate); пусто — нет.</summary>
-    property Certificate: TTgInputFile read GetCertificate write SetCertificate;
-    /// <summary>allowed_updates; не задано — не передаётся.</summary>
-    property AllowedUpdates: TTgOptional<TArray<string>> read GetAllowedUpdates write SetAllowedUpdates;
-    /// <summary>Вызывать setWebhook при Start (по умолчанию True).</summary>
-    property RegisterOnStart: Boolean read GetRegisterOnStart write SetRegisterOnStart;
-    /// <summary>Вызывать deleteWebhook при Stop (по умолчанию False).</summary>
-    property DeleteOnStop: Boolean read GetDeleteOnStop write SetDeleteOnStop;
-    /// <summary>Наибольший размер тела, байт UTF-8 (по умолчанию 1 МБ); больше — BadRequest.</summary>
-    property MaxBodySize: Integer read GetMaxBodySize write SetMaxBodySize;
-    /// <summary>Сколько Accept ждёт места в очереди, мс (по умолчанию 250).</summary>
-    property PostTimeoutMs: Cardinal read GetPostTimeoutMs write SetPostTimeoutMs;
-    /// <summary>Сколько последних update_id помнить для дедупликации (0 — без неё).</summary>
-    property DedupWindow: Integer read GetDedupWindow write SetDedupWindow;
-    /// <summary>Ошибка deleteWebhook при Stop (в служебном потоке; исключения поглощаются).</summary>
-    property OnError: TProc<Exception> read GetOnError write SetOnError;
-    /// <summary>Ошибка setWebhook: источник перешёл в Faulted (в служебном потоке).</summary>
-    property OnFault: TProc<Exception> read GetOnFault write SetOnFault;
-  end;
+  ITgWebhookSource = TgBot.Intf.ITgWebhookSource;
 
   /// <summary>
   ///   Webhook без собственного HTTP-сервера: тело запроса передаёт Accept

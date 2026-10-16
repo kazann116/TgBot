@@ -14,7 +14,8 @@
   Пользователю достаточно uses TgBot.Updates (или TgBot): TTgUpdateDispatcher
   и публичный ITgUpdateDispatcher (создание — TTgUpdateDispatcher.New)
   реэкспортируются там псевдонимами. ITgDispatchCore — служебный (не путать
-  с ITgUpdateDispatcher), не используйте его напрямую.
+  с ITgUpdateDispatcher), не используйте его напрямую. Контракт
+  ITgUpdateDispatcher объявлен в TgBot.Intf, здесь — псевдоним.
 }
 
 {$SCOPEDENUMS ON}
@@ -25,6 +26,7 @@ uses
   System.SysUtils,
   System.SyncObjs,
   TgBot.Base,
+  TgBot.Intf,
   TgBot.Updates.Types;
 
 type
@@ -66,52 +68,12 @@ type
   end;
 
   /// <summary>
-  ///   Диспетчер обновлений как интерфейс (публичный): запуск, остановка,
-  ///   ожидание и все настройки и события TTgUpdateDispatcher (описание —
-  ///   у класса). Не путать со служебным ITgDispatchCore (ядро одного
-  ///   запуска, не часть публичного API). Ограниченное ожидание места в
-  ///   очереди (TryPost) — по-прежнему через Supports(…, ITgTimedUpdateSink).
-  ///   Создавайте через TTgUpdateDispatcher.New и храните как интерфейс; не
-  ///   храните ссылку на класс — объект освобождается по счётчику ссылок.
+  ///   Диспетчер обновлений как интерфейс (описание —
+  ///   TgBot.Intf.ITgUpdateDispatcher; псевдоним для совместимости: тот же
+  ///   тип и GUID). Создание — TTgUpdateDispatcher.New. Не путать со
+  ///   служебным ITgDispatchCore.
   /// </summary>
-  ITgUpdateDispatcher = interface(ITgUpdateSink)
-    ['{49ACBBD3-EBE0-41BB-B4BE-62EDDE0946FE}']
-    function GetActive: Boolean;
-    function GetCancel: ITgCancellation;
-    function GetMaxParallel: Integer;
-    procedure SetMaxParallel(AValue: Integer);
-    function GetQueueCapacity: Integer;
-    procedure SetQueueCapacity(AValue: Integer);
-    function GetDelivery: TTgDelivery;
-    procedure SetDelivery(AValue: TTgDelivery);
-    function GetOnError: TTgRawErrorHandler;
-    procedure SetOnError(const AValue: TTgRawErrorHandler);
-    function GetOnProcessed: TProc<Int64>;
-    procedure SetOnProcessed(const AValue: TProc<Int64>);
-    /// <summary>Запускает потоки. Повторный Start работающего диспетчера — ETgError.</summary>
-    procedure Start;
-    /// <summary>
-    ///   Отменяет токен диспетчера, выбрасывает необработанную очередь и ждёт
-    ///   потоки не дольше AWaitMs. False — потоки с зависшими обработчиками отпущены.
-    /// </summary>
-    function Stop(AWaitMs: Cardinal): Boolean;
-    /// <summary>Ждёт, пока очередь опустеет и обработчики завершатся; True — дождались.</summary>
-    function WaitIdle(AMs: Cardinal): Boolean;
-    /// <summary>Диспетчер запущен и не останавливается.</summary>
-    property Active: Boolean read GetActive;
-    /// <summary>Токен отмены текущего запуска (nil — не запущен).</summary>
-    property Cancel: ITgCancellation read GetCancel;
-    /// <summary>Число потоков (1–64), по умолчанию TgDefaultMaxParallel; задаётся до Start.</summary>
-    property MaxParallel: Integer read GetMaxParallel write SetMaxParallel;
-    /// <summary>Ёмкость очереди, по умолчанию TgDefaultQueueCapacity; задаётся до Start.</summary>
-    property QueueCapacity: Integer read GetQueueCapacity write SetQueueCapacity;
-    /// <summary>Где выполнять обработчик; задаётся до Start.</summary>
-    property Delivery: TTgDelivery read GetDelivery write SetDelivery;
-    /// <summary>Исключение обработчика (в потоке обработчика); задаётся до Start.</summary>
-    property OnError: TTgRawErrorHandler read GetOnError write SetOnError;
-    /// <summary>Обновление обработано (в т.ч. с исключением); задаётся до Start.</summary>
-    property OnProcessed: TProc<Int64> read GetOnProcessed write SetOnProcessed;
-  end;
+  ITgUpdateDispatcher = TgBot.Intf.ITgUpdateDispatcher;
 
   /// <summary>
   ///   Диспетчер обновлений: «полосы» по ChatKey (обновления одного чата —

@@ -79,7 +79,10 @@ type
   /// <summary>
   ///   Преобразование настроек прокси в настройки RTL. Помощник записи
   ///   объявлен здесь, а не в TgBot.Intf: TProxySettings — тип
-  ///   System.Net.URLClient. Действует там, где подключён TgBot.Http.
+  ///   System.Net.URLClient. Действует там, где подключён TgBot.Http; в
+  ///   фасаде TgBot — собственный помощник с тем же методом (в области
+  ///   видимости действует один помощник на тип, псевдоним помощника его
+  ///   не подключает). Оба вызывают TgProxyToRtlSettings.
   /// </summary>
   TTgProxySettingsHelper = record helper for TTgProxySettings
     /// <summary>
@@ -200,6 +203,13 @@ type
     /// <summary>Настройки транспорта.</summary>
     property Settings: TTgHttpSettings read FSettings;
   end;
+
+/// <summary>
+///   Настройки прокси AProxy для THTTPClient (реализация
+///   TTgProxySettings.ToRtlSettings): Normalized, схема всегда пустая.
+///   Ошибка настройки — ETgError (см. TTgProxySettings.Normalized).
+/// </summary>
+function TgProxyToRtlSettings(const AProxy: TTgProxySettings): TProxySettings;
 
 implementation
 
@@ -432,10 +442,15 @@ end;
 { TTgProxySettingsHelper }
 
 function TTgProxySettingsHelper.ToRtlSettings: TProxySettings;
+begin
+  Result := TgProxyToRtlSettings(Self);
+end;
+
+function TgProxyToRtlSettings(const AProxy: TTgProxySettings): TProxySettings;
 var
   LProxy: TTgProxySettings;
 begin
-  LProxy := Normalized;
+  LProxy := AProxy.Normalized;
   // Схема RTL — не схема прокси: на Windows это протокол связи с прокси
   // ('https://' — WinHTTP начинает с прокси TLS, обычный HTTP-прокси
   // отвечает ошибкой 12029; HTTPS-прокси не поддерживаем), на macOS — фильтр
