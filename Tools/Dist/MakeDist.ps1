@@ -310,7 +310,7 @@ try {
     $list += Get-WhiteFiles 'Tools\TgBotGen' @('*.dpr', '*.pas', '*.dproj')
     $list += Get-WhiteFiles 'Tools\TgBotGen\Spec' @("api-$api.html", "model-$api.json", "returns-$api.json", 'overrides.json')
     $list += Get-WhiteFiles 'Install' @('*.ps1', '*.cmd')
-    $list += Get-WhiteFiles '.' @('README.ru.md', 'CHANGELOG.md', 'LICENSE', 'LICENSE.txt', 'LICENSE.md')
+    $list += Get-WhiteFiles '.' @('README.md', 'README.ru.md', 'CHANGELOG.md', 'LICENSE', 'LICENSE.txt', 'LICENSE.md')
     $list = @($list | Where-Object { $_ } | ForEach-Object { $_ -replace '^\.\\', '' } |
         Where-Object { -not $Script:Excluded.ContainsKey($_) } | Sort-Object -Unique)
 
@@ -320,7 +320,7 @@ try {
         "Tools\TgBotGen\Spec\api-$api.html", "Tools\TgBotGen\Spec\model-$api.json",
         "Tools\TgBotGen\Spec\returns-$api.json", 'Tools\TgBotGen\Spec\overrides.json',
         'Install\Install.ps1', 'Install\Uninstall.ps1', 'Install\Install.cmd', 'Install\Uninstall.cmd',
-        'README.ru.md', 'CHANGELOG.md')
+        'README.md', 'README.ru.md', 'CHANGELOG.md')
     $missing = @($required | Where-Object { $list -notcontains $_ })
     if ($missing.Count -gt 0) { throw ('Нет обязательных файлов: ' + ($missing -join ', ')) }
     $hasLicense = @($list | Where-Object { $_ -like 'LICENSE*' }).Count -gt 0

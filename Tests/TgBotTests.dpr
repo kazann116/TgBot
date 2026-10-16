@@ -7163,7 +7163,7 @@ begin
       Check(LBot.HandleWebhook(LBig, LSecret) = TTgWebhookResult.BadRequest, '> 1 МБ: BadRequest');
       Check(LBot.HandleWebhook(TEncoding.UTF8.GetBytes(LBig), LSecret) = TTgWebhookResult.BadRequest,
         '> 1 МБ (TBytes): BadRequest');
-      LBig := '{"update_id":9,"message":{"text":"' + StringOfChar('я', 600000) + '"}}';
+      LBig := '{"update_id":9,"message":{"text":"' + StringOfChar(Char($044F) {'я'}, 600000) + '"}}';
       Check(LBot.HandleWebhook(LBig, LSecret) = TTgWebhookResult.BadRequest,
         '600 тыс. символов = 1,2 МБ UTF-8: BadRequest');
       LBig := '';
