@@ -29,7 +29,7 @@
 
 ### Новое
 
-- **Модуль `TgBot.Consts`** — все пользовательские тексты библиотеки (60 пар RU/EN, `resourcestring`) в одном
+- **Модуль `TgBot.Consts`** — все пользовательские тексты библиотеки (61 пара RU/EN, `resourcestring`) в одном
   месте по образцу `System.RTLConsts`. Каждый текст — пара `SRu…`/`SEn…`; секции по подсистемам (ядро, JSON,
   DTO, обновления, маршрутизатор, `TTgBot`, компонент, webhook-сервер). Модуль служебный: в прикладном коде
   его не подключают.
@@ -44,9 +44,10 @@
 - **`ITgLongPollSource`, `ITgWebhookSource`, `ITgUpdateDispatcher`** (реэкспорт в `TgBot.Updates` и `TgBot`) —
   интерфейсы нижнего слоя со всеми настройками и событиями соответствующих классов. Фабрики
   `TTgLongPollSource.New(ATransport, AParentCancel)`, `TTgWebhookSource.New(ATransport, AParentCancel)`,
-  `TTgUpdateDispatcher.New(AHandler)` возвращают интерфейс. `ITgWebhookSource.Receiver` — тот же объект как
-  `ITgWebhookReceiver`. `TryPost` диспетчера — по-прежнему через `Supports(…, ITgTimedUpdateSink)`
-  (`ITgTimedUpdateSink` теперь реэкспортируется в `TgBot`).
+  `TTgUpdateDispatcher.New(AHandler)` возвращают интерфейс. `ITgWebhookSource.Receiver` — тонкий приёмник,
+  реализующий только `ITgWebhookReceiver` (через `Supports` из него не получить `ITgWebhookSource`, то есть
+  нельзя остановить источник или поменять настройки). `TryPost` диспетчера — по-прежнему через
+  `Supports(…, ITgTimedUpdateSink)` (`ITgTimedUpdateSink` теперь реэкспортируется в `TgBot`).
 - **Настройки `TTgBot`** (применяются при `Start`):
   - `PollLimit` — `limit` getUpdates (по умолчанию `TgDefaultPollLimit`, 100);
   - `PollJitterPercent` — разброс пауз между повторами после ошибок, ±% (`TgDefaultBackoffJitterPercent`, 20);
@@ -58,11 +59,22 @@
   - `WebhookDedupWindow` — сколько последних `update_id` помнить для отбрасывания повторов
     (`TgDefaultWebhookDedupWindow`, 1000; 0 — без дедупликации);
   - `WebhookRegisterOnStart` (по умолчанию `True`) — `False`: webhook зарегистрирован вне бота, `setWebhook`
-    и `OnWebhookRegistered` нет, `WebhookUrl` не обязателен, пустой `WebhookSecretToken` не заменяется
-    случайным (его некому сообщить серверу) — заголовок секрета не проверяется.
+    и `OnWebhookRegistered` нет; `WebhookUrl`, `WebhookMaxConnections`, `WebhookDropPendingUpdates`,
+    `WebhookIpAddress`, `WebhookCertificate` не используются, `AllowedUpdates` на сервер не передаётся.
+    Пустой `WebhookSecretToken` в этом режиме не заменяется случайным (его некому сообщить серверу) —
+    заголовок секрета не проверяется; это небезопасно, при `Start` выдаётся предупреждение (см. ниже).
+    Задайте тот же секрет, что передан в `setWebhook`.
+- **Предупреждение о webhook без секрета.** `Mode = Webhook`, `WebhookRegisterOnStart = False` и пустой
+  `WebhookSecretToken` (у компонента — `Webhook.RegisterOnStart` и `Webhook.SecretToken`): при `Start`
+  вызывается `OnError(ETgError, nil)` с текстом `SRuBotWebhookNoSecret`/`SEnBotWebhookNoSecret` — обновление
+  может прислать любой, кто знает URL. Запуск продолжается.
 - **`TTgBot.WebhookReceiver`** (`ITgWebhookReceiver`, только чтение) — приёмник тела webhook для своего
-  HTTP-сервера; `Accept` равносилен `HandleWebhook`. Ссылка может пережить `Free` бота: после `Stop` и `Free`
-  `Accept` отвечает `Unavailable`. `TTelegramBot` передаёт серверу именно его.
+  HTTP-сервера; `Accept` равносилен `HandleWebhook`. Один объект на всю жизнь бота; реализует только
+  `ITgWebhookReceiver`. Ссылка может пережить `Free` бота: после `Stop` и `Free` `Accept` отвечает
+  `Unavailable`; до отпускания она удерживает webhook-источник и через его транспорт — закрытое ядро бота с
+  клиентом (`StateStorage` освобождается при `Free` бота). Компонент `TTelegramBot` хранит приёмник сам и
+  отпускает его до `Free` бота; `TTgWebhookServer` с приёмником не работает — он вызывает
+  `TTelegramBot.HandleWebhook`, а компонент передаёт тело приёмнику.
 - **Компонент `TTelegramBot`:** новая группа `Polling` (`TTgPollingOptions`: `Limit`, `JitterPercent`,
   `ConflictNotifyIntervalMs`; `PollingTimeout` остаётся на верхнем уровне для совместимости DFM) и новые
   `Webhook.MaxBodySize`, `Webhook.PostTimeoutMs`, `Webhook.DedupWindow`, `Webhook.RegisterOnStart`. Значения
@@ -95,6 +107,15 @@
   подготовку запуска не дольше 0,5 с (`TgDefaultBotFreeStartJobWaitMs`) и отменяет её — раньше ждал до 10 с
   (таймаут `Stop` по умолчанию). Меню команд при `Free` сразу после `Start` может не уйти — оно отправится
   при следующем `Start`. Явный `Stop(AWaitMs)` и `Active := False` ждут подготовку как раньше.
+- **`Free` бота освобождает `StateStorage` сразу,** даже если внутреннее ядро удерживается дольше (обработчик,
+  сохранённый `ITgContext`, `WebhookReceiver`): выполняющиеся обработчики и контексты держат свой снимок.
+  `Free` также снимает события источников, чтобы удержанный webhook-источник не держал их замыкания.
+- `TTgBot`: подтверждение обработки (`OnProcessed` диспетчера) назначается при `Start` источнику текущего
+  запуска — long polling сдвигает offset как раньше, у webhook подтверждение — ответ 200.
+- Компонент: при `Webhook.RegisterOnStart = False` файл `Webhook.Certificate` не проверяется и не
+  передаётся (сертификат нужен только `setWebhook`).
+- XML-doc: разумный предел `WebhookDedupWindow` / `Webhook.DedupWindow` — до 10 000 (большие значения
+  замедляют каждый запрос).
 - API, которые по-прежнему работают без изменений: `TgText`/`TgTextFmt`, `TgUpdatesText`, `TgRouterText`,
   перечисления `TTgText`, `TTgUpdatesText`, `TTgRouterText`, `TgSetLanguage`/`TgGetLanguage`;
   `TTgCancellationSource.Create` сохранён (но рекомендуется `New`); конструкторы `Create` источников и
@@ -130,13 +151,19 @@
   ждёт подготовку ≈300 мс.
 - Настройки бота: `PollLimit` (`limit` в getUpdates), `PollJitterPercent`, `PollConflictNotifyIntervalMs`,
   `WebhookRegisterOnStart = False` (без `setWebhook` и `OnWebhookRegistered`), `WebhookMaxBodySize`,
-  `WebhookDedupWindow = 0`, `WebhookPostTimeoutMs`; `WebhookReceiver` после `Stop`/`Free` и без утечек.
+  `WebhookDedupWindow = 0`, `WebhookPostTimeoutMs`; `WebhookReceiver` после `Stop`/`Free` и без утечек;
+  предупреждение о webhook без секрета.
+- `WebhookReceiver` и `ITgWebhookSource.Receiver`: `Supports(…, ITgWebhookSource) = False`; после `Free` бота
+  при живом приёмнике пользовательский `StateStorage` освобождён, `Accept` → `Unavailable`; ядро освобождается
+  после отпускания приёмника.
+- Компонент: `Webhook.RegisterOnStart = False` с несуществующим файлом `Webhook.Certificate` запускается без
+  ошибки и без `setWebhook`.
 - Компонент: значения по умолчанию групп `Polling` и `Webhook`, `Assign`, DFM (значение по умолчанию не
   пишется, иное сохраняется и загружается), передача в `TTgBot`, `ETgError` при смене у работающего бота.
 - Тесты нижнего слоя держат источники и диспетчер только как интерфейсы, созданные через `New`.
 - Сборка тестов с `-DTGBOT_TESTHOOKS` включает счётчики живых ядер и задач подготовки и доступ к источнику
-  бота (служебные хуки `TgBot.Bot.Core` и `TgBot.Bot`); без символа эти проверки пропускаются. Всего 95 тестов
-  (2016 проверок).
+  бота (служебные хуки `TgBot.Bot.Core` и `TgBot.Bot`); без символа эти проверки пропускаются. Всего 96 тестов
+  (2049 проверок).
 
 ### Миграция
 
@@ -149,7 +176,11 @@
 | `Bot.Source.ConflictNotifyIntervalMs` | `Bot.PollConflictNotifyIntervalMs` (компонент: `Polling.ConflictNotifyIntervalMs`) |
 | `Bot.Source.TimeoutSec`, `AllowedUpdates`, `DropPendingUpdates`, `AutoDeleteWebhook`, `AckPolicy`, `DrainTimeoutMs` | `Bot.PollTimeout`, `Bot.AllowedUpdates`, `Bot.DropPendingUpdates`, `Bot.AutoDeleteWebhook`, `Bot.AckPolicy`, `Bot.DrainTimeoutMs` (их значения и раньше переписывали настройки источника при `Start`) |
 | `Bot.Source.OnConflict` | `Bot.OnConflict` |
+| `Bot.Source.State`, `Bot.WebhookSource.State` | `Bot.SourceState` (источник текущего режима) |
+| `Bot.Source.OnError`, `Bot.Source.OnFault`, `Bot.WebhookSource.OnError`, `Bot.WebhookSource.OnFault` | `Bot.OnError` (ошибка приёма — `AContext = nil`), `Bot.OnFault` |
 | `Bot.Source.Offset`, `ConfirmedOffset`, `Timer` | у `TTgBot` нет; нужен такой контроль — свой источник `TTgLongPollSource.New` (`ITgLongPollSource`) |
+| `Bot.Source.WaitForThread`, `Bot.WebhookSource.WaitForThread` | у `TTgBot` нет; состояние — `Bot.State`, остановка с ожиданием — `Bot.Stop(AWaitMs)` |
+| `Bot.WebhookSource.Url`, `SecretToken`, `MaxConnections`, `DropPendingUpdates`, `IpAddress`, `Certificate`, `DeleteOnStop`, `AllowedUpdates` | `Bot.WebhookUrl`, `Bot.WebhookSecretToken`, `Bot.WebhookMaxConnections`, `Bot.WebhookDropPendingUpdates`, `Bot.WebhookIpAddress`, `Bot.WebhookCertificate`, `Bot.DeleteWebhookOnStop`, `Bot.AllowedUpdates` (их значения и раньше переписывали настройки источника при `Start`) |
 | `Bot.WebhookSource.MaxBodySize` | `Bot.WebhookMaxBodySize` (компонент: `Webhook.MaxBodySize`) |
 | `Bot.WebhookSource.PostTimeoutMs` | `Bot.WebhookPostTimeoutMs` (компонент: `Webhook.PostTimeoutMs`) |
 | `Bot.WebhookSource.DedupWindow` | `Bot.WebhookDedupWindow` (компонент: `Webhook.DedupWindow`) |
@@ -157,6 +188,10 @@
 | `Bot.WebhookSource` как приёмник (`Accept`) | `Bot.WebhookReceiver.Accept(…)` или `Bot.HandleWebhook(…)` |
 | `Bot.Dispatcher.MaxParallel`, `QueueCapacity`, `Delivery` | `Bot.MaxParallel`, `Bot.QueueCapacity`, `Bot.Delivery` (их значения и раньше переписывали настройки диспетчера при `Start`) |
 | `Bot.Dispatcher.WaitIdle` | у `TTgBot` нет; дождаться обработчиков — `Bot.Stop(AWaitMs)` |
+| `Bot.Dispatcher.Active` | у `TTgBot` нет; `Bot.State` (`Bot.Active`) |
+| `Bot.Dispatcher.Cancel` | у `TTgBot` нет; токен отмены обработчика — `ACtx.Cancel` |
+| `Bot.Dispatcher.OnError` | у `TTgBot` нет; `Bot.OnError` (исключение обработчика — с `AContext`) |
+| `Bot.Dispatcher.OnProcessed` | у `TTgBot` нет; подтверждение — `Bot.AckPolicy` |
 | `LSource: TTgCancellationSource := TTgCancellationSource.Create` | `LSource: ITgCancellationSource := TTgCancellationSource.New` (связанный — `New(AParent)`) |
 | `TTgContext` | `ITgContext` |
 | `TTgLongPollSource.Create`, `TTgWebhookSource.Create`, `TTgUpdateDispatcher.Create` в переменную класса | `.New(…)` в переменную `ITgLongPollSource` / `ITgWebhookSource` / `ITgUpdateDispatcher`; `Free` не вызывать |
