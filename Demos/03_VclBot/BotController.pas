@@ -21,23 +21,25 @@ type
   TBotLogEvent = procedure(Sender: TObject; const AText: string) of object;
 
   /// <summary>
+  ///   Журнал контроллера для колбэков SendMessageAsync: колбэк может прийти
+  ///   после уничтожения контроллера (закрытие формы). Log и Detach — только
+  ///   из главного потока; после Detach Log ничего не делает.
+  /// </summary>
+  IBotLogTarget = interface
+    ['{B88C08CA-6A7F-482B-968E-46BA2038185C}']
+    procedure Log(const AText: string);
+    /// <summary>Отвязка от контроллера (TBotController.Destroy).</summary>
+    procedure Detach;
+  end;
+
+  /// <summary>
   ///   Логика демо-бота поверх компонента TTelegramBot (компонент не
   ///   принадлежит контроллеру). Все методы — из главного потока.
   /// </summary>
   TBotController = class
-  private type
-    /// <summary>
-    ///   Связь колбэков SendMessageAsync с контроллером: Owner = nil после
-    ///   Destroy (колбэк может прийти после закрытия формы).
-    /// </summary>
-    TGuard = class(TInterfacedObject)
-    private
-      FOwner: TBotController;
-    end;
   private
     FBot: TTelegramBot;
-    FGuard: TGuard;
-    FGuardRef: IInterface;
+    FLogTarget: IBotLogTarget;
     FLastChatId: TTgChatId;
     FLastChatName: string;
     FMessageCount: Integer;
@@ -103,24 +105,54 @@ begin
     Result := Result + ' (@' + AUser.Username + ')';
 end;
 
+type
+  /// <summary>
+  ///   IBotLogTarget контроллера: несчитаемая ссылка на владельца, Detach
+  ///   обнуляет её. Обращения — только из главного потока.
+  /// </summary>
+  TBotLogTarget = class(TInterfacedObject, IBotLogTarget)
+  private
+    FOwner: TBotController;
+  public
+    constructor Create(AOwner: TBotController);
+    procedure Log(const AText: string);
+    procedure Detach;
+  end;
+
+{ TBotLogTarget }
+
+constructor TBotLogTarget.Create(AOwner: TBotController);
+begin
+  inherited Create;
+  FOwner := AOwner;
+end;
+
+procedure TBotLogTarget.Log(const AText: string);
+begin
+  if Assigned(FOwner) then
+    FOwner.Log(AText);
+end;
+
+procedure TBotLogTarget.Detach;
+begin
+  FOwner := nil;
+end;
+
 { TBotController }
 
 constructor TBotController.Create(ABot: TTelegramBot);
 begin
   inherited Create;
   FBot := ABot;
-  FGuard := TGuard.Create;
-  FGuardRef := FGuard;
-  FGuard.FOwner := Self;
+  FLogTarget := TBotLogTarget.Create(Self);
 end;
 
 destructor TBotController.Destroy;
 begin
-  // Колбэки, поставленные в очередь раньше, увидят Owner = nil.
-  if Assigned(FGuard) then
-    FGuard.FOwner := nil;
-  FGuard := nil;
-  FGuardRef := nil;
+  // Колбэки, поставленные в очередь раньше, найдут цель отвязанной.
+  if Assigned(FLogTarget) then
+    FLogTarget.Detach;
+  FLogTarget := nil;
   inherited Destroy;
 end;
 
@@ -204,7 +236,7 @@ function TBotController.SendToLastChat(const AText: string): Boolean;
 var
   LApi: TTgApi;
   LChat: TTgChatId;
-  LGuard: IInterface;
+  LTarget: IBotLogTarget;
 begin
   Result := False;
   if Trim(AText) = '' then
@@ -224,10 +256,11 @@ begin
     Exit;
   end;
   LChat := FLastChatId;
-  LGuard := FGuardRef;
+  LTarget := FLogTarget;
   Log('-> ' + LChat.ToString + ': ' + AText);
   // Колбэки — в потоке пула: в главный поток только через очередь, исключение
-  // действительно лишь внутри колбэка — передаём текст.
+  // действительно лишь внутри колбэка — передаём текст. Замыкания держат
+  // только LTarget (не контроллер): после Destroy Log ничего не делает.
   LApi.SendMessageAsync(LChat, AText,
     procedure(AMessage: ITgMessage)
     var
@@ -239,12 +272,8 @@ begin
         LText := 'Отправлено';
       TThread.Queue(nil,
         procedure
-        var
-          LOwner: TBotController;
         begin
-          LOwner := TGuard(LGuard as TObject).FOwner;
-          if Assigned(LOwner) then
-            LOwner.Log(LText);
+          LTarget.Log(LText);
         end);
     end,
     procedure(AError: Exception)
@@ -254,12 +283,8 @@ begin
       LText := 'Ошибка отправки: ' + AError.ClassName + ': ' + AError.Message;
       TThread.Queue(nil,
         procedure
-        var
-          LOwner: TBotController;
         begin
-          LOwner := TGuard(LGuard as TObject).FOwner;
-          if Assigned(LOwner) then
-            LOwner.Log(LText);
+          LTarget.Log(LText);
         end);
     end);
   Result := True;
