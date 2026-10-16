@@ -66,6 +66,9 @@
   - псевдонимы типов ядра (TgBot.Base, TgBot.Json, TgBot.Http, TgBot.Dto,
     TgBot.Core, TgBot.Updates, TgBot.State), чтобы пользователю не
     требовались другие модули в uses; помощник TTgProxySettings.ToRtlSettings;
+  - база своего транспорта TTgTransportBase и реестр транспорта по
+    умолчанию (TgBot.Transport): uses TgBot подключает TgBot.Http, и клиент
+    по токену получает TTgHttpTransport;
   - контракты (интерфейсы транспорта, источников, диспетчера, хранилища
     состояния и записи настроек) объявлены в модуле контрактов TgBot.Intf —
     для своей реализации без зависимости от реализаций библиотеки
@@ -96,6 +99,7 @@ uses
   System.Net.URLClient,
   TgBot.Base,
   TgBot.Json,
+  TgBot.Transport,
   TgBot.Http,
   TgBot.Dto,
   TgBot.Core,
@@ -243,6 +247,25 @@ type
     function ToRtlSettings: TProxySettings;
   end;
 
+  { TgBot.Transport: база своего транспорта и фабрика транспорта по умолчанию }
+
+  /// <summary>
+  ///   База транспорта Bot API без HTTP-клиента: наследник реализует Post и
+  ///   Download (описание и контракт — TgBot.Transport.TTgTransportBase).
+  /// </summary>
+  TTgTransportBase = TgBot.Transport.TTgTransportBase;
+  /// <summary>POST-запрос метода Bot API для TTgTransportBase.Post.</summary>
+  TTgPostRequest = TgBot.Transport.TTgPostRequest;
+  /// <summary>GET-запрос файла для TTgTransportBase.Download.</summary>
+  TTgDownloadRequest = TgBot.Transport.TTgDownloadRequest;
+  /// <summary>Часть формы multipart/form-data (TTgPostRequest.Parts).</summary>
+  TTgFormPart = TgBot.Transport.TTgFormPart;
+  /// <summary>
+  ///   Фабрика транспорта по умолчанию (TgRegisterDefaultTransport):
+  ///   транспорт по настройкам для TTgApi.Create(AToken/ASettings).
+  /// </summary>
+  TTgTransportFactory = TgBot.Transport.TTgTransportFactory;
+
   { TgBot.Dto, TgBot.Core }
 
   /// <summary>Объект Bot API поверх JSON (входящий или двунаправленный).</summary>
@@ -379,6 +402,28 @@ function TgWebhookHttpStatus(AResult: TTgWebhookResult): Integer;
 procedure TgSetAsyncPoolSize(AMaxThreads: Integer);
 
 /// <summary>
+///   Регистрирует фабрику транспорта по умолчанию; действует последняя
+///   зарегистрированная (описание — TgBot.Transport.TgRegisterDefaultTransport).
+///   При uses TgBot зарегистрирован TTgHttpTransport (TgBot.Http).
+/// </summary>
+procedure TgRegisterDefaultTransport(const AFactory: TTgTransportFactory);
+/// <summary>
+///   Снимает фабрику, зарегистрированную с той же ссылкой (описание —
+///   TgBot.Transport.TgUnregisterDefaultTransport).
+/// </summary>
+procedure TgUnregisterDefaultTransport(const AFactory: TTgTransportFactory);
+/// <summary>
+///   Текущая фабрика транспорта по умолчанию или nil; вызывайте со скобками:
+///   TgDefaultTransportFactory().
+/// </summary>
+function TgDefaultTransportFactory: TTgTransportFactory;
+/// <summary>
+///   Транспорт по умолчанию по настройкам; фабрики нет — ETgError
+///   (описание — TgBot.Transport.TgCreateDefaultTransport).
+/// </summary>
+function TgCreateDefaultTransport(const ASettings: TTgHttpSettings): ITgTransport;
+
+/// <summary>
 ///   Устанавливает язык сообщений библиотеки (по умолчанию — русский).
 ///   Вызывайте до запуска рабочих потоков.
 /// </summary>
@@ -491,6 +536,26 @@ end;
 procedure TgSetAsyncPoolSize(AMaxThreads: Integer);
 begin
   TgBot.Core.TgSetAsyncPoolSize(AMaxThreads);
+end;
+
+procedure TgRegisterDefaultTransport(const AFactory: TTgTransportFactory);
+begin
+  TgBot.Transport.TgRegisterDefaultTransport(AFactory);
+end;
+
+procedure TgUnregisterDefaultTransport(const AFactory: TTgTransportFactory);
+begin
+  TgBot.Transport.TgUnregisterDefaultTransport(AFactory);
+end;
+
+function TgDefaultTransportFactory: TTgTransportFactory;
+begin
+  Result := TgBot.Transport.TgDefaultTransportFactory();
+end;
+
+function TgCreateDefaultTransport(const ASettings: TTgHttpSettings): ITgTransport;
+begin
+  Result := TgBot.Transport.TgCreateDefaultTransport(ASettings);
 end;
 
 // TgRow — обычные обёртки: функцию с параметром «открытый массив» нельзя

@@ -3,8 +3,11 @@
 {
   TgBot — ядро клиента Bot API: TTgApiCore (база сгенерированного TTgApi).
 
-  - транспорт: собственный (создаётся по токену/настройкам, владеет клиент)
-    или переданный извне (общий, клиент им не управляет);
+  - транспорт: собственный (создаётся по токену/настройкам фабрикой по
+    умолчанию TgCreateDefaultTransport из TgBot.Transport — TTgHttpTransport
+    при подключённом TgBot.Http или фасаде TgBot; владеет клиент) или
+    переданный извне (общий, клиент им не управляет). Ядро от TgBot.Http не
+    зависит;
   - универсальный вызов Call/CallJson и скачивание файлов DownloadFile;
   - асинхронность: RunAsync (произвольная функция) и RunAsyncCall
     (метод над параметрами, построенными в вызывающем потоке) в общем пуле
@@ -115,9 +118,16 @@ type
     function RunAsyncCall<T>(AParams: TTgParams; const AExec: TTgExecFunc<T>;
       const AOnSuccess: TProc<T>; const AOnError: TProc<Exception>): ITask;
   public
-    /// <summary>Клиент облачного Bot API с настройками по умолчанию.</summary>
+    /// <summary>
+    ///   Клиент облачного Bot API с настройками по умолчанию. Транспорт —
+    ///   фабрикой по умолчанию (TgCreateDefaultTransport): без
+    ///   зарегистрированной фабрики (нет TgBot.Http/TgBot в программе) — ETgError.
+    /// </summary>
     constructor Create(const AToken: string); overload;
-    /// <summary>Клиент с настройками транспорта (прокси, ApiUrl, таймауты…).</summary>
+    /// <summary>
+    ///   Клиент с настройками транспорта (прокси, ApiUrl, таймауты…).
+    ///   Транспорт — фабрикой по умолчанию (TgCreateDefaultTransport).
+    /// </summary>
     constructor Create(const ASettings: TTgHttpSettings); overload;
     /// <summary>
     ///   Клиент с настройками транспорта и пулом потоков пользователя для
@@ -228,7 +238,7 @@ implementation
 uses
   System.Math,
   TgBot.Consts,
-  TgBot.Http;
+  TgBot.Transport;
 
 type
   /// <summary>Реализация ITgParamsBox.</summary>
@@ -393,7 +403,7 @@ end;
 
 constructor TTgApiCore.Create(const ASettings: TTgHttpSettings; APool: TThreadPool);
 begin
-  Create(TTgHttpTransport.Create(ASettings) as ITgTransport, APool);
+  Create(TgCreateDefaultTransport(ASettings), APool);
   FOwnsTransport := True;
 end;
 
