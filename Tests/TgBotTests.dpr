@@ -2724,7 +2724,11 @@ type
     destructor Destroy; override;
     procedure Add(const AText: string);
     procedure Clear;
+    /// <summary>Есть запись, равная AText целиком.</summary>
     function Has(const AText: string): Boolean;
+    /// <summary>Есть запись, начинающаяся с APrefix (для записей с параметрами,
+    /// например 'err <класс> <код> ctx=…').</summary>
+    function HasPrefix(const APrefix: string): Boolean;
     /// <summary>Сколько раз записан AText.</summary>
     function CountOf(const AText: string): Integer;
     /// <summary>Число записей.</summary>
@@ -3001,6 +3005,21 @@ begin
   FLock.Enter;
   try
     Result := FItems.IndexOf(AText) >= 0;
+  finally
+    FLock.Leave;
+  end;
+end;
+
+function TTextLog.HasPrefix(const APrefix: string): Boolean;
+var
+  LItem: string;
+begin
+  Result := False;
+  FLock.Enter;
+  try
+    for LItem in FItems do
+      if LItem.StartsWith(APrefix) then
+        Exit(True);
   finally
     FLock.Leave;
   end;
@@ -6690,13 +6709,15 @@ begin
     CheckEquals(2, LEvents.Log.CountOf('exec start [a]'), 'элемент Commands: OnExecute');
     CheckEquals(2, LEvents.Log.CountOf('exec go []'), 'синоним из Aliases, /go@ThisBot после фонового getMe');
     CheckEquals(2, LEvents.Log.CountOf('cmd foo [x]'), 'элемент без OnExecute → OnCommand');
-    Check(not LEvents.Log.Has('cmd skip') and not LEvents.Log.Has('msg /skip'), 'OnUpdate: Handled := True');
+    // Записи OnCommand — 'cmd <команда> [<аргументы>]', поэтому по префиксу.
+    Check(not LEvents.Log.HasPrefix('cmd skip ') and not LEvents.Log.Has('msg /skip'), 'OnUpdate: Handled := True');
     CheckEquals(2, LEvents.Log.CountOf('msg hello'), 'OnMessage');
     CheckEquals(2, LEvents.Log.CountOf('text кот'), 'Text из кода — между запусками сохраняется');
     CheckEquals(2, LEvents.Log.CountOf('cbq zzz'), 'OnCallbackQuery');
     CheckEquals(2, LEvents.Log.CountOf('start'), 'OnStart');
     CheckEquals(2, LEvents.Log.CountOf('stop requested'), 'OnStop(Requested)');
-    Check(not LEvents.Log.Has('err'), 'OnError не вызывался: ' + LEvents.Log.Text);
+    // Записи OnError — 'err <класс> <код> ctx=…', поэтому по префиксу.
+    Check(not LEvents.Log.HasPrefix('err '), 'OnError не вызывался: ' + LEvents.Log.Text);
     CheckEquals(0, LEvents.NotMain, 'Delivery = Main: все события в главном потоке');
     LMenu := LTransport.Calls('setMyCommands');
     CheckEquals(2, Length(LMenu), 'setMyCommands при каждом запуске');
@@ -6765,7 +6786,7 @@ begin
           PumpUntil(
             function: Boolean
             begin
-              Result := LEvents.Log.Has('err ETgError');
+              Result := LEvents.Log.HasPrefix('err ETgError ');
             end, 2000);
         end, Exception), 'ошибка отложенного запуска не выбрасывается из очереди');
       CheckEquals(1, LEvents.Log.CountOf('err ETgError -1 ctx=False'), 'ошибка отложенного запуска → OnError(E, nil)');
@@ -6845,7 +6866,7 @@ begin
           Result := Assigned(LBot.Bot) and (LBot.Bot.State = TTgBotState.Faulted);
         end, 5000), 'бот перешёл в Faulted');
       TThread.Sleep(50);
-      Check(not LEvents.Log.Has('err') and not LEvents.Log.Has('fault'),
+      Check(not LEvents.Log.HasPrefix('err ') and not LEvents.Log.HasPrefix('fault '),
         'Delivery = Main: OnError/OnFault не вызываются из потока источника');
       Check(not LBot.Active, 'Faulted: Active = False');
       Check(PumpUntil(
@@ -6933,7 +6954,7 @@ begin
     finally
       LBot.Free;
     end;
-    Check(not LEvents.Log.Has('err'), 'без ошибок: ' + LEvents.Log.Text);
+    Check(not LEvents.Log.HasPrefix('err '), 'без ошибок: ' + LEvents.Log.Text);
   finally
     LEvents.Free;
   end;
@@ -6986,8 +7007,9 @@ begin
         Result := False;
       end, 100);
     Check(not LEvents.Log.Has('msg hang'), 'после Free событие формы (OnMessage) не вызвано: ' + LEvents.Log.Text);
-    Check(not LEvents.Log.Has('stop'), 'Destroy не вызывает OnStop');
-    Check(not LEvents.Log.Has('err'), 'без OnError после Free');
+    // Записи OnStop — 'stop requested'/'stop fault', OnError — 'err <класс> …': по префиксу.
+    Check(not LEvents.Log.HasPrefix('stop '), 'Destroy не вызывает OnStop: ' + LEvents.Log.Text);
+    Check(not LEvents.Log.HasPrefix('err '), 'без OnError после Free: ' + LEvents.Log.Text);
   finally
     LEvents.Free;
   end;
@@ -7297,7 +7319,9 @@ begin
       Check(WaitLogHas(LLog, 'fault 400'), 'ошибка setWebhook → OnFault');
       Check(LBot.State = TTgBotState.Faulted, 'State = Faulted');
       Check(LBot.SourceState = TTgSourceState.Faulted, 'SourceState = Faulted');
-      Check(LogIndex(LLog, 'error 400') < LogIndex(LLog, 'fault 400'), 'OnError до OnFault: ' + LLog.Text);
+      // LogIndex = -1, если записи нет, — без проверки >= 0 сравнение прошло бы и без OnError.
+      Check((LogIndex(LLog, 'error 400') >= 0) and (LogIndex(LLog, 'error 400') < LogIndex(LLog, 'fault 400')),
+        'OnError до OnFault: ' + LLog.Text);
       Check(LBot.HandleWebhook(MsgUpdate(1, 100, 7, 'x'), '') = TTgWebhookResult.Unavailable,
         'в Faulted: Unavailable');
       Check(LBot.Stop, 'Stop из Faulted');
@@ -7646,7 +7670,7 @@ begin
         LSrvEvents.Log.Has('GET /tg/Bot1 405') and LSrvEvents.Log.Has(' /tg/Unknown 404'),
         'OnRequest: метод, путь, код');
       Check((Pos(CSecret1, LSrvEvents.Log.Text) = 0) and (Pos(CSecret2, LSrvEvents.Log.Text) = 0) and
-        not LSrvEvents.Log.Has('error'), 'журнал без секретов и ошибок');
+        not LSrvEvents.Log.HasPrefix('error '), 'журнал без секретов и ошибок');
       // Лимит тела: отказ до чтения (тело не отправляется вовсе — ответ без ожидания).
       LServer.MaxBodySize := 1000;
       LWatch := TStopwatch.StartNew;
