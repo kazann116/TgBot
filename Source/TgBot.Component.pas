@@ -84,6 +84,10 @@ type
     FPath: string;
     FIpAddress: string;
     FCertificate: string;
+    FMaxBodySize: Integer;
+    FPostTimeoutMs: Cardinal;
+    FDedupWindow: Integer;
+    FRegisterOnStart: Boolean;
     procedure SetUrl(const AValue: string);
     procedure SetIpAddress(const AValue: string);
     procedure SetCertificate(const AValue: string);
@@ -91,6 +95,10 @@ type
     procedure SetMaxConnections(AValue: Integer);
     procedure SetDropPendingUpdates(AValue: Boolean);
     procedure SetDeleteOnStop(AValue: Boolean);
+    procedure SetMaxBodySize(AValue: Integer);
+    procedure SetPostTimeoutMs(AValue: Cardinal);
+    procedure SetDedupWindow(AValue: Integer);
+    procedure SetRegisterOnStart(AValue: Boolean);
     procedure SetServer(AValue: TTgCustomWebhookServer);
     function GetPath: string;
     procedure SetPath(const AValue: string);
@@ -107,7 +115,9 @@ type
     property Url: string read FUrl write SetUrl;
     /// <summary>
     ///   secret_token (1–256 символов [A-Za-z0-9_-]); пусто — случайный при
-    ///   каждом запуске (рекомендуется: в форме не хранится).
+    ///   каждом запуске (рекомендуется: в форме не хранится). При
+    ///   RegisterOnStart = False пустой секрет не генерируется и заголовок
+    ///   не проверяется.
     /// </summary>
     property SecretToken: string read FSecretToken write SetSecretToken;
     /// <summary>max_connections (1–100); 0 — по умолчанию сервера (40).</summary>
@@ -137,6 +147,79 @@ type
     ///   при запуске.
     /// </summary>
     property Certificate: string read FCertificate write SetCertificate;
+    /// <summary>
+    ///   Наибольший размер тела HandleWebhook, байт UTF-8 (меньше 1 — как 1);
+    ///   тело больше — BadRequest без разбора (TTgBot.WebhookMaxBodySize).
+    ///   По умолчанию TgDefaultWebhookMaxBodySize (1 МБ).
+    /// </summary>
+    property MaxBodySize: Integer read FMaxBodySize write SetMaxBodySize
+      default TgDefaultWebhookMaxBodySize;
+    /// <summary>
+    ///   Сколько HandleWebhook ждёт места в полной очереди, мс (0 — не ждёт),
+    ///   затем отвечает Unavailable — Telegram повторит доставку
+    ///   (TTgBot.WebhookPostTimeoutMs). По умолчанию TgDefaultWebhookPostTimeoutMs.
+    /// </summary>
+    property PostTimeoutMs: Cardinal read FPostTimeoutMs write SetPostTimeoutMs
+      default TgDefaultWebhookPostTimeoutMs;
+    /// <summary>
+    ///   Сколько последних принятых update_id помнить: повторная доставка того
+    ///   же update_id — Accepted без повторной обработки; 0 — без
+    ///   дедупликации (TTgBot.WebhookDedupWindow). По умолчанию
+    ///   TgDefaultWebhookDedupWindow.
+    /// </summary>
+    property DedupWindow: Integer read FDedupWindow write SetDedupWindow
+      default TgDefaultWebhookDedupWindow;
+    /// <summary>
+    ///   Вызывать setWebhook при запуске (по умолчанию True). False — webhook
+    ///   зарегистрирован вне бота: setWebhook не выполняется,
+    ///   OnWebhookRegistered не вызывается, Url не обязателен, пустой
+    ///   SecretToken не проверяется (TTgBot.WebhookRegisterOnStart).
+    ///   deleteWebhook при остановке — по-прежнему DeleteOnStop.
+    /// </summary>
+    property RegisterOnStart: Boolean read FRegisterOnStart write SetRegisterOnStart default True;
+  end;
+
+  /// <summary>
+  ///   Тонкие настройки long polling компонента (Mode = Polling); timeout
+  ///   getUpdates — TTelegramBot.PollingTimeout. Менять при работе бота
+  ///   нельзя — ETgError (в дизайнере — можно).
+  /// </summary>
+  TTgPollingOptions = class(TPersistent)
+  private
+    FOwner: TTelegramBot;
+    FLimit: Integer;
+    FJitterPercent: Integer;
+    FConflictNotifyIntervalMs: Cardinal;
+    procedure SetLimit(AValue: Integer);
+    procedure SetJitterPercent(AValue: Integer);
+    procedure SetConflictNotifyIntervalMs(AValue: Cardinal);
+  protected
+    function GetOwner: TPersistent; override;
+  public
+    constructor Create(AOwner: TTelegramBot);
+    procedure Assign(Source: TPersistent); override;
+  published
+    /// <summary>
+    ///   limit getUpdates — сколько обновлений за один запрос (1–100; вне
+    ///   диапазона — ближайшая граница; TTgBot.PollLimit). По умолчанию
+    ///   TgDefaultPollLimit.
+    /// </summary>
+    property Limit: Integer read FLimit write SetLimit default TgDefaultPollLimit;
+    /// <summary>
+    ///   Разброс пауз между повторами getUpdates после ошибок, ± процентов
+    ///   (0–50; вне диапазона — ближайшая граница; 0 — без разброса;
+    ///   TTgBot.PollJitterPercent). По умолчанию TgDefaultBackoffJitterPercent.
+    /// </summary>
+    property JitterPercent: Integer read FJitterPercent write SetJitterPercent
+      default TgDefaultBackoffJitterPercent;
+    /// <summary>
+    ///   Минимальный интервал повторных событий Bot.OnConflict (TTgBot) при
+    ///   409 «другой getUpdates» — второй экземпляр бота с тем же токеном, мс
+    ///   (TTgBot.PollConflictNotifyIntervalMs). По умолчанию
+    ///   TgDefaultConflictNotifyMs.
+    /// </summary>
+    property ConflictNotifyIntervalMs: Cardinal read FConflictNotifyIntervalMs
+      write SetConflictNotifyIntervalMs default TgDefaultConflictNotifyMs;
   end;
 
   /// <summary>HTTP(S)-прокси бота (TTgHttpSettings.Proxy); пустой Host — без прокси.</summary>
@@ -246,6 +329,7 @@ type
     FMaxParallel: Integer;
     FAllowedUpdates: string;
     FPollingTimeout: Integer;
+    FPolling: TTgPollingOptions;
     FDropPendingUpdates: Boolean;
     FAutoAnswerCallbacks: Boolean;
     FSetMyCommandsOnStart: Boolean;
@@ -290,6 +374,7 @@ type
     procedure SetMaxParallel(AValue: Integer);
     procedure SetAllowedUpdates(const AValue: string);
     procedure SetPollingTimeout(AValue: Integer);
+    procedure SetPolling(AValue: TTgPollingOptions);
     procedure SetDropPendingUpdates(AValue: Boolean);
     procedure SetAutoAnswerCallbacks(AValue: Boolean);
     procedure SetSetMyCommandsOnStart(AValue: Boolean);
@@ -422,6 +507,11 @@ type
     /// <summary>timeout getUpdates, с.</summary>
     property PollingTimeout: Integer read FPollingTimeout write SetPollingTimeout
       default TgDefaultPollTimeoutSec;
+    /// <summary>
+    ///   Тонкие настройки long polling (Mode = Polling): Limit,
+    ///   JitterPercent, ConflictNotifyIntervalMs.
+    /// </summary>
+    property Polling: TTgPollingOptions read FPolling write SetPolling;
     /// <summary>Пропустить накопившиеся обновления при запуске.</summary>
     property DropPendingUpdates: Boolean read FDropPendingUpdates write SetDropPendingUpdates
       default False;
@@ -759,6 +849,10 @@ constructor TTgWebhookOptions.Create(AOwner: TTelegramBot);
 begin
   inherited Create;
   FOwner := AOwner;
+  FMaxBodySize := TgDefaultWebhookMaxBodySize;
+  FPostTimeoutMs := TgDefaultWebhookPostTimeoutMs;
+  FDedupWindow := TgDefaultWebhookDedupWindow;
+  FRegisterOnStart := True;
 end;
 
 function TTgWebhookOptions.GetOwner: TPersistent;
@@ -782,6 +876,10 @@ begin
     FPath := LSource.FPath;
     FIpAddress := LSource.FIpAddress;
     FCertificate := LSource.FCertificate;
+    FMaxBodySize := LSource.FMaxBodySize;
+    FPostTimeoutMs := LSource.FPostTimeoutMs;
+    FDedupWindow := LSource.FDedupWindow;
+    FRegisterOnStart := LSource.FRegisterOnStart;
     SetServer(LSource.FServer);
   end
   else
@@ -837,6 +935,30 @@ begin
   FDeleteOnStop := AValue;
 end;
 
+procedure TTgWebhookOptions.SetMaxBodySize(AValue: Integer);
+begin
+  FOwner.CheckInactive;
+  FMaxBodySize := AValue;
+end;
+
+procedure TTgWebhookOptions.SetPostTimeoutMs(AValue: Cardinal);
+begin
+  FOwner.CheckInactive;
+  FPostTimeoutMs := AValue;
+end;
+
+procedure TTgWebhookOptions.SetDedupWindow(AValue: Integer);
+begin
+  FOwner.CheckInactive;
+  FDedupWindow := AValue;
+end;
+
+procedure TTgWebhookOptions.SetRegisterOnStart(AValue: Boolean);
+begin
+  FOwner.CheckInactive;
+  FRegisterOnStart := AValue;
+end;
+
 procedure TTgWebhookOptions.SetServer(AValue: TTgCustomWebhookServer);
 begin
   if AValue = FServer then
@@ -873,6 +995,56 @@ end;
 function TTgWebhookOptions.IsPathStored: Boolean;
 begin
   Result := FPath <> '';
+end;
+
+{ TTgPollingOptions }
+
+constructor TTgPollingOptions.Create(AOwner: TTelegramBot);
+begin
+  inherited Create;
+  FOwner := AOwner;
+  FLimit := TgDefaultPollLimit;
+  FJitterPercent := TgDefaultBackoffJitterPercent;
+  FConflictNotifyIntervalMs := TgDefaultConflictNotifyMs;
+end;
+
+function TTgPollingOptions.GetOwner: TPersistent;
+begin
+  Result := FOwner;
+end;
+
+procedure TTgPollingOptions.Assign(Source: TPersistent);
+var
+  LSource: TTgPollingOptions;
+begin
+  if Source is TTgPollingOptions then
+  begin
+    FOwner.CheckInactive;
+    LSource := TTgPollingOptions(Source);
+    FLimit := LSource.FLimit;
+    FJitterPercent := LSource.FJitterPercent;
+    FConflictNotifyIntervalMs := LSource.FConflictNotifyIntervalMs;
+  end
+  else
+    inherited Assign(Source);
+end;
+
+procedure TTgPollingOptions.SetLimit(AValue: Integer);
+begin
+  FOwner.CheckInactive;
+  FLimit := AValue;
+end;
+
+procedure TTgPollingOptions.SetJitterPercent(AValue: Integer);
+begin
+  FOwner.CheckInactive;
+  FJitterPercent := AValue;
+end;
+
+procedure TTgPollingOptions.SetConflictNotifyIntervalMs(AValue: Cardinal);
+begin
+  FOwner.CheckInactive;
+  FConflictNotifyIntervalMs := AValue;
 end;
 
 { TTgCustomWebhookServer }
@@ -988,6 +1160,7 @@ begin
   FDelivery := TTgDelivery.Main;
   FMaxParallel := TgDefaultMaxParallel;
   FPollingTimeout := TgDefaultPollTimeoutSec;
+  FPolling := TTgPollingOptions.Create(Self);
   FAutoAnswerCallbacks := True;
   FSetMyCommandsOnStart := True;
   FApiUrl := TgDefaultApiUrl;
@@ -1019,6 +1192,7 @@ begin
   FreeAndNil(FReceiverLock);
   FreeAndNil(FCommands);
   FreeAndNil(FProxy);
+  FreeAndNil(FPolling);
   FreeAndNil(FRunWake);
   inherited Destroy;
 end;
@@ -1250,7 +1424,14 @@ begin
     ABot.WebhookCertificate := TTgInputFile.FromFile(Trim(FWebhook.Certificate));
   end;
   ABot.DeleteWebhookOnStop := FWebhook.DeleteOnStop;
+  ABot.WebhookMaxBodySize := FWebhook.MaxBodySize;
+  ABot.WebhookPostTimeoutMs := FWebhook.PostTimeoutMs;
+  ABot.WebhookDedupWindow := FWebhook.DedupWindow;
+  ABot.WebhookRegisterOnStart := FWebhook.RegisterOnStart;
   ABot.PollTimeout := FPollingTimeout;
+  ABot.PollLimit := FPolling.Limit;
+  ABot.PollJitterPercent := FPolling.JitterPercent;
+  ABot.PollConflictNotifyIntervalMs := FPolling.ConflictNotifyIntervalMs;
   ABot.DropPendingUpdates := FDropPendingUpdates;
   ABot.AutoAnswerCallbacks := FAutoAnswerCallbacks;
   ABot.SetMyCommandsOnStart := FSetMyCommandsOnStart;
@@ -1750,6 +1931,11 @@ procedure TTelegramBot.SetPollingTimeout(AValue: Integer);
 begin
   CheckInactive;
   FPollingTimeout := AValue;
+end;
+
+procedure TTelegramBot.SetPolling(AValue: TTgPollingOptions);
+begin
+  FPolling.Assign(AValue);
 end;
 
 procedure TTelegramBot.SetDropPendingUpdates(AValue: Boolean);

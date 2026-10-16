@@ -145,6 +145,10 @@ const
   TgDefaultMaxParallel = TgBot.Updates.TgDefaultMaxParallel;
   /// <summary>Дренаж очереди при остановке по умолчанию, мс.</summary>
   TgDefaultDrainTimeoutMs = TgBot.Updates.TgDefaultDrainTimeoutMs;
+  /// <summary>Минимальный интервал между событиями OnConflict «другой getUpdates» по умолчанию, мс.</summary>
+  TgDefaultConflictNotifyMs = TgBot.Updates.TgDefaultConflictNotifyMs;
+  /// <summary>Разброс пауз между повторами getUpdates по умолчанию, ± процентов.</summary>
+  TgDefaultBackoffJitterPercent = TgBot.Updates.TgDefaultBackoffJitterPercent;
   /// <summary>Наибольший размер тела webhook-запроса по умолчанию, байт (1 МБ).</summary>
   TgDefaultWebhookMaxBodySize = TgBot.Updates.TgDefaultWebhookMaxBodySize;
   /// <summary>Сколько HandleWebhook ждёт места в очереди по умолчанию, мс.</summary>
