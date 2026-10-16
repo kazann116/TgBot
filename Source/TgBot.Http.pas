@@ -434,8 +434,6 @@ begin
 end;
 
 procedure TTgRequestCanceller.Fire;
-var
-  LSelf: ITgRequestCanceller;
 begin
   TMonitor.Enter(Self);
   try
@@ -449,8 +447,8 @@ begin
     TMonitor.Exit(Self);
   end;
   // Отмена могла прийти до входа в Execute и быть сброшена им — повторяем.
-  LSelf := Self;
-  StartRefire(LSelf);
+  // Fire вызывается только через ITgRequestCanceller (счётчик ссылок > 0).
+  StartRefire(Self);
 end;
 
 function TTgRequestCanceller.Refire: Boolean;

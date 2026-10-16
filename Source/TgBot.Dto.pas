@@ -336,6 +336,19 @@ uses
   System.TypInfo,
   TgBot.Consts;
 
+/// <summary>
+///   Имя класса реализации интерфейса для текста ошибки; '?' для nil и
+///   для реализации не на Delphi (без EIntfCastError от as TObject).
+/// </summary>
+function IntfClassName(const AValue: IInterface): string;
+begin
+  // Только диагностика (имя класса в тексте ошибки): приведение после проверки is.
+  if AValue is TObject then
+    Result := TObject(AValue).ClassName
+  else
+    Result := '?';
+end;
+
 { TTgJsonHolder }
 
 constructor TTgJsonHolder.Create(AValue: TJSONValue);
@@ -977,7 +990,7 @@ begin
     Exit(TJSONNull.Create);
   end;
   raise ETgError.Create(TgLangTextFmt(@SRuDtoUnsupported, @SEnDtoUnsupported,
-    [(AValue as TObject).ClassName]));
+    [IntfClassName(AValue)]));
 end;
 
 class function TTgDto.SerializeArray(const AValues: TArray<IInterface>;
@@ -1076,7 +1089,7 @@ begin
   if not Supports(AValue, ITgJsonObject, LJson) or
     not Supports(LJson.Clone, GetTypeData(PTypeInfo(ATypeInfo))^.Guid, AResult) then
     raise ETgError.Create(TgLangTextFmt(@SRuDtoNotJsonDto, @SEnDtoNotJsonDto,
-      [(AValue as TObject).ClassName]));
+      [IntfClassName(AValue)]));
 end;
 
 class function TTgDto.Detach<T>(const AValue: T): T;
