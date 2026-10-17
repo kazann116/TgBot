@@ -26,7 +26,7 @@
 ## 1. Что это
 
 - **Telegram Bot API 10.3, весь API.** Все типы и методы сгенерированы по официальной спецификации генератором
-  `Tools\TgBotGen` (константа `TgBotApiVersion`). Версия библиотеки — `TgBotVersion` (сейчас 0.4.0).
+  `Tools\TgBotGen` (константа `TgBotApiVersion`). Версия библиотеки — `TgBotVersion` (сейчас 0.4.1).
 - **Платформы:** Win32, Win64, Linux64, Android (32 и 64 бит). iOS не поддерживается.
 - **Delphi 10.4 Sydney и новее.** Проверено на 10.4 и 12.
 - **Зависимости.** Ядро использует только RTL (`System.Net.HttpClient`, `System.JSON`, `System.Threading`).
