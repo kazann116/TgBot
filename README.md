@@ -3,7 +3,7 @@
 ![Bot API](https://img.shields.io/badge/Telegram%20Bot%20API-10.3-26A5E4?logo=telegram&logoColor=white)
 ![Delphi](https://img.shields.io/badge/Delphi-10.4%2B-EE1F35?logo=delphi&logoColor=white)
 ![Платформы](https://img.shields.io/badge/платформы-Win32%20%7C%20Win64%20%7C%20Linux64%20%7C%20Android-7A2E0E)
-![Версия](https://img.shields.io/badge/версия-0.3.0-c2500f)
+![Версия](https://img.shields.io/badge/версия-0.4.0-c2500f)
 ![Лицензия](https://img.shields.io/badge/лицензия-MIT-2ea44f)
 
 Библиотека и невизуальный компонент для создания Telegram-ботов на Delphi. Весь Bot API, ничего лишнего в
@@ -22,7 +22,8 @@
 - **`TTelegramBot`** — компонент для формы: Object Inspector, коллекция команд, обычные события.
 - **`TTgWebhookServer`** — встроенный HTTP-сервер для webhook.
 - **Только RTL.** Ядро использует `System.Net.HttpClient`, `System.JSON`, `System.Threading`. Indy нужен лишь
-  встроенному webhook-серверу.
+  встроенному webhook-серверу. HTTP-клиент заменяем: свой транспорт — наследник `TTgTransportBase` с двумя
+  методами ([подробнее](README.ru.md#15-свой-транспорт)).
 
 ## Требования
 
@@ -95,6 +96,7 @@ end.
 | [`Demos/02_EchoBot`](Demos/02_EchoBot) | консольный бот: команды, инлайн-кнопки, листание страниц, состояние диалога |
 | [`Demos/03_VclBot`](Demos/03_VclBot) | VCL-форма с компонентом `TTelegramBot` |
 | [`Demos/04_WebhookBot`](Demos/04_WebhookBot) | приём обновлений через webhook |
+| [`Demos/05_CustomTransport`](Demos/05_CustomTransport) | свой транспорт: наследник `TTgTransportBase` с журналом запросов, без `TgBot.Http` |
 
 ## Что в репозитории
 
@@ -104,7 +106,7 @@ end.
 | `Packages` | пакеты `TgBotRT`, `TgBotIndyRT`, `TgBotDT` |
 | `Install` | установка и удаление в IDE |
 | `Demos` | примеры |
-| `Tests` | 96 тестов, работают без сети и без токена |
+| `Tests` | 106 тестов, работают без сети и без токена |
 | `Tools` | генератор API по спецификации и сборка дистрибутива |
 
 ## Известные ограничения
