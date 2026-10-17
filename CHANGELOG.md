@@ -29,21 +29,27 @@
   `TRttiInterfaceType.DeclaringUnitName` и `TRttiType.QualifiedName` перенесённых типов теперь указывают на
   `TgBot.Intf` (например, `TgBot.Intf.ITgTransport` вместо `TgBot.Http.ITgTransport`) — это касается кода,
   который ищет типы по полному имени (`TRttiContext.FindType`) или сохраняет его.
-- **`TTgProxySettings.ToRtlSettings` — помощник записи** (`TTgProxySettingsHelper`) в `TgBot.Http` и в
-  фасаде `TgBot`, а не метод записи (метод новый; в предварительных сборках 0.4.0 был методом): тип
-  результата `TProxySettings` объявлен в `System.Net.URLClient`, а `TTgProxySettings` — в `TgBot.Intf`,
-  который `System.Net.*` не подключает. С одним `TgBot.Intf` в `uses` метода нет; свой
-  `record helper for TTgProxySettings` в области видимости его скрывает (действует один помощник на тип).
-  Замена без помощника — функция `TgProxyToRtlSettings` (`TgBot.Http`).
+- **В `TgBot` и `TgBot.Http` объявлен `record helper for TTgProxySettings`** (`TTgProxySettingsHelper`,
+  метод `ToRtlSettings` — см. «Новое»). Если у вас есть свой помощник для `TTgProxySettings`, подключайте свой
+  модуль **после** `TgBot`/`TgBot.Http`: действует один помощник на тип — последний в области видимости, иначе
+  ваш помощник скрыт помощником библиотеки. С вашим помощником скрыт `ToRtlSettings` — используйте функцию
+  `TgProxyToRtlSettings` (`TgBot.Http`).
+- **`TTgApi.Settings.Proxy` теперь нормализован.** Транспорт проверяет и нормализует прокси при создании
+  (`TTgProxySettings.Normalized`), и клиент возвращает уже нормализованные настройки: `Host := 'h:3128'`
+  (`Port = 0`) читается как `Host = 'h'`, `Port = 3128`; префикс `http://` и завершающий `/` убраны, IPv6 —
+  в скобках (`'::1'` → `'[::1]'`). Учтите это в коде, который сравнивает `Settings.Proxy` с исходной записью.
+  То же — `Settings` у `TTgTransportBase` и `TTgHttpTransport`.
 - **Прокси: `ETgError` при создании транспорта** (у компонента — при `Active := True`) для настроек, которые
   раньше давали сетевую ошибку или зависели от платформы:
   - `Scheme`, кроме `''` и `'http'` (`'https'`, `'socks5'`…), и схема в `Host`, кроме `http://`
     (`socks5://…`, `https://…`). `Scheme = 'https'` на Windows означал TLS до самого прокси (WinHTTP начинает
-    с прокси рукопожатие TLS; обычный HTTP-прокси отвечал ошибкой 12029), на Linux и Android схема
-    игнорировалась. **Миграция:** `Scheme := ''` — для облачного Bot API (`https://`) этого достаточно;
+    с прокси рукопожатие TLS; обычный HTTP-прокси отвечал ошибкой 12029). На Linux и Android такая настройка
+    раньше работала (схема игнорировалась), теперь — `ETgError` при создании бота. **Миграция:**
+    `Scheme := ''` — для облачного Bot API (`https://`) этого достаточно;
   - порт не задан (`Port = 0` и нет `'хост:порт'` в `Host`) или вне 1–65535; порт в `Host` не совпадает с
     `Port`. **Миграция:** укажите порт явно;
-  - путь, `логин:пароль@` или пробелы в `Host`. **Миграция:** учётные данные — в `UserName`/`Password`.
+  - путь, `логин:пароль@` или пробелы в `Host` (один завершающий `/`, `'http://proxy:3128/'`, допустим).
+    **Миграция:** учётные данные — в `UserName`/`Password`.
 - В пакет `TgBotRT` добавлены модули `TgBot.Intf` и `TgBot.Transport` — пакеты пересоберите.
 
 ### Новое
@@ -90,10 +96,22 @@
   (храните её в переменной до `TgUnregisterDefaultTransport`). `TgBot.Http` регистрирует фабрику
   `TTgHttpTransport` в `initialization` и снимает в `finalization` (в том числе при выгрузке пакета). Новый
   текст `TgBot.Consts`: `DefaultTransportMissing`.
+- **Встроенный HTTP-транспорт — запасной.** `TgBot.Http` регистрирует свою фабрику служебной
+  `TgRegisterFallbackTransport` (`TgBot.Transport`) в самый низ стека, поэтому любая регистрация пользователя
+  (`TgRegisterDefaultTransport`) побеждает независимо от порядка `initialization` модулей — и до, и после
+  `TgBot.Http`. Встроенная фабрика становится текущей, только если своих нет или все сняты. После
+  `finalization` модуля `TgBot.Transport` реестр не вызывает нарушение доступа: `TgDefaultTransportFactory`
+  возвращает `nil`, `TgCreateDefaultTransport` — `ETgError` `DefaultTransportMissing`, регистрация и снятие
+  ничего не делают.
+- **`TTgProxySettings.ToRtlSettings`** — помощник записи `TTgProxySettingsHelper` в `TgBot.Http` и `TgBot`
+  (`TProxySettings` объявлен в `System.Net.URLClient`, поэтому не в `TgBot.Intf`): настройки прокси для
+  `THTTPClient` (`Normalized`, схема всегда пустая). С одним `TgBot.Intf` — функция `TgProxyToRtlSettings`
+  (`TgBot.Http`).
 - **Прокси: проверка и нормализация настроек.** `TTgHttpTransport.Create` (а значит, `TTgApi`, `TTgBot` и
   компонент при `Active := True`) проверяет `Proxy` через новый `TTgProxySettings.Normalized` и сразу
   сообщает об ошибке настройки `ETgError` с понятным текстом вместо сетевой ошибки при первом запросе.
-  Принимаются `'хост:порт'` в `Host` (при `Port = 0`), префикс `http://`, IPv6 (`'[::1]:3128'` или `'::1'` с
+  Принимаются `'хост:порт'` в `Host` (при `Port = 0`), префикс `http://`, один завершающий `/`
+  (`'http://proxy:3128/'`; путь после `/` — по-прежнему `ETgError`), IPv6 (`'[::1]:3128'` или `'::1'` с
   `Port`), пробелы по краям. В `THTTPClient` схема всегда передаётся пустой (`ToRtlSettings`) — единственный
   вариант HTTP-прокси, одинаковый на всех платформах. Пароль и имя пользователя в тексты ошибок не попадают.
   Новые тексты `TgBot.Consts`: `ProxyScheme`, `ProxyBadHost`, `ProxyPort`, `ProxyPortConflict`. Проверку
@@ -148,7 +166,7 @@
 
 ### Тесты
 
-- Всего 106 тестов (2395 проверок; в 0.3.0 — 96 и 2049).
+- Всего 106 тестов (2411 проверок; в 0.3.0 — 96 и 2049).
 - Стресс-тест гонки отмены родителя и освобождения дочернего источника (`TestCancelLinkRace`; полный вариант —
   `TG_ONLY=STRESS`).
 - Прокси (`Tests\TgBotTests.Proxy.pas`): локальный HTTP-прокси и фейковый Bot API на Indy. Код с
@@ -157,17 +175,21 @@
   `TTelegramBot.Proxy`. Фейковый Bot API адресуется именем `tgbot-api.invalid` — WinHTTP обходит прокси для
   loopback-адресов.
 - Нормализация и проверка прокси (`TestProxyNormalize`, `TestProxyTransportSettings`): `'хост:порт'`,
-  `http://`, IPv6, обязательный порт, противоречие портов, SOCKS/HTTPS в `Host` и `Scheme`, учётные данные в
-  `Host` — `ETgError` без пароля в тексте; пустая схема в RTL; ошибки из конструктора транспорта и компонента.
+  `http://`, завершающий `/` (путь — ошибка), IPv6, обязательный порт, противоречие портов, SOCKS/HTTPS в
+  `Host` и `Scheme`, учётные данные в `Host` — `ETgError` без пароля в тексте; пустая схема в RTL; ошибки из
+  конструктора транспорта и компонента.
 - Реестр транспорта по умолчанию (`TestDefaultTransportRegistry`): `TTgHttpTransport` при `uses TgBot`, без
   фабрики — `ETgError` `DefaultTransportMissing`, своя фабрика, стек регистраций, снятие не текущей фабрики не
-  меняет текущую.
+  меняет текущую; запасная фабрика (`TgRegisterFallbackTransport`): своя, зарегистрированная до запасной
+  (порядок `initialization`), остаётся текущей, после её снятия — запасная.
 - Свой транспорт (`TestCustomTransportBase`, 108 проверок): наследник `TTgTransportBase` без сети через
   `TTgApi.Create(ATransport)` — URL метода, JSON-тело, части формы (очищенное имя файла, `ContentType`),
   позиция потоков 0 на каждой попытке после 429, маскировка токена (в том числе URL-кодированного), обёртка
   исключений `Post`, `ETgApiError`/`ETgConflictError`, ответ не JSON, пути скачивания (`..`, UNC) и
   `LocalMode`, статус скачивания, отмена во время `Post`/`Download`.
 - `Tests\NoNet\check.ps1` — сборка и запуск клиента со своим транспортом без `System.Net.*` (см. «Новое»).
+- Дистрибутив (`Tools\Dist\MakeDist.ps1`) включает `Tests\TgBotTests.Proxy.pas` и `Tests\NoNet\` (обязательные
+  файлы): тесты и `check.ps1` собираются и запускаются из архива исходников.
 
 ### Миграция
 
@@ -180,7 +202,8 @@
 | `Proxy.Scheme := 'socks5'` / `'https'`, `Host := 'socks5://…'` | `ETgError`; используйте HTTP-прокси с `CONNECT` (`Scheme := ''`), для SOCKS — локальный HTTP-порт VPN-клиента или конвертер SOCKS → HTTP |
 | `Proxy.Host := 'user:pass@host'` (или с путём) | `ETgError`; `Host := 'host'`, учётные данные — в `UserName`/`Password` |
 | `Proxy.Port := 0` без `'хост:порт'` в `Host` | `ETgError`; укажите `Port` (1–65535) или `Host := 'хост:порт'` |
-| `ToRtlSettings` при своём `record helper for TTgProxySettings` или только с `TgBot.Intf` | `TgProxyToRtlSettings(AProxy)` (`TgBot.Http`) |
+| свой `record helper for TTgProxySettings` | подключайте свой модуль после `TgBot`/`TgBot.Http` (действует последний помощник в области видимости); `ToRtlSettings` тогда скрыт — `TgProxyToRtlSettings(AProxy)` (`TgBot.Http`) |
+| сравнение `TTgApi.Settings.Proxy` с исходными настройками | `Proxy` нормализован (`Host 'h:3128'` → `Host 'h'`, `Port 3128`); сравнивайте с `AProxy.Normalized` |
 
 ## 0.3.0 — 2026-10-16
 

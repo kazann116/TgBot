@@ -1025,12 +1025,15 @@ webhook несколько ботов обслуживает один `TTgWebhoo
   (`socks5://…`, `https://…`), и `Scheme`, кроме пустой и `'http'`, — `ETgError` при создании бота
   (у компонента — при `Active := True`). `Scheme = 'https'` не означает «прокси для `https://`»: на Windows
   WinHTTP с такой схемой начинает TLS с самим прокси, и обычный HTTP-прокси отвечал ошибкой 12029; на Linux
-  и Android схема игнорировалась. Для облачного Bot API (`https://`) достаточно пустой `Scheme`.
+  и Android такая настройка раньше работала (схема игнорировалась), теперь — тоже `ETgError`. Для облачного
+  Bot API (`https://`) достаточно пустой `Scheme`.
   Если у вас только SOCKS — включите в VPN-клиенте локальный HTTP-порт (например, HTTP-порт v2rayN или Clash)
   и укажите его, или поставьте конвертер SOCKS → HTTP (privoxy и т. п.).
 - **Порт обязателен:** `Port` (1–65535) или `'хост:порт'` в `Host` (тогда `Port = 0`). Префикс `http://`
-  в `Host` допустим и отбрасывается; IPv6 — `'[::1]:3128'` или `'::1'` с `Port`. Путь, `логин:пароль@`
-  и пробелы в `Host` — `ETgError`: логин и пароль задаются в `UserName`/`Password`.
+  и один завершающий `/` в `Host` допустимы и отбрасываются (`'http://proxy:3128/'`); IPv6 — `'[::1]:3128'`
+  или `'::1'` с `Port`. Путь (`'http://proxy/path'`), `логин:пароль@` и пробелы в `Host` — `ETgError`: логин
+  и пароль задаются в `UserName`/`Password`. `TTgApi.Settings.Proxy` возвращает уже нормализованную запись
+  (`Host := 'proxy:3128'` читается как `Host = 'proxy'`, `Port = 3128`).
 - **`Scheme` оставьте пустым** (`'http'` равнозначно) — поле сохранено для совместимости, в `THTTPClient`
   схема всегда передаётся пустой.
 - **Пустой `Host`** — прокси бота не задан; на Windows `THTTPClient` действует через системный прокси
@@ -1378,9 +1381,11 @@ begin
   // Клиент на запрос: Post и Download вызываются из разных потоков одновременно.
   Result := THTTPClient.Create;
   try
-    Result.ConnectionTimeout := Settings.ConnectionTimeoutMs;
+    if Settings.ConnectionTimeoutMs > 0 then // иначе — значение THTTPClient по умолчанию
+      Result.ConnectionTimeout := Settings.ConnectionTimeoutMs;
     Result.ResponseTimeout := AResponseTimeoutMs; // для getUpdates база уже прибавила long polling
-    Result.UserAgent := Settings.UserAgent;
+    if Settings.UserAgent <> '' then
+      Result.UserAgent := Settings.UserAgent;
     if Settings.Proxy.IsEnabled then // прокси уже проверен базой (Normalized)
       Result.ProxySettings := TProxySettings.Create(Settings.Proxy.Host, Settings.Proxy.Port,
         Settings.Proxy.UserName, Settings.Proxy.Password);
@@ -1453,7 +1458,10 @@ end;
 - `Post` и `Download` вызываются из разных потоков одновременно — реализация должна быть потокобезопасной
   (клиент на запрос, как в примере, или пул клиентов);
 - исключения HTTP-клиента ловить не нужно: база превращает их в `ETgNetworkError` (токен в тексте скрыт, адрес
-  прокси добавлен) или в `ETgCancelledError`, если операция отменена;
+  прокси добавлен) или в `ETgCancelledError`, если операция отменена. Это касается любого исключения из `Post`/
+  `Download`, кроме `ETgError`: ошибки сборки формы, чтения потока пользователя (`TTgInputFile.FromStream`) и
+  записи в `ADest` тоже приходят как `ETgNetworkError` (текст исходного исключения — в сообщении). Файлы с диска
+  база открывает до `Post`: ошибка открытия — исходное исключение (`EFOpenError`);
 - потоки частей формы (`TTgFormPart.Stream`) не освобождайте и не храните после возврата из `Post`;
 - `ResponseTimeoutMs` запроса уже учитывает long polling; таймаут соединения, `UserAgent` и прокси — в `Settings`
   (прокси проверен конструктором базы, см. [«Прокси»](#прокси));
@@ -1492,8 +1500,41 @@ begin
 end;
 ```
 
-- Действует последняя зарегистрированная фабрика. `TgBot.Http` (его подключает фасад `TgBot`) регистрирует
-  `TTgHttpTransport` в `initialization`; регистрация в программе её перекрывает, а снятие возвращает.
+- Действует последняя зарегистрированная фабрика. Встроенный `TTgHttpTransport` — запасной: `TgBot.Http` (его
+  подключает фасад `TgBot`) регистрирует его в `initialization` в самый низ стека
+  (`TgRegisterFallbackTransport`), поэтому любая регистрация `TgRegisterDefaultTransport` его перекрывает —
+  независимо от порядка `initialization` модулей, — а снятие всех своих фабрик возвращает.
+- Для всей программы регистрируйте фабрику в `initialization` своего модуля и снимайте в `finalization`:
+
+  ```pascal
+  unit MyTransportReg;
+
+  interface
+
+  implementation
+
+  uses
+    TgBot.Intf, TgBot.Transport, MyTransport; // MyTransport — модуль с TMyTransport
+
+  var
+    GFactory: TTgTransportFactory;
+
+  initialization
+    GFactory :=
+      function(const ASettings: TTgHttpSettings): ITgTransport
+      begin
+        Result := TMyTransport.Create(ASettings);
+      end;
+    TgRegisterDefaultTransport(GFactory);
+
+  finalization
+    TgUnregisterDefaultTransport(GFactory);
+    GFactory := nil;
+
+  end.
+  ```
+
+  Модуль достаточно указать в `uses` проекта (`.dpr`) — в любом месте списка, в том числе после `TgBot`.
 - Фабрики сравниваются по ссылке: храните её в переменной (имя функции при каждом присваивании даёт новую
   ссылку). Текущая фабрика — `TgDefaultTransportFactory()` (со скобками). Реестр потокобезопасен, фабрика
   вызывается из любых потоков; ошибку настройки она сообщает исключением (обычно `ETgError`).
@@ -1508,6 +1549,11 @@ end;
 `TgBot.Bot` и `TgBot.Context` (бот `TTgBot`). Проверка — подробная карта компоновки: ключ `-GD` у dcc (в IDE:
 Project Options → Building → Delphi Compiler → Linking → Map file = Detailed); в `.map` не должно быть
 `System.Net.HttpClient`, `System.Net.URLClient`, `System.Net.Mime` и `TgBot.Http`.
+
+Гарантия «без `System.Net`» — только при статической сборке (без runtime-пакетов). С runtime-пакетами
+(Link with runtime packages) в процесс загружается `TgBotRT.bpl` целиком: пакет инициализирует все свои
+модули, включая `TgBot.Http` (а с ним `System.Net.*` из `rtl`), и встроенная запасная фабрика
+регистрируется. Своя фабрика её всё равно перекрывает, но HTTP-стек RTL в процессе есть.
 
 Для самой библиотеки это проверяет `Tests\NoNet\check.ps1`: собирает `Tests\NoNet\TgBotNoNetCheck.dpr`
 (только модули протокола и `System.*`, свой транспорт без сети) с ключом `-GD`, ищет эти модули в `.map` и
@@ -1556,4 +1602,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File Tests\NoNet\check.ps1 -Platf
 - `TTgOptional<T>` (`AllowedUpdates` источников) — обобщённый тип псевдонимом не реэкспортируется (ограничение
   языка), для переменных этого типа нужен `TgBot.Base`;
 - `TTgProxySettings.ToRtlSettings` — его тип `TProxySettings` из `System.Net.URLClient`; это помощник записи в
-  `TgBot.Http` и `TgBot` (без помощника — функция `TgProxyToRtlSettings` из `TgBot.Http`).
+  `TgBot.Http` и `TgBot` (без помощника — функция `TgProxyToRtlSettings` из `TgBot.Http`). Действует один
+  помощник на тип — последний в области видимости: свой `record helper for TTgProxySettings` подключайте после
+  `TgBot`/`TgBot.Http` (тогда `ToRtlSettings` скрыт — используйте `TgProxyToRtlSettings`).
