@@ -73,6 +73,22 @@ type
   ITgLongPollSource = TgBot.Intf.ITgLongPollSource;
 
   /// <summary>
+  ///   Служебное, не часть публичного API (не используйте напрямую): позиция
+  ///   продолжения TTgLongPollSource. TTgBot читает её через Supports, когда
+  ///   отпускает источник при смене Mode, и передаёт новому источнику
+  ///   (TTgLongPollSource.New с AStartOffset) — позиция не теряется.
+  /// </summary>
+  ITgLongPollResume = interface
+    ['{6770A057-803D-4CE2-808F-490D98DD9E85}']
+    /// <summary>
+    ///   offset, с которого продолжит следующий Start: наименьший
+    ///   необработанный update_id последнего запуска, а если таких нет — его
+    ///   Offset; до первого Start — начальный offset (AStartOffset New).
+    /// </summary>
+    function ResumeOffset: Int64;
+  end;
+
+  /// <summary>
   ///   Long polling (getUpdates) в собственном потоке. Настройки задаются до
   ///   Start. События OnConflict/OnError/OnFault вызываются в потоке
   ///   источника, их исключения поглощаются.
@@ -94,7 +110,7 @@ type
   ///   Создавайте через New и храните как ITgLongPollSource; не храните
   ///   ссылку на класс (объект освобождается по счётчику ссылок).
   /// </summary>
-  TTgLongPollSource = class(TInterfacedObject, ITgUpdateSource, ITgLongPollSource)
+  TTgLongPollSource = class(TInterfacedObject, ITgUpdateSource, ITgLongPollSource, ITgLongPollResume)
   private
     FLock: TCriticalSection;
     FTransport: ITgTransport;
@@ -157,7 +173,14 @@ type
     ///   не храните ссылку на класс.
     /// </summary>
     class function New(const ATransport: ITgTransport;
-      const AParentCancel: ITgCancellation = nil): ITgLongPollSource; static;
+      const AParentCancel: ITgCancellation = nil): ITgLongPollSource; overload; static;
+    /// <summary>
+    ///   То же, но первый getUpdates пойдёт с offset = AStartOffset (0 и
+    ///   меньше — без offset): продолжение приёма с позиции прежнего источника
+    ///   (ITgLongPollResume.ResumeOffset), например после смены режима бота.
+    /// </summary>
+    class function New(const ATransport: ITgTransport; const AParentCancel: ITgCancellation;
+      AStartOffset: Int64): ITgLongPollSource; overload; static;
     /// <summary>
     ///   Не блокирует: запрашивает остановку (отмена висящего getUpdates) и
     ///   ждёт поток не дольше 30 мс. Незавершившийся поток держит своё
@@ -175,6 +198,12 @@ type
     ///   при Stop = False). True — поток завершён или не запускался.
     /// </summary>
     function WaitForThread(AMs: Cardinal): Boolean;
+    /// <summary>
+    ///   С какого offset продолжит следующий Start (ITgLongPollResume):
+    ///   наименьший необработанный update_id последнего запуска, иначе его
+    ///   Offset; до первого Start — начальный offset New.
+    /// </summary>
+    function ResumeOffset: Int64;
     /// <summary>Состояние источника.</summary>
     property State: TTgSourceState read GetState;
     /// <summary>offset следующего запроса getUpdates (последний принятый update_id + 1; 0 — не было).</summary>
@@ -927,6 +956,18 @@ begin
   Result := TTgLongPollSource.Create(ATransport, AParentCancel);
 end;
 
+class function TTgLongPollSource.New(const ATransport: ITgTransport;
+  const AParentCancel: ITgCancellation; AStartOffset: Int64): ITgLongPollSource;
+var
+  LSource: TTgLongPollSource;
+begin
+  LSource := TTgLongPollSource.Create(ATransport, AParentCancel);
+  // До передачи наружу: ссылка на класс живёт только здесь, без исключений.
+  // Первый Start (ядра ещё нет) начнёт с FResumeOffset.
+  LSource.FResumeOffset := Max(AStartOffset, 0);
+  Result := LSource;
+end;
+
 destructor TTgLongPollSource.Destroy;
 var
   LCore: ITgPollCore;
@@ -1038,6 +1079,26 @@ begin
   LCore := CurrentCore;
   Result := not Assigned(LCore) or
     (LCore.Done.WaitFor(AMs) = TWaitResult.wrSignaled);
+end;
+
+function TTgLongPollSource.ResumeOffset: Int64;
+var
+  LCore: ITgPollCore;
+begin
+  // Как Start: позиция — по ядру последнего запуска (в т.ч. завершённого),
+  // учитывая обработанное после Stop (дренаж диспетчера).
+  LCore := CurrentCore;
+  if Assigned(LCore) then
+    Result := LCore.ResumeOffset
+  else
+  begin
+    FLock.Enter;
+    try
+      Result := FResumeOffset;
+    finally
+      FLock.Leave;
+    end;
+  end;
 end;
 
 function TTgLongPollSource.GetOffset: Int64;

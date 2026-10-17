@@ -125,18 +125,25 @@ type
     // Источники и диспетчер — только через интерфейсы (объекты со счётчиком
     // ссылок). Источник создаётся при Start только для выбранного Mode (до
     // первого Start — nil) и переиспользуется следующими запусками в том же
-    // режиме; источник другого режима отпускается (SelectSource).
+    // режиме; источник другого режима бот отпускает (SelectSource).
     FPoll: ITgLongPollSource;
     FWebhook: ITgWebhookSource;
-    // Приёмник webhook (создаётся один раз в Init): постоянный переходник
-    // только с Accept — передаёт тело текущему FWebhook (нет источника —
-    // Unavailable); из него нельзя получить ITgWebhookSource (Supports).
-    // Destroy отцепляет его от источника: пережив бота, он не держит ни
-    // источник, ни ядро.
-    FWebhookReceiver: ITgWebhookReceiver;
+    // Позиция long polling (ITgLongPollResume.ResumeOffset), сохранённая при
+    // отпускании FPoll сменой Mode: новый источник продолжает с неё.
+    FPollResumeOffset: Int64;
+    // Приёмник webhook (создаётся один раз в Init): постоянный переходник —
+    // передаёт тело текущему FWebhook (нет источника — Unavailable). Наружу
+    // отдаётся как ITgWebhookReceiver: ни ITgWebhookSource, ни SetTarget из
+    // него не получить (ITgBotWebhookReceiver без GUID). Destroy отцепляет
+    // его от источника: пережив бота, он не держит ни источник, ни ядро.
+    FWebhookReceiver: ITgBotWebhookReceiver;
     FDispatcher: ITgUpdateDispatcher;
-    // Источник текущего (последнего) запуска: FPoll или FWebhook.
+    // Источник текущего (последнего) запуска: FPoll или FWebhook. Меняется
+    // только под FSourceLock (SetActiveSource): GetSourceState читает его из
+    // любого потока. Start/Stop/Destroy в потоке-владельце читают без
+    // блокировки — пишет только он сам.
     FActiveSource: ITgUpdateSource;
+    FSourceLock: TCriticalSection;
     FMode: TTgReceiveMode;
     FWebhookUrl: string;
     FWebhookSecretToken: string;
@@ -177,11 +184,22 @@ type
     procedure PrepareWebhook;
     /// <summary>
     ///   Источник выбранного Mode — FActiveSource: создаёт его, если нет
-    ///   (первый запуск в этом режиме), и отпускает источник другого режима
-    ///   (он остановлен прежним Stop). Webhook-источник назначается приёмнику
+    ///   (первый запуск в этом режиме), и снимает ссылки бота на источник
+    ///   другого режима (он остановлен прежним Stop). Сам объект
+    ///   освобождается с последней ссылкой: её может ещё держать обработчик
+    ///   подтверждения диспетчера (до назначения нового в Start) или ядро
+    ///   диспетчера прежнего запуска с отпущенным (Stop = False) потоком
+    ///   обработчика — до его завершения. Позиция long polling при этом
+    ///   сохраняется (FPollResumeOffset) и передаётся следующему источнику
+    ///   long polling. Webhook-источник назначается приёмнику
     ///   WebhookReceiver, при отпускании — снимается с него.
     /// </summary>
     procedure SelectSource;
+    /// <summary>
+    ///   Заменяет FActiveSource под FSourceLock; прежний источник отпускается
+    ///   вне блокировки (его деструктор может ждать поток).
+    /// </summary>
+    procedure SetActiveSource(const ASource: ITgUpdateSource);
     /// <summary>Назначает приёмнику WebhookReceiver источник ASource (nil — Unavailable).</summary>
     procedure SetReceiverTarget(const ASource: ITgWebhookSource);
     procedure WarnFilteredHandlers;
@@ -243,7 +261,8 @@ type
     ///   Источник обновлений создаётся здесь и только для текущего Mode (long
     ///   polling или webhook); следующие запуски в том же режиме используют
     ///   его же (память дедупликации webhook сохраняется), а при смене Mode
-    ///   источник прежнего режима отпускается.
+    ///   источник прежнего режима отпускается (позиция long polling
+    ///   сохраняется в боте и переходит к новому источнику).
     /// </summary>
     procedure Start;
     /// <summary>
@@ -342,7 +361,10 @@ type
     ///   Читается при Start: источник создаётся только для выбранного режима,
     ///   поэтому меняйте Mode при остановленном боте (смена во время работы
     ///   действует со следующего Start). При смене источник прежнего режима
-    ///   отпускается (память дедупликации webhook — вместе с ним).
+    ///   отпускается (память дедупликации webhook — вместе с ним); позиция
+    ///   long polling (offset, с которого продолжить getUpdates) сохраняется
+    ///   в боте: после Polling → Webhook → Polling уже обработанные
+    ///   обновления не приходят повторно.
     ///   Переход Webhook → Polling: getUpdates при активном webhook получает
     ///   409 — задайте AutoDeleteWebhook или DeleteWebhookOnStop.
     /// </summary>
@@ -424,6 +446,9 @@ type
     /// <summary>
     ///   Состояние источника текущего режима (long polling или webhook);
     ///   Faulted — приём остановлен ошибкой. До первого Start — Idle.
+    ///   Чтение потокобезопасно (в т.ч. во время Start со сменой Mode): ссылка
+    ///   на источник берётся под блокировкой и держится на время чтения. Не
+    ///   вызывайте во время и после Free бота.
     /// </summary>
     property SourceState: TTgSourceState read GetSourceState;
     /// <summary>Где выполнять обработчики, по умолчанию Worker.</summary>
@@ -552,18 +577,20 @@ uses
   System.Diagnostics,
   System.Math,
   TgBot.Consts,
-  TgBot.Router;
+  TgBot.Router,
+  TgBot.Updates.Polling;
 
 type
   /// <summary>
   ///   Приёмник webhook бота (TTgBot.WebhookReceiver): постоянный переходник,
-  ///   реализует только ITgWebhookReceiver и передаёт Accept назначенному
+  ///   реализует ITgWebhookReceiver и служебный ITgBotWebhookReceiver (без
+  ///   GUID — через Supports недоступен) и передаёт Accept назначенному
   ///   ботом webhook-источнику; без источника — Unavailable. Бот назначает
   ///   источник при Start в Mode = Webhook и снимает при смене режима и при
   ///   Free, поэтому приёмник, переживший бота, не держит ни источник, ни
   ///   ядро бота.
   /// </summary>
-  TTgBotWebhookReceiver = class(TInterfacedObject, ITgWebhookReceiver)
+  TTgBotWebhookReceiver = class(TInterfacedObject, ITgWebhookReceiver, ITgBotWebhookReceiver)
   private
     FLock: TCriticalSection;
     FTarget: ITgWebhookSource;
@@ -680,6 +707,7 @@ begin
   // Клиент переходит во владение ядра (если ядро не создано — освобождается).
   FCore := TgCreateBotCore(AApi);
   FRunWake := TEvent.Create(nil, False, False, '');
+  FSourceLock := TCriticalSection.Create;
   FDelivery := TTgDelivery.Worker;
   FMaxParallel := TgDefaultMaxParallel;
   FQueueCapacity := TgDefaultQueueCapacity;
@@ -706,19 +734,44 @@ end;
 
 procedure TTgBot.SetReceiverTarget(const ASource: ITgWebhookSource);
 begin
-  (FWebhookReceiver as TTgBotWebhookReceiver).SetTarget(ASource);
+  FWebhookReceiver.SetTarget(ASource);
+end;
+
+procedure TTgBot.SetActiveSource(const ASource: ITgUpdateSource);
+var
+  LOld: ITgUpdateSource;
+begin
+  FSourceLock.Enter;
+  try
+    LOld := FActiveSource;
+    FActiveSource := ASource;
+  finally
+    FSourceLock.Leave;
+  end;
+  // Прежний источник (LOld) отпускается при выходе — вне блокировки.
 end;
 
 procedure TTgBot.SelectSource;
+var
+  LResume: ITgLongPollResume;
 begin
   // Источники прерываются и отменой клиента (Api.Shutdown при Free бота).
   // События источника — в его потоке; захватывается только ядро. OnFault
   // (с номером запуска) назначает Start.
   if FMode = TTgReceiveMode.Webhook then
   begin
-    // Long polling остановлен прежним Stop; его отпущенный поток (Stop =
-    // False) держит своё ядро сам.
-    FPoll := nil;
+    if Assigned(FPoll) then
+    begin
+      // Long polling остановлен прежним Stop (дренаж диспетчера — тоже):
+      // позиция запоминается, чтобы новый источник long polling не получил
+      // заново обработанное, но не подтверждённое серверу (итоговый
+      // getUpdates мог не пройти). Отпущенный поток опроса (Stop = False)
+      // держит своё ядро опроса сам; об освобождении объекта — см. описание.
+      if Supports(FPoll, ITgLongPollResume, LResume) then
+        FPollResumeOffset := LResume.ResumeOffset;
+      LResume := nil;
+      FPoll := nil;
+    end;
     if not Assigned(FWebhook) then
     begin
       // setWebhook/deleteWebhook — через тот же транспорт, прерываются Free;
@@ -728,23 +781,27 @@ begin
       FWebhook.OnError := TgNewSourceErrorHandler(FCore);
       SetReceiverTarget(FWebhook);
     end;
-    FActiveSource := FWebhook;
+    SetActiveSource(FWebhook);
   end
   else
   begin
     if Assigned(FWebhook) then
     begin
-      // Приёмник отвечает Unavailable, как и остановленный источник.
+      // Приёмник отвечает Unavailable, как и остановленный источник. Объект
+      // источника может ещё держать выполняющийся Accept (до возврата) —
+      // см. описание SelectSource.
       SetReceiverTarget(nil);
       FWebhook := nil;
     end;
     if not Assigned(FPoll) then
     begin
-      FPoll := TTgLongPollSource.New(FCore.Api.Transport, FCore.Api.CancelToken);
+      // Продолжение с позиции источника, отпущенного сменой Mode (0 — первый
+      // запуск: getUpdates без offset).
+      FPoll := TTgLongPollSource.New(FCore.Api.Transport, FCore.Api.CancelToken, FPollResumeOffset);
       FPoll.OnConflict := TgNewConflictHandler(FCore);
       FPoll.OnError := TgNewSourceErrorHandler(FCore);
     end;
-    FActiveSource := FPoll;
+    SetActiveSource(FPoll);
   end;
 end;
 
@@ -790,13 +847,16 @@ begin
   // Деструкторы диспетчера и источника не ждут отпущенные (Stop = False)
   // потоки: те держат свои ядра сами и освобождают их по возврату.
   FDispatcher := nil;
-  FActiveSource := nil;
+  // FActiveSource задан только при созданном FSourceLock (Init).
+  if Assigned(FSourceLock) then
+    SetActiveSource(nil);
   FPoll := nil;
   FWebhookReceiver := nil;
   FWebhook := nil;
   // Последняя ссылка на ядро (если обработчиков и контекстов нет) — клиент
   // освобождается здесь; иначе — с последним обработчиком/контекстом.
   FCore := nil;
+  FreeAndNil(FSourceLock);
   FreeAndNil(FRunWake);
   inherited Destroy;
 end;
@@ -900,10 +960,20 @@ begin
 end;
 
 function TTgBot.GetSourceState: TTgSourceState;
+var
+  LSource: ITgUpdateSource;
 begin
+  // Из любого потока: копия ссылки под FSourceLock держит источник, даже если
+  // Start в другом потоке параллельно заменяет его (смена Mode).
+  FSourceLock.Enter;
+  try
+    LSource := FActiveSource;
+  finally
+    FSourceLock.Leave;
+  end;
   // До первого Start источника нет.
-  if Assigned(FActiveSource) then
-    Result := FActiveSource.State
+  if Assigned(LSource) then
+    Result := LSource.State
   else
     Result := TTgSourceState.Idle;
 end;
