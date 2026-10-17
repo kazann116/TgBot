@@ -62,7 +62,8 @@ begin
     if Settings.ConnectionTimeoutMs > 0 then
       Result.ConnectionTimeout := Settings.ConnectionTimeoutMs;
     Result.ResponseTimeout := AResponseTimeoutMs; // для getUpdates база уже прибавила long polling
-    Result.UserAgent := Settings.UserAgent;
+    if Settings.UserAgent <> '' then
+      Result.UserAgent := Settings.UserAgent;
     if Settings.Proxy.IsEnabled then // прокси уже проверен базой (Normalized)
       Result.ProxySettings := TProxySettings.Create(Settings.Proxy.Host, Settings.Proxy.Port,
         Settings.Proxy.UserName, Settings.Proxy.Password);
