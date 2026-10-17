@@ -18,18 +18,22 @@
 12. [Демо-проекты](#12-демо-проекты)
 13. [Язык сообщений и перевод](#13-язык-сообщений-и-перевод)
 14. [Правила владения](#14-правила-владения)
+15. [Свой транспорт](#15-свой-транспорт)
+16. [Модуль контрактов TgBot.Intf](#16-модуль-контрактов-tgbotintf)
 
 ---
 
 ## 1. Что это
 
 - **Telegram Bot API 10.3, весь API.** Все типы и методы сгенерированы по официальной спецификации генератором
-  `Tools\TgBotGen` (константа `TgBotApiVersion`). Версия библиотеки — `TgBotVersion` (сейчас 0.3.0).
+  `Tools\TgBotGen` (константа `TgBotApiVersion`). Версия библиотеки — `TgBotVersion` (сейчас 0.4.0).
 - **Платформы:** Win32, Win64, Linux64, Android (32 и 64 бит). iOS не поддерживается.
 - **Delphi 10.4 Sydney и новее.** Проверено на 10.4 и 12.
 - **Зависимости.** Ядро использует только RTL (`System.Net.HttpClient`, `System.JSON`, `System.Threading`).
   Indy нужен только встроенному webhook-серверу `TTgWebhookServer` (модуль `TgBot.Webhook`, пакет
-  `TgBotIndyRT`).
+  `TgBotIndyRT`). HTTP-клиент заменяем: свой транспорт (Indy, Synapse, mORMot…) — наследник
+  `TTgTransportBase` с двумя методами, и тогда `System.Net.*` в программу не попадает
+  ([раздел 15](#15-свой-транспорт)).
 - **Что внутри:**
   - `TTgApi` — клиент Bot API: каждый метод в трёх вариантах (обычный, `Try*`, `*Async`);
   - `TTgBot` — бот в коде: приём обновлений (long polling или webhook), маршрутизатор команд и кнопок,
@@ -42,13 +46,16 @@
 `TgBot.Component`, для webhook-сервера — `TgBot.Webhook`.
 
 Карта модулей `Source` (для чтения исходников; кроме `TgBot`, `TgBot.Component` и `TgBot.Webhook` указывать их
-в `uses` не нужно):
+в `uses` не нужно — исключение составляют свой транспорт и свои реализации контрактов, разделы 15 и 16):
 
 | Модуль | Что содержит |
 |---|---|
 | `TgBot` | фасад: реэкспорт публичных типов псевдонимами, константы версий |
 | `TgBot.Types` | сгенерированный слой Bot API (`Generated\Gen.*.inc`): интерфейсы `ITg*`, фабрики, Options, `TTgApi` |
-| `TgBot.Base`, `TgBot.Json`, `TgBot.Http`, `TgBot.Dto`, `TgBot.Core` | базовые типы и отмена, JSON, HTTP-транспорт, базы DTO, ядро клиента |
+| `TgBot.Base`, `TgBot.Json`, `TgBot.Dto`, `TgBot.Core` | базовые типы и отмена, JSON, базы DTO, ядро клиента |
+| `TgBot.Intf` | контракты без реализаций: интерфейсы транспорта, приёма обновлений, источников, диспетчера, хранилища состояния; записи настроек (`TTgHttpSettings`, `TTgProxySettings`) ([раздел 16](#16-модуль-контрактов-tgbotintf)) |
+| `TgBot.Transport` | база транспорта `TTgTransportBase` (протокол Bot API без HTTP-клиента) и реестр транспорта по умолчанию ([раздел 15](#15-свой-транспорт)) |
+| `TgBot.Http` | HTTP-транспорт по умолчанию `TTgHttpTransport` на `System.Net.HttpClient`; регистрируется сам (`initialization`), его подключает фасад `TgBot` |
 | `TgBot.Consts` | служебный: все тексты сообщений библиотеки (`resourcestring`, пары RU/EN); в прикладном коде не подключайте ([раздел 13](#13-язык-сообщений-и-перевод)) |
 | `TgBot.Keyboards`, `TgBot.Context` | клавиатуры `TTgKeyboard`, контекст обработчика `ITgContext` |
 | `TgBot.Bot`, `TgBot.Bot.Core`, `TgBot.Router` | бот `TTgBot`, его внутреннее ядро и маршрутизатор (служебные) |
@@ -1035,6 +1042,10 @@ webhook несколько ботов обслуживает один `TTgWebhoo
   напрямую, минуя прокси.
 - **Ошибка сети через прокси** — текст `ETgNetworkError` заканчивается адресом прокси («…; запрос шёл через
   прокси 192.168.1.1:3128»): сверьте хост и порт.
+- **Свой транспорт** ([раздел 15](#15-свой-транспорт)): настройки прокси проверяет конструктор
+  `TTgTransportBase`, в `Post`/`Download` поле `Settings.Proxy` уже нормализовано (`Host` без `http://` и
+  порта, IPv6 — в `[…]`; `Port` задан). Для `THTTPClient` — `Settings.Proxy.ToRtlSettings`
+  (`uses TgBot.Http` или `TgBot`) или функция `TgProxyToRtlSettings`.
 
 ### Local Bot API server
 
@@ -1146,6 +1157,9 @@ TgBotTests.exe
 - `TG_ONLY=<подстрока>` — выполнить только тесты, в имени которых есть подстрока (`set TG_ONLY=Webhook`).
 - `TG_ONLY=STRESS` — долгое нагрузочное воспроизведение (только явно).
 
+`Tests\NoNet\check.ps1` проверяет, что клиент со своим транспортом собирается без HTTP-стека RTL
+([раздел 15](#как-проверить-что-systemnet-не-попал-в-программу)).
+
 ### Обновление Bot API (TgBotGen)
 
 `Tools\TgBotGen\TgBotGen.dpr` — генератор `Source\Generated\Gen.*.inc` по HTML-странице документации (только
@@ -1172,7 +1186,7 @@ Bin\TgBotGen.exe --gen Spec\api-<версия>.html --out ..\..\Source\Generated
 
 ## 12. Демо-проекты
 
-Папка `Demos`, группа `Demos\Demos.groupproj` (02–04). Токен — из `TGBOT_TOKEN` (в VCL-демо можно ввести в
+Папка `Demos`, группа `Demos\Demos.groupproj` (02–05). Токен — из `TGBOT_TOKEN` (в VCL-демо можно ввести в
 форме); без него консольные демо печатают подсказку и завершаются.
 
 | Демо | Что показывает |
@@ -1181,6 +1195,7 @@ Bin\TgBotGen.exe --gen Spec\api-<версия>.html --out ..\..\Source\Generated
 | `02_EchoBot` | консольный бот на `TTgBot`: команды и меню, инлайн-кнопки, `Callback`/`CallbackPrefix` (листание страниц), `TextMatch`, состояние диалога, `Delivery = Worker`, `Run` |
 | `03_VclBot` | VCL-форма с компонентом `TTelegramBot` из DFM: коллекция `Commands`, события, журнал, отправка `SendMessageAsync` в последний чат; `--selftest` — самопроверка без сети |
 | `04_WebhookBot` | консольный webhook-бот: `TTelegramBot` (`Mode = Webhook`) + `TTgWebhookServer`; `TGBOT_PUBLIC_URL` (https), `TGBOT_PORT`; Caddy/cloudflared |
+| `05_CustomTransport` | свой транспорт: наследник `TTgTransportBase` на `THTTPClient` без `TgBot.Http` и фасада, журнал запросов (метод, статус, время), регистрация транспортом по умолчанию; `getMe`, при `TGBOT_CHAT_ID` — сообщение, документ (multipart), `getFile` и скачивание ([раздел 15](#15-свой-транспорт)) |
 
 ## 13. Язык сообщений и перевод
 
@@ -1324,3 +1339,221 @@ TgBotTests.exe
 
 Без символа эти проверки пропускаются; остаются косвенные (транспорт отпущен) и отчёт менеджера памяти об
 утечках. В свои программы `TGBOT_TESTHOOKS` не добавляйте.
+
+## 15. Свой транспорт
+
+Транспорт выполняет запросы Bot API (`ITgTransport`). По умолчанию это `TTgHttpTransport` (модуль `TgBot.Http`,
+`System.Net.HttpClient`). Свой транспорт нужен, если в проекте уже есть другой HTTP-клиент (Indy, Synapse,
+mORMot, ICS), нужен журнал или особая маршрутизация запросов либо программа не должна содержать `System.Net.*`.
+
+Протокол Bot API берёт на себя база `TTgTransportBase` (модуль `TgBot.Transport`, без `System.Net.*`): URL
+метода, JSON-тело и части формы multipart, таймаут ответа (для `getUpdates` — с запасом на long polling), разбор
+ответа и исключения `ETgApiError`/`ETgConflictError`, повтор 429, лимиты, отмена, `DownloadFile` с проверками
+пути и `LocalMode`, маскировка токена и адрес прокси в текстах ошибок. Наследнику остаются два метода:
+
+| Метод | Что делает |
+|---|---|
+| `Post(const ARequest: TTgPostRequest): TTgHttpResponse` | один POST на `ARequest.Url`: тело — `Body` с `ContentType` или форма multipart из `Parts` (`IsMultipart = True`, порядок частей сохраняйте); вернуть статус и тело ответа — любой статус не ошибка, тело разбирает база |
+| `Download(const ARequest: TTgDownloadRequest; ADest: TStream): Integer` | GET `ARequest.Url` в `ADest`, вернуть HTTP-статус (не 200 — ошибку скачивания сформирует база) |
+
+Пример — транспорт на `THTTPClient` без `TgBot.Http` (полная версия с журналом запросов —
+`Demos\05_CustomTransport`; на Indy пишется так же — `TIdHTTP` и `TIdMultiPartFormDataStream`):
+
+```pascal
+uses
+  System.SysUtils, System.Classes, System.Net.URLClient, System.Net.HttpClient, System.Net.Mime,
+  TgBot.Intf, TgBot.Transport, TgBot.Types;
+
+type
+  TMyTransport = class(TTgTransportBase)
+  private
+    function NewClient(AResponseTimeoutMs: Integer): THTTPClient;
+  protected
+    function Post(const ARequest: TTgPostRequest): TTgHttpResponse; override;
+    function Download(const ARequest: TTgDownloadRequest; ADest: TStream): Integer; override;
+  end;
+
+function TMyTransport.NewClient(AResponseTimeoutMs: Integer): THTTPClient;
+begin
+  // Клиент на запрос: Post и Download вызываются из разных потоков одновременно.
+  Result := THTTPClient.Create;
+  try
+    Result.ConnectionTimeout := Settings.ConnectionTimeoutMs;
+    Result.ResponseTimeout := AResponseTimeoutMs; // для getUpdates база уже прибавила long polling
+    Result.UserAgent := Settings.UserAgent;
+    if Settings.Proxy.IsEnabled then // прокси уже проверен базой (Normalized)
+      Result.ProxySettings := TProxySettings.Create(Settings.Proxy.Host, Settings.Proxy.Port,
+        Settings.Proxy.UserName, Settings.Proxy.Password);
+  except
+    Result.Free;
+    raise;
+  end;
+end;
+
+function TMyTransport.Post(const ARequest: TTgPostRequest): TTgHttpResponse;
+var
+  LClient: THTTPClient;
+  LForm: TMultipartFormData;
+  LBody, LContent: TBytesStream;
+  LPart: TTgFormPart;
+begin
+  LClient := nil;
+  LForm := nil;
+  LBody := nil;
+  LContent := TBytesStream.Create;
+  try
+    LClient := NewClient(ARequest.ResponseTimeoutMs);
+    if ARequest.IsMultipart then
+    begin
+      // Поля и файлы в заданном порядке; потоки файлов принадлежат базе — не освобождать.
+      LForm := TMultipartFormData.Create;
+      for LPart in ARequest.Parts do
+        if LPart.IsFile then
+{$IF CompilerVersion >= 36}
+          LForm.AddStream(LPart.Name, LPart.Stream, False, LPart.FileName, LPart.ContentType)
+{$ELSE}
+          LForm.AddStream(LPart.Name, LPart.Stream, LPart.FileName, LPart.ContentType)
+{$ENDIF}
+        else
+          LForm.AddField(LPart.Name, LPart.Value);
+      Result.StatusCode := LClient.Post(ARequest.Url, LForm, LContent).StatusCode;
+    end
+    else
+    begin
+      LBody := TBytesStream.Create(ARequest.Body);
+      Result.StatusCode := LClient.Post(ARequest.Url, LBody, LContent,
+        [TNetHeader.Create('Content-Type', ARequest.ContentType)]).StatusCode;
+    end;
+    // Любой статус — не ошибка: тело ({"ok":false,...}) разбирает база.
+    Result.Body := Copy(LContent.Bytes, 0, LContent.Size);
+  finally
+    LClient.Free;
+    LForm.Free;
+    LBody.Free;
+    LContent.Free;
+  end;
+end;
+
+function TMyTransport.Download(const ARequest: TTgDownloadRequest; ADest: TStream): Integer;
+var
+  LClient: THTTPClient;
+begin
+  // Статус, отличный от 200, база превратит в ETgNetworkError.
+  LClient := NewClient(ARequest.ResponseTimeoutMs);
+  try
+    Result := LClient.Get(ARequest.Url, ADest).StatusCode;
+  finally
+    LClient.Free;
+  end;
+end;
+```
+
+Контракт наследника:
+
+- `Post` и `Download` вызываются из разных потоков одновременно — реализация должна быть потокобезопасной
+  (клиент на запрос, как в примере, или пул клиентов);
+- исключения HTTP-клиента ловить не нужно: база превращает их в `ETgNetworkError` (токен в тексте скрыт, адрес
+  прокси добавлен) или в `ETgCancelledError`, если операция отменена;
+- потоки частей формы (`TTgFormPart.Stream`) не освобождайте и не храните после возврата из `Post`;
+- `ResponseTimeoutMs` запроса уже учитывает long polling; таймаут соединения, `UserAgent` и прокси — в `Settings`
+  (прокси проверен конструктором базы, см. [«Прокси»](#прокси));
+- прерывать идущий запрос по отмене — по желанию: `ARequest.Cancel.Register(…)` (`Cancel` может быть `nil`).
+  Без этого запрос завершится по таймауту ответа; ожидания базы (лимиты, 429) прерываются сразу;
+- URL содержит токен бота: в журнал пишите `ARequest.Method`, а тексты исключений пропускайте через
+  `MaskToken` (защищённый метод базы).
+
+### Подключение транспорта
+
+Явно — транспорт только этого клиента или бота (`TTgApi.Create(ATransport)`, `TTgBot.Create(ATransport)`):
+
+```pascal
+  LApi := TTgApi.Create(TMyTransport.Create(TTgHttpSettings.Create(LToken)) as ITgTransport);
+  LBot := TTgBot.Create(TMyTransport.Create(TTgHttpSettings.Create(LToken)) as ITgTransport);
+```
+
+Транспортом по умолчанию — для всех клиентов и ботов, созданных по токену или настройкам
+(`TTgApi.Create(Token)`, `TTgBot.Create(Token/Settings)`, компонент `TTelegramBot`):
+
+```pascal
+var
+  LFactory: TTgTransportFactory;
+begin
+  LFactory :=
+    function(const ASettings: TTgHttpSettings): ITgTransport
+    begin
+      Result := TMyTransport.Create(ASettings);
+    end;
+  TgRegisterDefaultTransport(LFactory);
+  try
+    // TTgApi.Create(LToken), TTgBot.Create(LToken) — с TMyTransport
+  finally
+    TgUnregisterDefaultTransport(LFactory); // та же ссылка, что при регистрации
+  end;
+end;
+```
+
+- Действует последняя зарегистрированная фабрика. `TgBot.Http` (его подключает фасад `TgBot`) регистрирует
+  `TTgHttpTransport` в `initialization`; регистрация в программе её перекрывает, а снятие возвращает.
+- Фабрики сравниваются по ссылке: храните её в переменной (имя функции при каждом присваивании даёт новую
+  ссылку). Текущая фабрика — `TgDefaultTransportFactory()` (со скобками). Реестр потокобезопасен, фабрика
+  вызывается из любых потоков; ошибку настройки она сообщает исключением (обычно `ETgError`).
+- Без `TgBot.Http`/`TgBot` в программе и без регистрации клиент и бот по токену выбрасывают `ETgError`
+  «Транспорт по умолчанию не зарегистрирован…» — передайте транспорт явно или зарегистрируйте фабрику.
+
+### Как проверить, что System.Net не попал в программу
+
+Чтобы `System.Net.*` не попал в программу, в её `uses` не должно быть фасада `TgBot` и `TgBot.Http`: они
+регистрируют `TTgHttpTransport` и тянут `System.Net.HttpClient`. Подключайте модули напрямую: `TgBot.Intf`,
+`TgBot.Base`, `TgBot.Transport`, `TgBot.Types` (клиент `TTgApi` и типы Bot API), при необходимости
+`TgBot.Bot` и `TgBot.Context` (бот `TTgBot`). Проверка — подробная карта компоновки: ключ `-GD` у dcc (в IDE:
+Project Options → Building → Delphi Compiler → Linking → Map file = Detailed); в `.map` не должно быть
+`System.Net.HttpClient`, `System.Net.URLClient`, `System.Net.Mime` и `TgBot.Http`.
+
+Для самой библиотеки это проверяет `Tests\NoNet\check.ps1`: собирает `Tests\NoNet\TgBotNoNetCheck.dpr`
+(только модули протокола и `System.*`, свой транспорт без сети) с ключом `-GD`, ищет эти модули в `.map` и
+запускает программу (фабрики по умолчанию нет, `GetMe` проходит через свой транспорт).
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File Tests\NoNet\check.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File Tests\NoNet\check.ps1 -Platform Win32 -BdsVersion 21.0
+```
+
+- Компилятор (первое найденное): `-Compiler` (путь к `dcc64.exe`/`dcc32.exe`), `-BdsRoot` (папка RAD Studio),
+  переменная `BDS` (её задаёт `rsvars.bat`), реестр — версия `-BdsVersion` (23.0 — Delphi 12, 22.0 — 11,
+  21.0 — 10.4) или последняя установленная. Платформа — `-Platform Win64` (по умолчанию) или `Win32`.
+- Вывод — `%TEMP%\TgBotNoNet` (`-OutDir`). Код выхода: 0 — PASS, 1 — FAIL (найден запрещённый модуль,
+  ошибка сборки или программы), 2 — компилятор не найден или неверные параметры.
+
+## 16. Модуль контрактов TgBot.Intf
+
+`TgBot.Intf` — интерфейсы и записи настроек библиотеки без реализаций. Зависит только от `TgBot.Base`,
+`TgBot.Json` и RTL (`System.SysUtils`, `System.Classes`, `System.JSON`): ни `System.Net.*`, ни Indy, ни ядра
+клиента и модулей приёма обновлений.
+
+| Группа | Типы |
+|---|---|
+| Транспорт | `ITgTransport`, `ITgCancellableTransport`, `ITgHttpSettingsProvider` (служебный); записи `TTgHttpSettings`, `TTgProxySettings` (`Create`, `IsEnabled`, `Normalized`), `TTgHttpResponse`; константы `TgDefaultApiUrl`, `TgDefaultConnectionTimeoutMs`, `TgDefaultResponseTimeoutMs`, `TgDefaultMaxRetries`, `TgDefaultMaxRetryAfterSec`, `TgDefaultGlobalRatePerSec`, `TgDefaultPerChatIntervalMs` |
+| Приём обновлений | `ITgRawUpdate`, `ITgUpdateSink`, `ITgTimedUpdateSink`, `ITgWebhookReceiver`, `ITgUpdateSource`, `ITgPollTimer`; перечисления `TTgSourceState`, `TTgAckPolicy`, `TTgDelivery`, `TTgWebhookResult`; обработчики `TTgRawHandler`, `TTgRawErrorHandler`, `TTgConflictHandler` |
+| Источники и диспетчер | `ITgLongPollSource`, `ITgWebhookSource`, `ITgUpdateDispatcher` |
+| Состояние диалогов | `ITgStateStorage` |
+| Псевдонимы из сигнатур | `ITgCancellation`, `ITgCancellationSource`, `TTgInputFile` (`TgBot.Base`), `TTgParams` (`TgBot.Json`) |
+
+Когда подключать:
+
+- **своя реализация контракта:** транспорт (вместе с `TgBot.Transport`, [раздел 15](#15-свой-транспорт)),
+  хранилище состояния `ITgStateStorage` (назначается в `TTgBot.StateStorage`), свой источник или приёмник
+  обновлений;
+- **код, которому нужны только абстракции:** модуль логики или тестов принимает `ITgTransport`,
+  `ITgStateStorage` и т. п. и не зависит от реализаций и HTTP-клиента;
+- **прикладному коду бота** обычно достаточно `TgBot`: он реэкспортирует те же типы. `TgBot` и `TgBot.Intf`
+  можно подключать вместе — в `TgBot`, `TgBot.Http`, `TgBot.Updates.*` и `TgBot.State` объявлены псевдонимы
+  тех же типов (те же GUID; присваивания и `Supports` работают).
+
+Реализации остались в прежних модулях: `TTgHttpTransport` — `TgBot.Http`, `TTgMemoryStateStorage` —
+`TgBot.State`, источники и диспетчер с фабриками `New` — `TgBot.Updates.Polling`, `TgBot.Updates.WebhookSource`,
+`TgBot.Updates.Dispatcher`. В `TgBot.Intf` нет:
+
+- `TTgOptional<T>` (`AllowedUpdates` источников) — обобщённый тип псевдонимом не реэкспортируется (ограничение
+  языка), для переменных этого типа нужен `TgBot.Base`;
+- `TTgProxySettings.ToRtlSettings` — его тип `TProxySettings` из `System.Net.URLClient`; это помощник записи в
+  `TgBot.Http` и `TgBot` (без помощника — функция `TgProxyToRtlSettings` из `TgBot.Http`).
