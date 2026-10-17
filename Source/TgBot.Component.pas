@@ -1282,7 +1282,9 @@ function TTelegramBot.HandleWebhook(const ABody, ASecretHeader: string): TTgWebh
 var
   LReceiver: ITgWebhookReceiver;
 begin
-  // Ссылка удерживает источник, даже если бот освобождается параллельно.
+  // Ссылка держит только приёмник-переходник бота (не источник и не ядро):
+  // источник на время вызова удерживает сам выполняющийся Accept, поэтому
+  // параллельный Free бота безопасен — ответ Accepted или Unavailable.
   LReceiver := GetReceiver;
   if Assigned(LReceiver) then
     Result := LReceiver.Accept(ABody, ASecretHeader)

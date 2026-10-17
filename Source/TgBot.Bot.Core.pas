@@ -8,7 +8,8 @@
   Содержит интерфейс ядра ITgBotCore и его реализацию (класс — в
   implementation, создаётся TgCreateBotCore), фоновую подготовку запуска
   (getMe, setMyCommands), транспорт-обёртку webhook-источника
-  (OnWebhookRegistered) и фабрики обработчиков источника и диспетчера.
+  (OnWebhookRegistered), интерфейс приёмника-переходника webhook
+  (ITgBotWebhookReceiver) и фабрики обработчиков источника и диспетчера.
   Бот (TgBot.Bot) обращается к ядру только через ITgBotCore.
 }
 
@@ -147,6 +148,20 @@ type
 
     /// <summary>Ядро отсоединено (бот уничтожен).</summary>
     property Detached: Boolean read GetDetached;
+  end;
+
+  /// <summary>
+  ///   Приёмник-переходник бота (TTgBot.WebhookReceiver; реализация — в
+  ///   TgBot.Bot): Accept плюс назначение webhook-источника. Без GUID
+  ///   намеренно: из ITgWebhookReceiver, отданного пользователю, его не
+  ///   получить ни Supports, ни as — назначать источник может только бот.
+  /// </summary>
+  ITgBotWebhookReceiver = interface(ITgWebhookReceiver)
+    /// <summary>
+    ///   Назначает источник ASource (nil — снять: Accept отвечает
+    ///   Unavailable); прежний отпускается вне блокировки приёмника.
+    /// </summary>
+    procedure SetTarget(const ASource: ITgWebhookSource);
   end;
 
 /// <summary>

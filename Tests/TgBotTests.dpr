@@ -10829,6 +10829,7 @@ begin
       LWebhook := TgTestBotWebhookSource(LBot);
       Check(Assigned(LWebhook), 'Start в Webhook: webhook создан');
       Check(not BotHasPoll(LBot), 'Start в Webhook: long polling отпущен ботом');
+      // Приведение к объекту намеренно: только тест, счётчик ссылок (см. WaitOnlyRef).
       Check(WaitOnlyRef(LPoll as TObject), 'Start в Webhook: long polling больше никем не удерживается');
       LPoll := nil;
 {$ENDIF}
@@ -10864,6 +10865,7 @@ begin
 {$IFDEF TGBOT_TESTHOOKS}
       Check(BotHasPoll(LBot), 'Start в Polling после Webhook: long polling создан');
       Check(not BotHasWebhook(LBot), 'Start в Polling после Webhook: webhook отпущен ботом');
+      // Приведение к объекту намеренно: только тест, счётчик ссылок (см. WaitOnlyRef).
       Check(WaitOnlyRef(LWebhook as TObject), 'Start в Polling после Webhook: webhook больше никем не удерживается');
       LWebhook := nil;
 {$ENDIF}
@@ -10896,6 +10898,371 @@ begin
     LReceiver := nil;
   finally
     LLog.Free;
+  end;
+end;
+
+/// <summary>
+///   Позиция long polling переживает смену Mode: Polling обработал update_id
+///   10 и 11 (offset 12) → Stop (итоговый getUpdates проходит или падает —
+///   AFailFinal; без подтверждения сервер отдал бы 10 и 11 снова) → Mode =
+///   Webhook → Start (setWebhook 400 → Faulted) → Stop (AExplicitStop) или
+///   сразу Start из Faulted → Mode = Polling → Start: первый getUpdates
+///   нового источника идёт с offset 12, обработанные не повторяются.
+/// </summary>
+procedure CheckBotPollResume(AFailFinal, AExplicitStop: Boolean);
+var
+  LTransport: TScriptCancellableTransport;
+  LTransportRef: ITgTransport;
+  LBot: TTgBot;
+  LLog: TTextLog;
+  LFaults: TIdLog;
+  LCalls: TArray<string>;
+  LBefore: Integer;
+  LCase: string;
+begin
+  if AFailFinal then
+    LCase := '(итоговый падает, '
+  else
+    LCase := '(итоговый проходит, ';
+  if AExplicitStop then
+    LCase := LCase + 'Stop из Faulted) '
+  else
+    LCase := LCase + 'Start из Faulted) ';
+  LLog := TTextLog.Create;
+  LFaults := TIdLog.Create;
+  try
+    LTransport := TScriptCancellableTransport.Create(
+      function(const AMethod: string; AParams: TTgParams): TJSONValue
+      var
+        LOffset: Int64;
+      begin
+        if AMethod = 'setWebhook' then
+          raise ETgApiError.Create('setWebhook', 400, 'Bad Request: bad webhook');
+        if AMethod <> 'getUpdates' then
+          Exit(TJSONTrue.Create);
+        if TTgJson.Has(AParams.Json, 'offset') then
+          LOffset := TTgJson.GetInt64(AParams.Json, 'offset')
+        else
+          LOffset := 0;
+        // Сервер: пока 10 и 11 не подтверждены (offset ≤ 10), отдаёт их снова.
+        if LOffset <= 10 then
+          Exit(MsgBatch([10, 11], 1));
+        if TTgJson.GetInt(AParams.Json, 'timeout') = 0 then
+        begin
+          // Итоговое подтверждение при Stop.
+          if AFailFinal then
+            raise ETgNetworkError.Create('сеть недоступна');
+          Exit(TJSONArray.Create);
+        end;
+        Result := HangUntilCancelled;
+      end);
+    LTransportRef := LTransport;
+    LBot := TTgBot.Create(LTransportRef);
+    try
+      LBot.OnMessage :=
+        procedure(ACtx: ITgContext)
+        begin
+          LLog.Add('msg ' + ACtx.Text);
+        end;
+      LBot.OnFault :=
+        procedure(AError: Exception)
+        begin
+          LFaults.Add(1);
+        end;
+      LBot.Start;
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := LLog.Has('msg m10') and LLog.Has('msg m11') and
+            (LTransport.Count('getUpdates') >= 2);
+        end, 5000), LCase + 'Polling: 10 и 11 обработаны, следующий getUpdates висит');
+      Check(LBot.Stop, LCase + 'Polling: Stop = True');
+      LCalls := LTransport.Calls('getUpdates');
+      Check((Length(LCalls) >= 3) and (ParamInt(LCalls[High(LCalls)], 'timeout') = 0) and
+        (ParamInt(LCalls[High(LCalls)], 'offset') = 12), LCase + 'Stop: итоговый getUpdates с offset 12');
+      LBot.Mode := TTgReceiveMode.Webhook;
+      LBot.WebhookUrl := 'https://example.org/resume';
+      LBot.WebhookSecretToken := 'resume_Secret-1';
+      LBot.Start;
+      Check(WaitBotFaults(LBot, LFaults, 1), LCase + 'Webhook: setWebhook 400 → Faulted');
+      if AExplicitStop then
+        Check(LBot.Stop, LCase + 'Stop из Faulted = True');
+      LBot.Mode := TTgReceiveMode.Polling;
+      LBefore := LTransport.Count('getUpdates');
+      LBot.Start;
+      Check(LBot.State = TTgBotState.Running, LCase + 'снова Polling: Running');
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := LTransport.Count('getUpdates') > LBefore;
+        end, 5000), LCase + 'снова Polling: getUpdates отправлен');
+      LCalls := LTransport.Calls('getUpdates');
+      Check(Length(LCalls) > LBefore, LCase + 'снова Polling: есть запрос');
+      if Length(LCalls) > LBefore then
+        CheckEquals(12, ParamInt(LCalls[LBefore], 'offset'),
+          LCase + 'снова Polling: первый getUpdates нового источника — с offset 12');
+      TThread.Sleep(150);
+      CheckEquals(1, LLog.CountOf('msg m10'), LCase + 'update_id 10 обработан один раз');
+      CheckEquals(1, LLog.CountOf('msg m11'), LCase + 'update_id 11 обработан один раз');
+      Check(LBot.Stop, LCase + 'снова Polling: Stop = True');
+    finally
+      LBot.Free;
+    end;
+  finally
+    LFaults.Free;
+    LLog.Free;
+  end;
+end;
+
+/// <summary>
+///   Ревью ленивых источников: позиция long polling при смене Mode (см.
+///   CheckBotPollResume, 4 варианта); нижний уровень — TTgLongPollSource.New
+///   с AStartOffset.
+/// </summary>
+procedure TestBotPollResumeAcrossMode;
+var
+  LTransportRef: ITgTransport;
+  LSource: ITgLongPollSource;
+begin
+  LTransportRef := TScriptCancellableTransport.Create(WebhookScript(False));
+  LSource := TTgLongPollSource.New(LTransportRef, nil, 12);
+  CheckEquals(12, LSource.Offset, 'New(AStartOffset = 12): Offset до Start = 12');
+  LSource := TTgLongPollSource.New(LTransportRef, nil, -5);
+  CheckEquals(0, LSource.Offset, 'New(AStartOffset < 0): без offset');
+  LSource := TTgLongPollSource.New(LTransportRef);
+  CheckEquals(0, LSource.Offset, 'New без AStartOffset: без offset');
+  LSource := nil;
+  CheckBotPollResume(False, True);
+  CheckBotPollResume(True, True);
+  CheckBotPollResume(False, False);
+  CheckBotPollResume(True, False);
+end;
+
+/// <summary>
+///   Faulted → Start в другом Mode: long polling (getUpdates 401 → Faulted) →
+///   Mode = Webhook → Start без Stop (неявный Stop) → Running, webhook-источник
+///   принимает обновления, long polling отпущен; обратный переход Webhook
+///   (Faulted) → Polling — в CheckBotPollResume.
+/// </summary>
+procedure TestBotFaultedModeSwitch;
+const
+  CSecret = 'fault_Secret-1';
+var
+  LTransport: TScriptCancellableTransport;
+  LTransportRef: ITgTransport;
+  LBot: TTgBot;
+  LLog: TTextLog;
+  LFaults: TIdLog;
+begin
+  LLog := TTextLog.Create;
+  LFaults := TIdLog.Create;
+  try
+    LTransport := TScriptCancellableTransport.Create(
+      function(const AMethod: string; AParams: TTgParams): TJSONValue
+      begin
+        if AMethod = 'getUpdates' then
+          raise ETgApiError.Create('getUpdates', 401, 'Unauthorized');
+        Result := TJSONTrue.Create;
+      end);
+    LTransportRef := LTransport;
+    LBot := TTgBot.Create(LTransportRef);
+    try
+      LBot.OnMessage :=
+        procedure(ACtx: ITgContext)
+        begin
+          LLog.Add('msg ' + ACtx.Text);
+        end;
+      LBot.OnFault :=
+        procedure(AError: Exception)
+        begin
+          LFaults.Add(1);
+        end;
+      LBot.Start;
+      Check(WaitBotFaults(LBot, LFaults, 1), 'Polling: getUpdates 401 → Faulted');
+      Check(LBot.SourceState = TTgSourceState.Faulted, 'Polling: SourceState = Faulted');
+      LBot.Mode := TTgReceiveMode.Webhook;
+      LBot.WebhookUrl := 'https://example.org/fault';
+      LBot.WebhookSecretToken := CSecret;
+      // Из Faulted — без явного Stop.
+      LBot.Start;
+      Check(LBot.State = TTgBotState.Running, 'Start из Faulted в другом Mode: Running');
+      Check(WaitSetWebhook(LTransport, 1), 'Start из Faulted в другом Mode: setWebhook');
+{$IFDEF TGBOT_TESTHOOKS}
+      Check(not BotHasPoll(LBot), 'Start из Faulted в Webhook: long polling отпущен');
+      Check(BotHasWebhook(LBot), 'Start из Faulted в Webhook: webhook создан');
+{$ENDIF}
+      Check(LBot.SourceState = TTgSourceState.Running, 'Webhook: SourceState = Running');
+      Check(LBot.WebhookReceiver.Accept(MsgUpdate(1, 100, 7, 'one'), CSecret) = TTgWebhookResult.Accepted,
+        'Webhook после Faulted: Accepted');
+      Check(WaitLogHas(LLog, 'msg one'), 'Webhook после Faulted: обработчик вызван');
+      CheckEquals(1, LFaults.Count, 'OnFault — один раз (за запуск Polling)');
+      Check(LBot.Stop, 'Webhook: Stop = True');
+      Check(LBot.State = TTgBotState.Idle, 'после Stop: Idle');
+    finally
+      LBot.Free;
+    end;
+  finally
+    LFaults.Free;
+    LLog.Free;
+  end;
+end;
+
+/// <summary>
+///   Accept из другого потока во время смены Mode и Free бота: поток A
+///   непрерывно вызывает WebhookReceiver.Accept, поток B — SourceState (до
+///   Free), главный поток — циклы Mode Webhook/Polling, Start, Stop, затем
+///   Free работающего в Webhook бота. Без исключений и AV; ответы — только
+///   Accepted или Unavailable; после Free — Unavailable; ядро освобождается
+///   (TGBOT_TESTHOOKS).
+/// </summary>
+procedure TestBotReceiverModeSwitchRace;
+const
+  CSecret = 'race_Secret-1';
+  CCycles = 12;
+var
+  LTransportRef: ITgTransport;
+  LBot: TTgBot;
+  LReceiver: ITgWebhookReceiver;
+  LErrors: TTextLog;
+  LAcceptThread, LStateThread: TThread;
+  LStopAccept, LStopState: Integer;
+  LAccepted, LUnavailable, LOther, LStateCalls, LStopFails, LUnavailable0: Integer;
+  LCores0, LJobs0: Integer;
+  I: Integer;
+begin
+  LCores0 := LiveBotCores;
+  LJobs0 := LiveStartJobs;
+  LStopAccept := 0;
+  LStopState := 0;
+  LAccepted := 0;
+  LUnavailable := 0;
+  LOther := 0;
+  LStateCalls := 0;
+  LStopFails := 0;
+  LAcceptThread := nil;
+  LStateThread := nil;
+  LErrors := TTextLog.Create;
+  try
+    LTransportRef := TScriptCancellableTransport.Create(
+      function(const AMethod: string; AParams: TTgParams): TJSONValue
+      begin
+        if AMethod = 'getUpdates' then
+        begin
+          if TTgJson.GetInt(AParams.Json, 'timeout') <> 0 then
+            Exit(HangUntilCancelled);
+          Exit(TJSONArray.Create);
+        end;
+        Result := TJSONTrue.Create;
+      end);
+    LBot := TTgBot.Create(LTransportRef);
+    try
+      LBot.WebhookUrl := 'https://example.org/race';
+      LBot.WebhookSecretToken := CSecret;
+      LBot.OnMessage :=
+        procedure(ACtx: ITgContext)
+        begin
+        end;
+      LReceiver := LBot.WebhookReceiver;
+      Check(Supports(LReceiver, ITgWebhookReceiver), 'WebhookReceiver: Supports(ITgWebhookReceiver) = True');
+      Check(not Supports(LReceiver, ITgWebhookSource), 'WebhookReceiver: Supports(ITgWebhookSource) = False');
+      // LReceiver и LBot потоки читают; главный поток меняет их только после
+      // остановки соответствующего потока.
+      LAcceptThread := TThread.CreateAnonymousThread(
+        procedure
+        var
+          N: Integer;
+        begin
+          N := 0;
+          try
+            while AtomicCmpExchange(LStopAccept, 0, 0) = 0 do
+            begin
+              Inc(N);
+              case LReceiver.Accept(MsgUpdate(1000 + N, 100, 7, 'r'), CSecret) of
+                TTgWebhookResult.Accepted:
+                  AtomicIncrement(LAccepted);
+                TTgWebhookResult.Unavailable:
+                  AtomicIncrement(LUnavailable);
+              else
+                AtomicIncrement(LOther);
+              end;
+              TThread.Sleep(1);
+            end;
+          except
+            on E: Exception do
+              LErrors.Add('Accept: ' + E.ClassName + ': ' + E.Message);
+          end;
+        end);
+      LAcceptThread.FreeOnTerminate := False;
+      LStateThread := TThread.CreateAnonymousThread(
+        procedure
+        var
+          LState: TTgSourceState;
+        begin
+          try
+            while AtomicCmpExchange(LStopState, 0, 0) = 0 do
+            begin
+              LState := LBot.SourceState;
+              if LState in [TTgSourceState.Idle, TTgSourceState.Running, TTgSourceState.Stopping,
+                TTgSourceState.Faulted] then
+                AtomicIncrement(LStateCalls);
+              TThread.Sleep(0);
+            end;
+          except
+            on E: Exception do
+              LErrors.Add('SourceState: ' + E.ClassName + ': ' + E.Message);
+          end;
+        end);
+      LStateThread.FreeOnTerminate := False;
+      LAcceptThread.Start;
+      LStateThread.Start;
+      try
+        for I := 1 to CCycles do
+        begin
+          if Odd(I) then
+            LBot.Mode := TTgReceiveMode.Webhook
+          else
+            LBot.Mode := TTgReceiveMode.Polling;
+          LBot.Start;
+          TThread.Sleep(10);
+          if not LBot.Stop then
+            Inc(LStopFails);
+        end;
+        LBot.Mode := TTgReceiveMode.Webhook;
+        LBot.Start;
+        Check(WaitUntil(
+          function: Boolean
+          begin
+            Result := AtomicCmpExchange(LAccepted, 0, 0) > 0;
+          end, 5000), 'Accept из другого потока: есть Accepted');
+      finally
+        // SourceState — только до Free бота.
+        AtomicExchange(LStopState, 1);
+        LStateThread.WaitFor;
+      end;
+    finally
+      // Free работающего в Webhook бота, пока другой поток вызывает Accept.
+      LBot.Free;
+    end;
+    LUnavailable0 := AtomicCmpExchange(LUnavailable, 0, 0);
+    Check(WaitUntil(
+      function: Boolean
+      begin
+        Result := AtomicCmpExchange(LUnavailable, 0, 0) > LUnavailable0 + 3;
+      end, 5000), 'после Free бота: Accept из другого потока → Unavailable');
+    AtomicExchange(LStopAccept, 1);
+    LAcceptThread.WaitFor;
+    CheckEquals('', LErrors.Text, 'потоки Accept и SourceState без исключений');
+    CheckEquals(0, LOther, 'ответы Accept — только Accepted или Unavailable');
+    CheckEquals(0, LStopFails, 'Stop в циклах смены Mode = True');
+    Check(LStateCalls > 0, 'SourceState из другого потока вызывался');
+    LReceiver := nil;
+    Check(WaitLiveAtMost(LCores0, LJobs0, 5000), 'после Free бота и отпускания приёмника ядро освобождено');
+  finally
+    AtomicExchange(LStopAccept, 1);
+    AtomicExchange(LStopState, 1);
+    LAcceptThread.Free;
+    LStateThread.Free;
+    LErrors.Free;
   end;
 end;
 
@@ -12704,6 +13071,13 @@ begin
   RunTest('Ленивые источники: до Start источников нет; Start создаёт источник только для Mode, смена Mode ' +
     'отпускает прежний; WebhookReceiver — тот же объект, после Free не держит ядро; дедупликация ' +
     'переживает Stop/Start', TestBotLazySources);
+  RunTest('Ревью ленивых источников: позиция long polling сохраняется при смене Mode (Polling → Webhook ' +
+    '(Faulted) → Polling: offset продолжается, обработанные не повторяются); New(AStartOffset)',
+    TestBotPollResumeAcrossMode);
+  RunTest('Ревью ленивых источников: Faulted → Start в другом Mode (Polling 401 → Webhook без Stop)',
+    TestBotFaultedModeSwitch);
+  RunTest('Ревью ленивых источников: Accept и SourceState из других потоков во время смены Mode и Free ' +
+    'бота — без исключений, только Accepted/Unavailable', TestBotReceiverModeSwitchRace);
   RunTest('0.3.0: компонент Polling/Webhook — значения по умолчанию, Assign, DFM (default не пишется), ' +
     'загрузка', TestComponentOptionsStreaming);
   RunTest('0.3.0: компонент Polling/Webhook → TTgBot (limit в getUpdates, RegisterOnStart = False, ' +
