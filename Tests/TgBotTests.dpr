@@ -5722,6 +5722,509 @@ begin
   end;
 end;
 
+{
+  Фаза 1 (ревью перед заменой Wait/PulseAll на TCriticalSection + TEvent в
+  TgBot.Updates.Dispatcher): стресс-тесты, фиксирующие поведение ТЕКУЩЕГО
+  кода — потерянные пробуждения, двойная обработка, зависания Post/TryPost/
+  Stop. Прогоняются на этой реализации как база для сравнения после замены.
+}
+
+var
+  // Замеры новых тестов фазы 1 (мс).
+  GDispatcherStressTotalMs: Int64 = -1;
+  GBlockedPostCancelMs: Int64 = -1;
+  GBlockedPostStopUnblockMs: Int64 = -1;
+  GTryPostZeroMs: Int64 = -1;
+  GTryPostTimeoutMs: Int64 = -1;
+  GTryPostFreedMs: Int64 = -1;
+  GDeliveryMainStressMs: Int64 = -1;
+
+const
+  // TestDispatcherStress: производители и чаты.
+  CStressProducers = 8;
+  CStressChats = 16;
+
+/// <summary>
+///   Производитель TestDispatcherStress: APerProducer апдейтов в свои
+///   (AChatsPerProducer) чаты, update_id — плотные, свои на производителя
+///   (AIdBase..AIdBase + APerProducer - 1). В каждый чат пишет только один
+///   производитель: иначе «порядок внутри чата» было бы невозможно корректно
+///   проверить — Post из разных потоков не гарантирует, какой из них первым
+///   встанет в очередь на внутренней блокировке ядра (порядок полосы — это
+///   порядок попадания в очередь, а не порядок генерации update_id вызывающим
+///   кодом). При одном производителе на чат оба порядка совпадают.
+/// </summary>
+function NewStressProducer(const ADispatcher: ITgUpdateDispatcher; AProducerIndex, APerProducer,
+  AChatsPerProducer, AIdBase: Integer; ACompleted, APostFailures: PInteger): TThread;
+begin
+  Result := TThread.CreateAnonymousThread(
+    procedure
+    var
+      I, LChat: Integer;
+      LId: Int64;
+    begin
+      for I := 0 to APerProducer - 1 do
+      begin
+        LChat := AProducerIndex * AChatsPerProducer + (I mod AChatsPerProducer) + 1;
+        LId := AIdBase + I;
+        if not ADispatcher.Post(RawOf(MsgUpdate(LId, LChat, 1, 'x')), nil) then
+          TInterlocked.Increment(APostFailures^);
+      end;
+      TInterlocked.Increment(ACompleted^);
+    end);
+  Result.FreeOnTerminate := False;
+end;
+
+/// <summary>
+///   Один прогон TestDispatcherStress для пары (ёмкость очереди, MaxParallel):
+///   CStressProducers потоков пишут по (CStressChats div CStressProducers)
+///   своих чатов, итого CStressProducers * APerProducer апдейтов. Сторожевой
+///   таймаут 15 с на приём: если производители не управились (потерянное
+///   пробуждение/дедлок) — форсируем Stop (это гарантированно разблокирует
+///   ждущие места в очереди Post — FStopping проверяется в цикле ожидания) и
+///   фиксируем провал, не вися вечно.
+/// </summary>
+procedure RunDispatcherStressConfig(ACapacity, AMaxParallel, APerProducer: Integer);
+const
+  CChatsPerProducer = CStressChats div CStressProducers;
+var
+  LDispatcher: ITgUpdateDispatcher;
+  LTotal: Integer;
+  LSeen: TArray<Integer>;
+  LLastPerChat: array[0..CStressChats - 1] of Int64;
+  LLock: TCriticalSection;
+  LViolations, LDone, LCompleted, LPostFailures: Integer;
+  LThreads: array[0..CStressProducers - 1] of TThread;
+  LForcedStop: Boolean;
+  LWatch: TStopwatch;
+  LElapsed: Int64;
+  I, LLost, LDup: Integer;
+  LTag: string;
+begin
+  LTotal := CStressProducers * APerProducer;
+  LTag := Format('cap=%d, par=%d, итого=%d', [ACapacity, AMaxParallel, LTotal]);
+  SetLength(LSeen, LTotal);
+  LLock := TCriticalSection.Create;
+  try
+    for I := 0 to CStressChats - 1 do
+      LLastPerChat[I] := -1;
+    LViolations := 0;
+    LDone := 0;
+    LCompleted := 0;
+    LPostFailures := 0;
+    LDispatcher := TTgUpdateDispatcher.New(
+      procedure(const AUpdate: ITgRawUpdate)
+      var
+        LChat: Integer;
+        LId: Int64;
+      begin
+        LChat := StrToInt(AUpdate.ChatKey) - 1;
+        LId := AUpdate.UpdateId;
+        // Полоса гарантирует: для данного чата в любой момент выполняется не
+        // больше одного обработчика — доступ к LLastPerChat[LChat] защищён
+        // этим (плюс LLock — на всякий случай, единообразно с LDone/LViolations).
+        LLock.Enter;
+        try
+          if LLastPerChat[LChat] >= LId then
+            Inc(LViolations);
+          LLastPerChat[LChat] := LId;
+          Inc(LDone);
+        finally
+          LLock.Leave;
+        end;
+        if (LId >= 0) and (LId < LTotal) then
+          TInterlocked.Increment(LSeen[LId]);
+      end);
+    LDispatcher.MaxParallel := AMaxParallel;
+    LDispatcher.QueueCapacity := ACapacity;
+    LDispatcher.Start;
+
+    LWatch := TStopwatch.StartNew;
+    for I := 0 to CStressProducers - 1 do
+      LThreads[I] := NewStressProducer(LDispatcher, I, APerProducer, CChatsPerProducer,
+        I * APerProducer, @LCompleted, @LPostFailures);
+    for I := 0 to CStressProducers - 1 do
+      LThreads[I].Start;
+
+    // 40 с — заметно больше ожидаемого (единицы секунд на конфигурацию, см.
+    // отчёт): под нагрузкой CI не должен срабатывать на простое замедление,
+    // но не бесконечен — настоящий дедлок/потерянное пробуждение фиксируется.
+    LForcedStop := not WaitUntil(
+      function: Boolean
+      begin
+        Result := TInterlocked.CompareExchange(LCompleted, 0, 0) = CStressProducers;
+      end, 40000);
+    if LForcedStop then
+      // Сторожевой таймаут: Stop снимает очередь и отменяет токен запуска —
+      // производители, зависшие в Post на ожидании места, вернут False.
+      LDispatcher.Stop(3000);
+    for I := 0 to CStressProducers - 1 do
+    begin
+      LThreads[I].WaitFor;
+      LThreads[I].Free;
+    end;
+    Check(not LForcedStop,
+      Format('%s: все производители управились за 40 с (иначе форсирован Stop)', [LTag]));
+
+    if not LForcedStop then
+    begin
+      CheckEquals(0, LPostFailures, Format('%s: без форсированного Stop все Post успешны', [LTag]));
+      Check(LDispatcher.WaitIdle(30000), Format('%s: очередь обработана (WaitIdle)', [LTag]));
+      CheckEquals(LTotal, LDone, Format('%s: обработаны все апдейты', [LTag]));
+      CheckEquals(0, LViolations, Format('%s: порядок внутри каждого чата сохранён', [LTag]));
+      LLost := 0;
+      LDup := 0;
+      for I := 0 to LTotal - 1 do
+        if LSeen[I] = 0 then
+          Inc(LLost)
+        else if LSeen[I] > 1 then
+          Inc(LDup);
+      CheckEquals(0, LLost, Format('%s: нет потерянных update_id', [LTag]));
+      CheckEquals(0, LDup, Format('%s: нет повторной обработки update_id', [LTag]));
+    end;
+    Check(LDispatcher.Stop(3000), Format('%s: Stop', [LTag]));
+    LElapsed := LWatch.ElapsedMilliseconds;
+    if GDispatcherStressTotalMs < 0 then
+      GDispatcherStressTotalMs := 0;
+    GDispatcherStressTotalMs := GDispatcherStressTotalMs + LElapsed;
+    Writeln(Format('    %s: %d мс', [LTag, LElapsed]));
+  finally
+    LDispatcher := nil;
+    LLock.Free;
+  end;
+end;
+
+/// <summary>
+///   8 потоков-производителей, 16 чатов (по 2 на производителя), 9
+///   конфигураций ёмкости очереди (1, 2, 4) x MaxParallel (1, 4, 8). Для
+///   каждой конфигурации: ни один update_id не потерян и не обработан
+///   дважды, порядок внутри чата сохранён, прогон укладывается в сторожевой
+///   таймаут (см. RunDispatcherStressConfig).
+/// </summary>
+procedure TestDispatcherStress;
+const
+  CCapacities: array[0..2] of Integer = (1, 2, 4);
+  CParallels: array[0..2] of Integer = (1, 4, 8);
+  // 8 x 300 = 2400 на конфигурацию (>= 2000, как минимум просили сохранить);
+  // 10000 на конфигурацию (как в задаче) на 9 конфигурациях выходит далеко
+  // за 20 с на конфигурацию при cap=1/par=1 — уменьшено, см. отчёт.
+  CPerProducer = 300;
+var
+  I, J: Integer;
+begin
+  GDispatcherStressTotalMs := 0;
+  for I := 0 to High(CCapacities) do
+    for J := 0 to High(CParallels) do
+      RunDispatcherStressConfig(CCapacities[I], CParallels[J], CPerProducer);
+end;
+
+/// <summary>
+///   Очередь заполнена (обработчик блокируется на LHang), производитель
+///   блокируется в Post с токеном отмены → отмена из другого потока → Post
+///   должен вернуться быстро (False), а не ждать освобождения места.
+/// </summary>
+procedure TestDispatcherBlockedPostCancel;
+var
+  LEntered, LHang: TEvent;
+  LDispatcher: ITgUpdateDispatcher;
+  // Класс хранится намеренно — только для наглядности создания; время жизни
+  // задаёт интерфейсная ссылка LCancel (как везде в файле для ITgCancellation).
+  LCancelSource: TTgCancellationSource;
+  LCancel: ITgCancellation;
+  LResult: Boolean;
+  LWatch: TStopwatch;
+begin
+  LEntered := TEvent.Create(nil, True, False, '');
+  LHang := TEvent.Create(nil, True, False, '');
+  LCancelSource := TTgCancellationSource.Create;
+  LCancel := LCancelSource;
+  try
+    LDispatcher := TTgUpdateDispatcher.New(
+      procedure(const AUpdate: ITgRawUpdate)
+      begin
+        LEntered.SetEvent;
+        LHang.WaitFor(10000);
+      end);
+    LDispatcher.MaxParallel := 1;
+    LDispatcher.QueueCapacity := 1;
+    LDispatcher.Start;
+    Check(LDispatcher.Post(RawOf(MsgUpdate(1, 1, 1, 'x')), nil), 'u1 ушёл в обработчик (зависнет)');
+    Check(LEntered.WaitFor(2000) = TWaitResult.wrSignaled, 'обработчик занят');
+    Check(LDispatcher.Post(RawOf(MsgUpdate(2, 1, 1, 'x')), nil), 'u2 заполнил очередь (ёмкость 1)');
+
+    CancelLater(LCancel, 80);
+    LWatch := TStopwatch.StartNew;
+    LResult := LDispatcher.Post(RawOf(MsgUpdate(3, 1, 1, 'x')), LCancel);
+    GBlockedPostCancelMs := LWatch.ElapsedMilliseconds;
+    Check(not LResult, 'u3: Post с отменённым токеном при полной очереди → False');
+    Check(GBlockedPostCancelMs < 200,
+      Format('Post вернулся быстро после отмены токена (%d мс)', [GBlockedPostCancelMs]));
+
+    LHang.SetEvent;
+    Check(LDispatcher.Stop(2000), 'Stop после отпускания обработчика');
+  finally
+    LDispatcher := nil;
+    LCancel := nil;
+    LHang.Free;
+    LEntered.Free;
+  end;
+end;
+
+/// <summary>Производитель TestDispatcherBlockedPostStop: один блокирующий Post, результат — в AResult^.</summary>
+function NewBlockedProducer(const ADispatcher: ITgUpdateDispatcher; AUpdateId: Integer;
+  AResult: PBoolean): TThread;
+begin
+  Result := TThread.CreateAnonymousThread(
+    procedure
+    begin
+      AResult^ := ADispatcher.Post(RawOf(MsgUpdate(AUpdateId, 1, 1, 'x')), nil);
+    end);
+  Result.FreeOnTerminate := False;
+end;
+
+/// <summary>
+///   N (4) производителей блокируются в Post на полной очереди → Stop из
+///   фонового потока → все возвращаются быстро (False), без зависания.
+///   Обработчик отпускается после этого отдельно — диспетчер останавливается
+///   полностью.
+/// </summary>
+procedure TestDispatcherBlockedPostStop;
+const
+  CBlockedProducers = 4;
+var
+  LEntered, LHang: TEvent;
+  LDispatcher: ITgUpdateDispatcher;
+  // Поток Stop захватывает эту переменную, а не LDispatcher: см. комментарий
+  // у LStopTarget в TestDeliveryMainOrphans.
+  LTarget: ITgUpdateDispatcher;
+  LThreads: array[0..CBlockedProducers - 1] of TThread;
+  LStopThread: TThread;
+  LPostResults: array[0..CBlockedProducers - 1] of Boolean;
+  LWatch: TStopwatch;
+  I: Integer;
+begin
+  LEntered := TEvent.Create(nil, True, False, '');
+  LHang := TEvent.Create(nil, True, False, '');
+  try
+    LDispatcher := TTgUpdateDispatcher.New(
+      procedure(const AUpdate: ITgRawUpdate)
+      begin
+        LEntered.SetEvent;
+        LHang.WaitFor(10000);
+      end);
+    LDispatcher.MaxParallel := 1;
+    LDispatcher.QueueCapacity := 1;
+    LDispatcher.Start;
+    Check(LDispatcher.Post(RawOf(MsgUpdate(1, 1, 1, 'x')), nil), 'u1 ушёл в обработчик (зависнет)');
+    Check(LEntered.WaitFor(2000) = TWaitResult.wrSignaled, 'обработчик занят');
+    Check(LDispatcher.Post(RawOf(MsgUpdate(2, 1, 1, 'x')), nil), 'u2 заполнил очередь (ёмкость 1)');
+
+    for I := 0 to CBlockedProducers - 1 do
+    begin
+      LPostResults[I] := True;
+      LThreads[I] := NewBlockedProducer(LDispatcher, 10 + I, @LPostResults[I]);
+    end;
+    for I := 0 to CBlockedProducers - 1 do
+      LThreads[I].Start;
+    // Производители не дают независимого сигнала «вошёл в ожидание места» —
+    // как и в других тестах диспетчера (TestDeliveryMainOrphans), даём им
+    // время дойти до блокировки на Post.
+    TThread.Sleep(200);
+
+    LTarget := LDispatcher;
+    LStopThread := TThread.CreateAnonymousThread(
+      procedure
+      begin
+        LTarget.Stop(3000);
+      end);
+    LStopThread.FreeOnTerminate := False;
+    LWatch := TStopwatch.StartNew;
+    LStopThread.Start;
+    for I := 0 to CBlockedProducers - 1 do
+      LThreads[I].WaitFor;
+    GBlockedPostStopUnblockMs := LWatch.ElapsedMilliseconds;
+    Check(GBlockedPostStopUnblockMs < 500,
+      Format('%d заблокированных Post вернулись быстро после Stop (%d мс)',
+      [CBlockedProducers, GBlockedPostStopUnblockMs]));
+    for I := 0 to CBlockedProducers - 1 do
+      Check(not LPostResults[I], Format('блокированный Post #%d → False после Stop', [I]));
+
+    LStopThread.WaitFor;
+    LStopThread.Free;
+    for I := 0 to CBlockedProducers - 1 do
+      LThreads[I].Free;
+    LTarget := nil;
+
+    LHang.SetEvent;
+    Check(LDispatcher.Stop(2000), 'Stop завершился после отпускания обработчика');
+  finally
+    LDispatcher := nil;
+    LTarget := nil;
+    LHang.Free;
+    LEntered.Free;
+  end;
+end;
+
+/// <summary>
+///   Полная очередь (ёмкость 1, обработчик завис на LHang): TryPost(0) —
+///   немедленный отказ; TryPost(250) — отказ в ожидаемом окне; если место
+///   освобождается посреди ожидания (LHang отпускается из другого потока) —
+///   TryPost возвращает True раньше истечения таймаута.
+/// </summary>
+procedure TestDispatcherTryPostTimeout;
+var
+  LEntered, LHang: TEvent;
+  LDispatcher: ITgUpdateDispatcher;
+  // TryPost — в служебном ITgTimedUpdateSink (TgBot.Intf), не в публичном
+  // ITgUpdateDispatcher; TTgUpdateDispatcher реализует оба — как в
+  // TTgWebhookCore.Post (TgBot.Updates.WebhookSource).
+  LTimed: ITgTimedUpdateSink;
+  LWatch: TStopwatch;
+  LResult: Boolean;
+begin
+  LEntered := TEvent.Create(nil, True, False, '');
+  LHang := TEvent.Create(nil, True, False, '');
+  try
+    LDispatcher := TTgUpdateDispatcher.New(
+      procedure(const AUpdate: ITgRawUpdate)
+      begin
+        LEntered.SetEvent;
+        LHang.WaitFor(10000);
+      end);
+    LDispatcher.MaxParallel := 1;
+    LDispatcher.QueueCapacity := 1;
+    LDispatcher.Start;
+    Check(Supports(LDispatcher, ITgTimedUpdateSink, LTimed),
+      'диспетчер поддерживает ITgTimedUpdateSink (TryPost)');
+    Check(LDispatcher.Post(RawOf(MsgUpdate(1, 1, 1, 'x')), nil), 'u1 ушёл в обработчик');
+    Check(LEntered.WaitFor(2000) = TWaitResult.wrSignaled, 'обработчик занят');
+    Check(LDispatcher.Post(RawOf(MsgUpdate(2, 1, 1, 'x')), nil), 'u2 заполнил очередь (ёмкость 1)');
+
+    LWatch := TStopwatch.StartNew;
+    LResult := LTimed.TryPost(RawOf(MsgUpdate(3, 1, 1, 'x')), nil, 0);
+    GTryPostZeroMs := LWatch.ElapsedMilliseconds;
+    Check(not LResult, 'TryPost(0) при полной очереди → False');
+    Check(GTryPostZeroMs < 50, Format('TryPost(0) немедленно (%d мс)', [GTryPostZeroMs]));
+
+    LWatch := TStopwatch.StartNew;
+    LResult := LTimed.TryPost(RawOf(MsgUpdate(4, 1, 1, 'x')), nil, 250);
+    GTryPostTimeoutMs := LWatch.ElapsedMilliseconds;
+    Check(not LResult, 'TryPost(250) при полной очереди → False');
+    Check((GTryPostTimeoutMs >= 230) and (GTryPostTimeoutMs <= 600),
+      Format('TryPost(250) истёк в окне 230–600 мс (%d мс)', [GTryPostTimeoutMs]));
+
+    TThread.CreateAnonymousThread(
+      procedure
+      begin
+        TThread.Sleep(150);
+        LHang.SetEvent;
+      end).Start;
+    LWatch := TStopwatch.StartNew;
+    LResult := LTimed.TryPost(RawOf(MsgUpdate(5, 1, 1, 'x')), nil, 5000);
+    GTryPostFreedMs := LWatch.ElapsedMilliseconds;
+    Check(LResult, 'TryPost: место освободилось посреди ожидания → True');
+    Check(GTryPostFreedMs < 5000, Format('TryPost вернулся до истечения таймаута (%d мс)', [GTryPostFreedMs]));
+
+    Check(LDispatcher.Stop(2000), 'Stop');
+  finally
+    LDispatcher := nil;
+    LTimed := nil;
+    LHang.Free;
+    LEntered.Free;
+  end;
+end;
+
+/// <summary>
+///   Delivery = Main: фаза A — throughput (CTotalA апдейтов в CChatsA чатов,
+///   WaitIdle с CheckSynchronize) проверяет порядок внутри чата и то, что
+///   каждый обработчик выполнился в главном потоке; фаза B — задания
+///   копятся в очереди главного потока (никто их не прокачивает), затем
+///   Stop/отмена посреди этого ожидания — без зависания; маркер
+///   (ITgCancellation, как в TestDeliveryMainOrphans) подтверждает отсутствие
+///   висящих ссылок после Stop + Free.
+/// </summary>
+procedure TestDeliveryMainStress;
+const
+  CTotalA = 1000;
+  CChatsA = 10;
+  CTotalB = 200;
+var
+  // Класс хранится намеренно — для проверки RefCount; время жизни задаёт LMarker.
+  LMarkerSource: TTgCancellationSource;
+  LMarker: ITgCancellation;
+  LDispatcher: ITgUpdateDispatcher;
+  LLock: TCriticalSection;
+  LLast: array[0..CChatsA - 1] of Int64;
+  LViolations, LDone, LThreadMismatch: Integer;
+  LWatch: TStopwatch;
+  I: Integer;
+begin
+  LMarkerSource := TTgCancellationSource.Create;
+  LMarker := LMarkerSource;
+  LLock := TCriticalSection.Create;
+  try
+    for I := 0 to CChatsA - 1 do
+      LLast[I] := -1;
+    LViolations := 0;
+    LDone := 0;
+    LThreadMismatch := 0;
+    LDispatcher := TTgUpdateDispatcher.New(
+      procedure(const AUpdate: ITgRawUpdate)
+      var
+        LChat: Integer;
+      begin
+        // Как NewMarkedCountingHandler: держим маркер в замыкании и не считаем
+        // доставки после отмены (их не должно быть вовсе — проверяется ниже).
+        if LMarker.IsCancelled then
+          Exit;
+        if Int64(TThread.CurrentThread.ThreadID) <> Int64(MainThreadID) then
+          TInterlocked.Increment(LThreadMismatch);
+        LChat := StrToInt(AUpdate.ChatKey);
+        LLock.Enter;
+        try
+          if LLast[LChat] >= AUpdate.UpdateId then
+            Inc(LViolations);
+          LLast[LChat] := AUpdate.UpdateId;
+          Inc(LDone);
+        finally
+          LLock.Leave;
+        end;
+      end);
+    LDispatcher.Delivery := TTgDelivery.Main;
+    LDispatcher.MaxParallel := 4;
+    LDispatcher.QueueCapacity := CTotalA + CTotalB + 10;
+    LDispatcher.Start;
+
+    LWatch := TStopwatch.StartNew;
+    for I := 1 to CTotalA do
+      Check(LDispatcher.Post(RawOf(MsgUpdate(I, I mod CChatsA, 1, 'x')), nil),
+        'Post принят (Main, throughput)');
+    Check(LDispatcher.WaitIdle(20000), 'все обработаны (Main, CheckSynchronize)');
+    CheckEquals(CTotalA, LDone, 'обработаны все апдейты (throughput)');
+    CheckEquals(0, LViolations, 'порядок внутри чата сохранён (Main)');
+    CheckEquals(0, LThreadMismatch, 'все обработчики — в главном потоке');
+
+    // Фаза B: задания копятся в очереди главного потока (не прокачиваем),
+    // затем Stop/отмена посреди этого ожидания — без зависания.
+    for I := CTotalA + 1 to CTotalA + CTotalB do
+      Check(LDispatcher.Post(RawOf(MsgUpdate(I, I mod CChatsA, 1, 'x')), nil),
+        'Post принят (Main, фаза B, задания копятся)');
+    Check(LDispatcher.Stop(5000), 'Stop из главного потока при накопленной очереди не виснет');
+    GDeliveryMainStressMs := LWatch.ElapsedMilliseconds;
+    LDispatcher := nil;
+
+    // На всякий случай прокачиваем остаток (брошенные задания — no-op).
+    for I := 1 to 20 do
+      CheckSynchronize(10);
+    Check(WaitRefCountOne(LMarkerSource, 5000),
+      'после Stop + Free маркер освобождён — нет висящих ссылок на задания');
+  finally
+    LDispatcher := nil;
+    LMarker := nil;
+    LLock.Free;
+  end;
+end;
+
 {$IFDEF MSWINDOWS}
 /// <summary>
 ///   Дочерний процесс: взводит событие-маркер «сценарий начат» (имя — второй
@@ -12977,6 +13480,16 @@ begin
   RunTest('Диспетчер: 100 обновлений на 5 чатов, MaxParallel = 4', TestDispatcherOrder);
   RunTest('Диспетчер: исключение → OnError, цикл жив', TestDispatcherErrors);
   RunTest('Диспетчер: Delivery = Main (CheckSynchronize), Stop без блокировки', TestDeliveryMain);
+  RunTest('Фаза 1: 8 потоков x 9 конфигураций (ёмкость/MaxParallel) — без потерь и повторов, ' +
+    'порядок внутри чата', TestDispatcherStress);
+  RunTest('Фаза 1: Post блокирован на полной очереди, отмена токена → возврат быстрее 200 мс',
+    TestDispatcherBlockedPostCancel);
+  RunTest('Фаза 1: 4 Post блокированы на полной очереди, Stop из фонового потока — все разблокированы',
+    TestDispatcherBlockedPostStop);
+  RunTest('Фаза 1: TryPost(0)/TryPost(250) на полной очереди, освобождение места посреди ожидания',
+    TestDispatcherTryPostTimeout);
+  RunTest('Фаза 1: Delivery = Main, нагрузка и Stop посреди накопленной очереди главного потока',
+    TestDeliveryMainStress);
   RunTest('TTgMemoryStateStorage: API и 8 потоков', TestStateStorage);
   RunTest('TTgBot: message + callback_query, Reply/Answer/Edit/State', TestBotEndToEnd);
   RunTest('TTgBot.Run: Delivery = Main, RequestStop; TTgShutdownSignal', TestBotRunMain);
@@ -13143,6 +13656,11 @@ begin
     [GWebhookPostTimeoutMs]));
   Writeln(Format('Замеры WEAK: гонка отмены родителя и освобождения ребёнка (%s) = %d мс, ' +
     'отмен родителя = %d, вызовов колбэков детей = %d', [GRaceTag, GRaceMs, GRaceCancels, GRaceHits]));
+  Writeln(Format('Замеры Фаза 1 (диспетчер), мс: 9 конфигураций суммарно = %d; блокированный Post ' +
+    '+ отмена = %d; %d блокированных Post + Stop = %d; TryPost(0) = %d, TryPost(250) = %d, ' +
+    'TryPost (освобождение посреди ожидания) = %d; Delivery = Main (нагрузка + Stop) = %d',
+    [GDispatcherStressTotalMs, GBlockedPostCancelMs, 4, GBlockedPostStopUnblockMs, GTryPostZeroMs,
+    GTryPostTimeoutMs, GTryPostFreedMs, GDeliveryMainStressMs]));
   Writeln(Format('Тестов: %d, не прошло: %d; проверок: %d, ошибок: %d',
     [GTests, GTestsFailed, GPassed + GFailed, GFailed]));
   // Отдельной строкой: формат итоговой строки выше разбирают скрипты прогонов.
