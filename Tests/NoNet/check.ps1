@@ -159,7 +159,8 @@ if ($Units.Count -eq 0 -or $Missing.Count -gt 0) {
 }
 $Found = @($Units | Where-Object {
     $LUnit = $_
-    @($Forbidden | Where-Object { $LUnit -eq $_ -or $LUnit.StartsWith($_ + '.') }).Count -gt 0
+    @($Forbidden | Where-Object {
+        $LUnit -eq $_ -or $LUnit.StartsWith($_ + '.', [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
   })
 Write-Host ("Модули TgBot: " + (@($Units | Where-Object { $_ -like 'TgBot.*' }) -join ', '))
 Write-Host ("Модули System.Net*: " + (@($Units | Where-Object { $_ -like 'System.Net*' }) -join ', '))

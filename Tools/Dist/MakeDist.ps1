@@ -306,7 +306,8 @@ try {
     $list += Get-WhiteFiles 'Source\Design\Icons' @('*.bmp', '*.png', 'MakeIcons.ps1')
     $list += Get-WhiteFiles 'Packages' @('*.dpk', '*.dproj', '*.groupproj')
     $list += Get-WhiteFiles 'Demos' @('*.dpr', '*.pas', '*.dfm', '*.dproj', '*.groupproj') -Recurse
-    $list += Get-WhiteFiles 'Tests' @('*.dpr', '*.dproj')
+    # Tests\*.pas (TgBotTests.Proxy.pas) и Tests\NoNet\ (TgBotNoNetCheck.dpr, check.ps1); Bin/Dcu и т.п. — SkipDirs.
+    $list += Get-WhiteFiles 'Tests' @('*.dpr', '*.pas', '*.dproj', '*.ps1') -Recurse
     $list += Get-WhiteFiles 'Tools\TgBotGen' @('*.dpr', '*.pas', '*.dproj')
     $list += Get-WhiteFiles 'Tools\TgBotGen\Spec' @("api-$api.html", "model-$api.json", "returns-$api.json", 'overrides.json')
     $list += Get-WhiteFiles 'Install' @('*.ps1', '*.cmd')
@@ -316,7 +317,8 @@ try {
 
     $required = @('Source\TgBot.pas', 'Source\TgBot.Base.pas', 'Source\Design\TgBot.Reg.pas',
         'Packages\TgBotRT.dpk', 'Packages\TgBotIndyRT.dpk', 'Packages\TgBotDT.dpk', 'Packages\TgBot.groupproj',
-        'Tests\TgBotTests.dpr', 'Tools\TgBotGen\TgBotGen.dpr',
+        'Tests\TgBotTests.dpr', 'Tests\TgBotTests.Proxy.pas', 'Tests\NoNet\TgBotNoNetCheck.dpr',
+        'Tests\NoNet\check.ps1', 'Tools\TgBotGen\TgBotGen.dpr',
         "Tools\TgBotGen\Spec\api-$api.html", "Tools\TgBotGen\Spec\model-$api.json",
         "Tools\TgBotGen\Spec\returns-$api.json", 'Tools\TgBotGen\Spec\overrides.json',
         'Install\Install.ps1', 'Install\Uninstall.ps1', 'Install\Install.cmd', 'Install\Uninstall.cmd',
