@@ -39,6 +39,8 @@ uses
   TgBot.Base,
   TgBot.Http,
   TgBot.Core,
+  // Служебная регистрация запасной фабрики (TgRegisterFallbackTransport) — не в фасаде.
+  TgBot.Transport,
   // Тест текстов (5b-1): TTgJsonDto, TgUpdatesText, TgRouterText и пары
   // TgBot.Consts — служебные модули; до фасада, чтобы не перекрывать его имена.
   TgBot.Dto,
@@ -11362,8 +11364,13 @@ begin
   CheckProxyRejected('user:' + CProxySecret + '@h:3128', 0, '', CCredentials, 'логин:пароль@ в Host');
   CheckProxyRejected('http://user:' + CProxySecret + '@h:3128', 0, '', CCredentials,
     'http://логин:пароль@ в Host');
-  CheckProxyRejected('h:3128/', 0, '', CCredentials, '/ в конце');
+  CheckEquals('h|3128', NormalizedProxy('h:3128/', 0), 'один / в конце допустим');
+  CheckEquals('h|3128', NormalizedProxy('http://h:3128/', 0), 'http://h:3128/ → h, 3128');
+  CheckEquals('[::1]|3128', NormalizedProxy('http://[::1]:3128/', 0), 'IPv6 с / в конце');
+  CheckProxyRejected('h:3128//', 0, '', CCredentials, '// в конце');
+  CheckProxyRejected('h:3128/path', 0, '', CCredentials, 'путь после порта');
   CheckProxyRejected('http://h/path', 3128, '', CCredentials, 'путь');
+  CheckProxyRejected('http:///', 3128, '', CCredentials, 'только http:// и /');
   CheckProxyRejected('http://', 3128, '', CCredentials, 'только http://');
   CheckProxyRejected('pro xy', 3128, '', CCredentials, 'пробел внутри');
   // Учётные данные и схема сохраняются; повторная нормализация ничего не меняет.
@@ -11559,6 +11566,8 @@ begin
     // (а) TgBot.Http: клиент по токену — TTgHttpTransport.
     LApi := TTgApi.Create(CToken);
     try
+      // Приведение к TObject намеренно: проверяется именно класс встроенного
+      // транспорта (у TTgHttpTransport нет своего интерфейса для Supports).
       Check((LApi.Transport as TObject) is TTgHttpTransport, '(а) TTgApi.Create(Token) → TTgHttpTransport');
     finally
       LApi.Free;
@@ -11618,11 +11627,49 @@ begin
       begin
         TgRegisterDefaultTransport(LNil);
       end, EArgumentNilException), 'регистрация nil → EArgumentNilException');
+    // (д) Запасная фабрика (так TgBot.Http регистрирует встроенную): своя,
+    // зарегистрированная ДО запасной (порядок initialization), — текущая.
+    TgUnregisterDefaultTransport(LSaved);
+    TgRegisterDefaultTransport(LMine);
+    TgRegisterFallbackTransport(LSaved);
+    Check(CurrentFactoryPtr = FactoryPtr(LMine), '(д) своя до запасной → текущая своя');
+    LApi := TTgApi.Create(CToken);
+    try
+      Check(LApi.Transport = LFakeRef, '(д) TTgApi.Create(Token) → транспорт своей фабрики');
+    finally
+      LApi.Free;
+    end;
+    TgUnregisterDefaultTransport(LMine);
+    Check(CurrentFactoryPtr = FactoryPtr(LSaved), '(д) снятие своей → запасная');
+    LApi := TTgApi.Create(CToken);
+    try
+      Check((LApi.Transport as TObject) is TTgHttpTransport, '(д) после снятия своей → TTgHttpTransport');
+    finally
+      LApi.Free;
+    end;
+    // Своя после запасной — тоже текущая; повторная регистрация запасной
+    // переносит ссылку в самый низ стека.
+    TgRegisterDefaultTransport(LMine);
+    TgRegisterDefaultTransport(LOther);
+    TgRegisterFallbackTransport(LOther);
+    Check(CurrentFactoryPtr = FactoryPtr(LMine), '(д) запасная повторно — вниз, текущая своя');
+    TgUnregisterDefaultTransport(LMine);
+    Check(CurrentFactoryPtr = FactoryPtr(LSaved), '(д) снятие своей → HTTP (над перенесённой)');
+    TgUnregisterDefaultTransport(LSaved);
+    Check(CurrentFactoryPtr = FactoryPtr(LOther), '(д) низ стека — перенесённая запасная');
+    TgUnregisterDefaultTransport(LOther);
+    TgRegisterFallbackTransport(LSaved);
+    Check(CurrentFactoryPtr = FactoryPtr(LSaved), '(д) запасная в пустом реестре — текущая');
+    Check(Raises(
+      procedure
+      begin
+        TgRegisterFallbackTransport(LNil);
+      end, EArgumentNilException), '(д) запасная nil → EArgumentNilException');
   finally
     TgUnregisterDefaultTransport(LMine);
     TgUnregisterDefaultTransport(LOther);
     if CurrentFactoryPtr <> FactoryPtr(LSaved) then
-      TgRegisterDefaultTransport(LSaved);
+      TgRegisterFallbackTransport(LSaved);
     LFakeRef := nil;
   end;
   Check(CurrentFactoryPtr = FactoryPtr(LSaved), 'фабрика по умолчанию восстановлена');
