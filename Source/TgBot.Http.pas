@@ -16,10 +16,12 @@
   - псевдонимы перенесённых в TgBot.Transport типов (TTgRateLimiter,
     TgLongPollReserveSec) — для совместимости;
   - фабрика транспорта по умолчанию: модуль регистрирует TTgHttpTransport
-    в реестре TgBot.Transport (initialization) и снимает при завершении
-    (finalization; в том числе при выгрузке пакета). Клиент, созданный по
-    токену или настройкам, получает TTgHttpTransport, если модуль подключён
-    (напрямую или фасадом TgBot).
+    в реестре TgBot.Transport запасной (initialization,
+    TgRegisterFallbackTransport — под фабриками пользователя) и снимает при
+    завершении (finalization; в том числе при выгрузке пакета). Клиент,
+    созданный по токену или настройкам, получает TTgHttpTransport, если
+    модуль подключён (напрямую или фасадом TgBot) и своя фабрика
+    (TgRegisterDefaultTransport) не зарегистрирована.
 
   Отмена операции (токен ITgCancellation):
   - ожидания лимитёра и retry_after прерываются сразу (WaitFor токена);
@@ -573,7 +575,8 @@ end;
 
 initialization
   GHttpTransportFactory := NewHttpTransport;
-  TgRegisterDefaultTransport(GHttpTransportFactory);
+  // Запасная (низ стека): фабрика пользователя действует при любом порядке initialization.
+  TgRegisterFallbackTransport(GHttpTransportFactory);
 
 finalization
   TgUnregisterDefaultTransport(GHttpTransportFactory);

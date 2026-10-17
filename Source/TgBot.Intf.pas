@@ -7,7 +7,8 @@
   источник или приёмник обновлений) или зависит только от абстракций:
   uses TgBot.Intf не тянет реализации — ни System.Net.*, ни Indy, ни
   TgBot.Http/TgBot.Core/TgBot.Updates.*. Зависимости: TgBot.Base (токены
-  отмены, исключения), TgBot.Json (TTgParams).
+  отмены, исключения), TgBot.Json (TTgParams); в implementation —
+  TgBot.Consts (тексты ошибок проверки прокси).
 
   - транспорт Bot API: ITgTransport, ITgCancellableTransport,
     ITgHttpSettingsProvider; записи TTgProxySettings, TTgHttpSettings,
@@ -80,8 +81,8 @@ type
   ///   (облачный Bot API) идут через прокси туннелем CONNECT — прокси должен
   ///   его поддерживать. Поддерживается только HTTP-прокси: SOCKS- и
   ///   HTTPS-прокси (TLS до самого прокси) библиотека не поддерживает. Настройки
-  ///   проверяет и нормализует TTgHttpTransport.Create (см. Normalized),
-  ///   ошибка настройки — ETgError. Преобразование в настройки RTL
+  ///   проверяет и нормализует TTgTransportBase.Create (TgBot.Transport; см.
+  ///   Normalized), ошибка настройки — ETgError. Преобразование в настройки RTL
   ///   (TProxySettings) — ToRtlSettings, помощник записи в TgBot.Http и
   ///   фасаде TgBot.
   ///   Поле записи меняется на месте, в том числе через with:
@@ -96,8 +97,9 @@ type
     /// <summary>
     ///   Хост прокси; пусто — прокси бота не задан (Windows: системные
     ///   настройки прокси WinHTTP/IE). Адреса 127.0.0.1/localhost в ApiUrl
-    ///   WinHTTP запрашивает напрямую, минуя прокси. Допустимо 'хост:порт'
-    ///   и префикс 'http://'; IPv6 — '[::1]' или без скобок.
+    ///   WinHTTP запрашивает напрямую, минуя прокси. Допустимо 'хост:порт',
+    ///   префикс 'http://' и завершающий '/' ('http://proxy:3128/'); IPv6 —
+    ///   '[::1]' или без скобок.
     /// </summary>
     Host: string;
     /// <summary>Порт прокси 1..65535; 0 — порт берётся из Host ('хост:порт').</summary>
@@ -122,13 +124,14 @@ type
     /// <summary>Прокси задан.</summary>
     function IsEnabled: Boolean;
     /// <summary>
-    ///   Проверенная копия настроек: Host без пробелов и префикса 'http://',
-    ///   порт из 'хост:порт' (при Port = 0), IPv6 без скобок — в '[…]'.
+    ///   Проверенная копия настроек: Host без пробелов, префикса 'http://' и
+    ///   одного завершающего '/', порт из 'хост:порт' (при Port = 0), IPv6
+    ///   без скобок — в '[…]'.
     ///   Host пустой или из пробелов — Host = '' без проверок (прокси не
     ///   задан). Учётные данные в тексты ошибок не попадают. Ошибки —
     ///   ETgError: схема, кроме '' и 'http' (в Scheme или 'схема://' в Host);
-    ///   '/', '@' или пробел в Host; порт вне 1..65535; порт в Host
-    ///   не совпадает с Port.
+    ///   путь ('/' не последним символом), '@' или пробел в Host; порт вне
+    ///   1..65535; порт в Host не совпадает с Port.
     /// </summary>
     function Normalized: TTgProxySettings;
   end;
@@ -228,8 +231,9 @@ type
 
   /// <summary>
   ///   Служебный: транспорт с настройками TTgHttpSettings (реализует
-  ///   TTgHttpTransport). Через него клиент получает настройки транспорта без
-  ///   приведения к классу. В прикладном коде не нужен.
+  ///   TTgTransportBase, TgBot.Transport). Через него клиент получает
+  ///   настройки транспорта без приведения к классу. В прикладном коде не
+  ///   нужен.
   /// </summary>
   ITgHttpSettingsProvider = interface
     ['{804B9679-6947-4414-8785-FE1C5499DF87}']
@@ -691,6 +695,9 @@ begin
       raise ETgError.Create(TgLangTextFmt(@SRuProxyScheme, @SEnProxyScheme, [LScheme]));
     end;
   end;
+  // Один завершающий '/' ('http://proxy:3128/') допустим; путь — нет.
+  if (LHost <> '') and (LHost[Length(LHost)] = '/') then
+    SetLength(LHost, Length(LHost) - 1);
   if LHost = '' then
     RaiseBadHost;
   for I := 1 to Length(LHost) do

@@ -221,7 +221,7 @@ type
 
   { TgBot.Http }
 
-  /// <summary>Настройки HTTP(S)-прокси.</summary>
+  /// <summary>Настройки HTTP-прокси (для https — туннель CONNECT).</summary>
   TTgProxySettings = TgBot.Http.TTgProxySettings;
   /// <summary>Настройки транспорта (токен, ApiUrl, прокси, таймауты, лимиты).</summary>
   TTgHttpSettings = TgBot.Http.TTgHttpSettings;
@@ -404,7 +404,8 @@ procedure TgSetAsyncPoolSize(AMaxThreads: Integer);
 /// <summary>
 ///   Регистрирует фабрику транспорта по умолчанию; действует последняя
 ///   зарегистрированная (описание — TgBot.Transport.TgRegisterDefaultTransport).
-///   При uses TgBot зарегистрирован TTgHttpTransport (TgBot.Http).
+///   При uses TgBot зарегистрирован TTgHttpTransport (TgBot.Http) — запасным:
+///   своя фабрика его перекрывает при любом порядке initialization.
 /// </summary>
 procedure TgRegisterDefaultTransport(const AFactory: TTgTransportFactory);
 /// <summary>

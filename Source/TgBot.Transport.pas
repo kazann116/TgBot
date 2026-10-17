@@ -26,7 +26,9 @@
   настройкам (TTgApi.Create(AToken/ASettings)), получает транспорт от
   TgCreateDefaultTransport. Фабрику регистрирует модуль реализации
   (TgBot.Http — в initialization, его подключает фасад TgBot) или
-  пользователь (TgRegisterDefaultTransport). Без зарегистрированной
+  пользователь (TgRegisterDefaultTransport). Встроенная фабрика —
+  запасная (TgRegisterFallbackTransport, низ стека): фабрика пользователя
+  действует при любом порядке initialization. Без зарегистрированной
   фабрики ядро не зависит от HTTP-библиотеки.
 
   Токен бота никогда не попадает в тексты исключений.
@@ -146,6 +148,13 @@ type
   ///     исключение, кроме ETgError, в ETgNetworkError (токен в тексте
   ///     маскируется, добавляется адрес прокси) или в ETgCancelledError,
   ///     если операция отменена;
+  ///   - это касается любого исключения изнутри Post/Download, не только
+  ///     сетевого: ошибки сборки тела формы, чтения потоков частей (в том
+  ///     числе потоков пользователя — TTgInputFile.FromStream) и записи в
+  ///     ADest тоже становятся ETgNetworkError (класс исходного исключения
+  ///     теряется, его текст — в сообщении). Файлы с диска база открывает
+  ///     до Post: ошибка открытия — исходное исключение (например,
+  ///     EFOpenError), не ETgNetworkError;
   ///   - после возврата база сама проверяет ARequest.Cancel.IsCancelled
   ///     (отмена — ETgCancelledError), поэтому ответ отменённого запроса
   ///     можно вернуть как есть;
@@ -276,19 +285,39 @@ type
 ///   ссылке: для снятия храните её в переменной (имя функции при каждом
 ///   присваивании ссылке на функцию даёт новую ссылку). nil —
 ///   EArgumentNilException. Потокобезопасно.
+///   Встроенный HTTP-транспорт (TgBot.Http) регистрируется запасным
+///   (TgRegisterFallbackTransport — в самый низ стека), поэтому
+///   зарегистрированная здесь фабрика становится текущей независимо от
+///   порядка initialization модулей: и до, и после TgBot.Http. Регистрируйте
+///   свою фабрику в initialization своего модуля, снимайте в finalization.
+///   После finalization модуля TgBot.Transport вызов ничего не делает.
 /// </summary>
 procedure TgRegisterDefaultTransport(const AFactory: TTgTransportFactory);
 /// <summary>
-///   Снимает фабрику, зарегистрированную TgRegisterDefaultTransport с той же
-///   ссылкой. Снята текущая — текущей становится зарегистрированная перед
-///   ней (если есть); снята не текущая — текущая не меняется, ссылка просто
+///   Служебная (для модулей реализации транспорта, например TgBot.Http):
+///   регистрирует запасную фабрику — в самый низ стека, под всеми уже
+///   зарегистрированными. Она становится текущей, только если других фабрик
+///   нет или все они сняты, поэтому любая регистрация пользователя
+///   (TgRegisterDefaultTransport) её перекрывает, в каком бы порядке ни шли
+///   initialization. Уже зарегистрированная ссылка переносится вниз.
+///   Снятие — TgUnregisterDefaultTransport. nil — EArgumentNilException.
+///   Потокобезопасно; после finalization модуля TgBot.Transport ничего не
+///   делает.
+/// </summary>
+procedure TgRegisterFallbackTransport(const AFactory: TTgTransportFactory);
+/// <summary>
+///   Снимает фабрику, зарегистрированную TgRegisterDefaultTransport (или
+///   TgRegisterFallbackTransport) с той же ссылкой. Снята текущая —
+///   текущей становится зарегистрированная перед ней (если есть); снята
+///   не текущая — текущая не меняется, ссылка просто
 ///   не хранится (модуль пакета можно выгрузить). Незарегистрированная
 ///   ссылка или nil — ничего не происходит. Потокобезопасно.
 /// </summary>
 procedure TgUnregisterDefaultTransport(const AFactory: TTgTransportFactory);
 /// <summary>
 ///   Текущая фабрика транспорта по умолчанию или nil, если не
-///   зарегистрирована. Вызывайте со скобками — LFactory :=
+///   зарегистрирована (или модуль TgBot.Transport уже завершён —
+///   finalization). Вызывайте со скобками — LFactory :=
 ///   TgDefaultTransportFactory(): без них компилятор берёт саму функцию.
 /// </summary>
 function TgDefaultTransportFactory: TTgTransportFactory;
@@ -296,8 +325,9 @@ function TgDefaultTransportFactory: TTgTransportFactory;
 ///   Транспорт по умолчанию по настройкам — текущей фабрикой (её
 ///   исключения, например ошибки прокси, — без изменений). Фабрики нет —
 ///   ETgError «транспорт по умолчанию не зарегистрирован» (подключите
-///   TgBot.Http или фасад TgBot либо передайте клиенту свой транспорт);
-///   фабрика вернула nil — ETgError «не задан транспорт».
+///   TgBot.Http или фасад TgBot либо передайте клиенту свой транспорт;
+///   то же после finalization модуля TgBot.Transport); фабрика вернула
+///   nil — ETgError «не задан транспорт».
 /// </summary>
 function TgCreateDefaultTransport(const ASettings: TTgHttpSettings): ITgTransport;
 
@@ -898,22 +928,46 @@ begin
   Result := -1;
 end;
 
-procedure TgRegisterDefaultTransport(const AFactory: TTgTransportFactory);
+/// <summary>
+///   Добавляет фабрику в стек: наверх (текущая) или, при AFallback, в самый
+///   низ (запасная). Уже зарегистрированная ссылка переносится.
+/// </summary>
+procedure AddFactory(const AFactory: TTgTransportFactory; AFallback: Boolean);
 var
-  LIndex: Integer;
+  LIndex, I: Integer;
 begin
   if not Assigned(AFactory) then
     raise EArgumentNilException.Create(TgLangTextFmt(@SRuArgNil, @SEnArgNil, ['AFactory']));
+  // После finalization модуля реестра (выгрузка) регистрировать некуда.
+  if not Assigned(GFactoryLock) then
+    Exit;
   GFactoryLock.Enter;
   try
     LIndex := IndexOfFactory(FactoryIdentity(AFactory));
     if LIndex >= 0 then
       Delete(GFactories, LIndex, 1);
     SetLength(GFactories, Length(GFactories) + 1);
-    GFactories[High(GFactories)] := AFactory;
+    if AFallback then
+    begin
+      for I := High(GFactories) downto 1 do
+        GFactories[I] := GFactories[I - 1];
+      GFactories[0] := AFactory;
+    end
+    else
+      GFactories[High(GFactories)] := AFactory;
   finally
     GFactoryLock.Leave;
   end;
+end;
+
+procedure TgRegisterDefaultTransport(const AFactory: TTgTransportFactory);
+begin
+  AddFactory(AFactory, False);
+end;
+
+procedure TgRegisterFallbackTransport(const AFactory: TTgTransportFactory);
+begin
+  AddFactory(AFactory, True);
 end;
 
 procedure TgUnregisterDefaultTransport(const AFactory: TTgTransportFactory);
@@ -935,6 +989,10 @@ end;
 
 function TgDefaultTransportFactory: TTgTransportFactory;
 begin
+  // После finalization модуля реестра фабрик нет (TgCreateDefaultTransport —
+  // ETgError «не зарегистрирован», а не нарушение доступа).
+  if not Assigned(GFactoryLock) then
+    Exit(nil);
   GFactoryLock.Enter;
   try
     if Length(GFactories) > 0 then
