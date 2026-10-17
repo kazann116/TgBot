@@ -12,6 +12,9 @@
         <Projects Include="04_WebhookBot\WebhookBot.dproj">
             <Dependencies/>
         </Projects>
+        <Projects Include="05_CustomTransport\CustomTransport.dproj">
+            <Dependencies/>
+        </Projects>
     </ItemGroup>
     <ProjectExtensions>
         <Borland.Personality>Default.Personality.12</Borland.Personality>
@@ -47,14 +50,23 @@
     <Target Name="WebhookBot:Make">
         <MSBuild Projects="04_WebhookBot\WebhookBot.dproj" Targets="Make"/>
     </Target>
+    <Target Name="CustomTransport">
+        <MSBuild Projects="05_CustomTransport\CustomTransport.dproj"/>
+    </Target>
+    <Target Name="CustomTransport:Clean">
+        <MSBuild Projects="05_CustomTransport\CustomTransport.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="CustomTransport:Make">
+        <MSBuild Projects="05_CustomTransport\CustomTransport.dproj" Targets="Make"/>
+    </Target>
     <Target Name="Build">
-        <CallTarget Targets="EchoBot;VclBot;WebhookBot"/>
+        <CallTarget Targets="EchoBot;VclBot;WebhookBot;CustomTransport"/>
     </Target>
     <Target Name="Clean">
-        <CallTarget Targets="EchoBot:Clean;VclBot:Clean;WebhookBot:Clean"/>
+        <CallTarget Targets="EchoBot:Clean;VclBot:Clean;WebhookBot:Clean;CustomTransport:Clean"/>
     </Target>
     <Target Name="Make">
-        <CallTarget Targets="EchoBot:Make;VclBot:Make;WebhookBot:Make"/>
+        <CallTarget Targets="EchoBot:Make;VclBot:Make;WebhookBot:Make;CustomTransport:Make"/>
     </Target>
     <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
 </Project>

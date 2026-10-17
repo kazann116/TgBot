@@ -11628,6 +11628,680 @@ begin
   Check(CurrentFactoryPtr = FactoryPtr(LSaved), 'фабрика по умолчанию восстановлена');
 end;
 
+type
+  /// <summary>Часть формы, снятая TRecordingTransport в Post.</summary>
+  TRecordedPart = record
+    Name: string;
+    Value: string;
+    IsFile: Boolean;
+    FileName: string;
+    ContentType: string;
+    /// <summary>Позиция потока части при входе в Post.</summary>
+    StartPosition: Int64;
+    /// <summary>Содержимое потока от позиции входа до конца.</summary>
+    Data: TBytes;
+  end;
+
+  /// <summary>Запрос, снятый TRecordingTransport в Post.</summary>
+  TRecordedPost = record
+    Method: string;
+    Url: string;
+    ContentType: string;
+    ResponseTimeoutMs: Integer;
+    HasCancel: Boolean;
+    IsMultipart: Boolean;
+    Body: TBytes;
+    Parts: TArray<TRecordedPart>;
+  end;
+
+  /// <summary>Скачивание, снятое TRecordingTransport в Download.</summary>
+  TRecordedDownload = record
+    Url: string;
+    ResponseTimeoutMs: Integer;
+    HasCancel: Boolean;
+  end;
+
+  /// <summary>Ответ своего транспорта на POST (вместо сети).</summary>
+  TRecordingPostHandler = reference to function(const ARequest: TTgPostRequest): TTgHttpResponse;
+  /// <summary>Ответ своего транспорта на GET файла: пишет тело в ADest, возвращает статус.</summary>
+  TRecordingDownloadHandler = reference to function(const ARequest: TTgDownloadRequest;
+    ADest: TStream): Integer;
+
+  /// <summary>
+  ///   Свой транспорт поверх TTgTransportBase (0.4.0) без сети: Post и
+  ///   Download запоминают запрос (потоки частей формы читаются до конца,
+  ///   как это делает HTTP-клиент) и отвечают обработчиком или заготовкой
+  ///   по умолчанию. Вызывается только из потока теста — списки без замка.
+  /// </summary>
+  TRecordingTransport = class(TTgTransportBase)
+  private
+    FPosts: TList<TRecordedPost>;
+    FDownloads: TList<TRecordedDownload>;
+    FOnPost: TRecordingPostHandler;
+    FOnDownload: TRecordingDownloadHandler;
+  protected
+    function Post(const ARequest: TTgPostRequest): TTgHttpResponse; override;
+    function Download(const ARequest: TTgDownloadRequest; ADest: TStream): Integer; override;
+  public
+    constructor Create(const ASettings: TTgHttpSettings);
+    destructor Destroy; override;
+    /// <summary>Сбрасывает снятые запросы и обработчики.</summary>
+    procedure Clear;
+    property Posts: TList<TRecordedPost> read FPosts;
+    property Downloads: TList<TRecordedDownload> read FDownloads;
+    property OnPost: TRecordingPostHandler read FOnPost write FOnPost;
+    property OnDownload: TRecordingDownloadHandler read FOnDownload write FOnDownload;
+  end;
+
+  /// <summary>Исключение, пойманное CatchError.</summary>
+  TCaughtError = record
+    /// <summary>Имя класса ('' — исключения не было).</summary>
+    ErrorClass: string;
+    Text: string;
+    /// <summary>ETgApiError.ErrorCode или ETgNetworkError.StatusCode.</summary>
+    Code: Integer;
+    /// <summary>ETgApiError.Method или ETgNetworkError.Method.</summary>
+    Method: string;
+    /// <summary>ETgApiError.RetryAfter.</summary>
+    RetryAfter: Integer;
+  end;
+
+const
+  /// <summary>Тело файла, которое TRecordingTransport.Download пишет по умолчанию.</summary>
+  CRecordingDownloadData = 'содержимое файла';
+
+constructor TRecordingTransport.Create(const ASettings: TTgHttpSettings);
+begin
+  inherited Create(ASettings);
+  FPosts := TList<TRecordedPost>.Create;
+  FDownloads := TList<TRecordedDownload>.Create;
+end;
+
+destructor TRecordingTransport.Destroy;
+begin
+  FreeAndNil(FDownloads);
+  FreeAndNil(FPosts);
+  inherited Destroy;
+end;
+
+procedure TRecordingTransport.Clear;
+begin
+  FPosts.Clear;
+  FDownloads.Clear;
+  FOnPost := nil;
+  FOnDownload := nil;
+end;
+
+function TRecordingTransport.Post(const ARequest: TTgPostRequest): TTgHttpResponse;
+var
+  LPost: TRecordedPost;
+  LPart: TRecordedPart;
+  I: Integer;
+begin
+  LPost := Default(TRecordedPost);
+  LPost.Method := ARequest.Method;
+  LPost.Url := ARequest.Url;
+  LPost.ContentType := ARequest.ContentType;
+  LPost.ResponseTimeoutMs := ARequest.ResponseTimeoutMs;
+  LPost.HasCancel := Assigned(ARequest.Cancel);
+  LPost.IsMultipart := ARequest.IsMultipart;
+  LPost.Body := Copy(ARequest.Body, 0, Length(ARequest.Body));
+  SetLength(LPost.Parts, Length(ARequest.Parts));
+  for I := 0 to High(ARequest.Parts) do
+  begin
+    LPart := Default(TRecordedPart);
+    LPart.Name := ARequest.Parts[I].Name;
+    LPart.Value := ARequest.Parts[I].Value;
+    LPart.IsFile := ARequest.Parts[I].IsFile;
+    if LPart.IsFile then
+    begin
+      LPart.FileName := ARequest.Parts[I].FileName;
+      LPart.ContentType := ARequest.Parts[I].ContentType;
+      // Как HTTP-клиент: поток читается до конца — повтор обязан начать с 0.
+      LPart.StartPosition := ARequest.Parts[I].Stream.Position;
+      SetLength(LPart.Data, ARequest.Parts[I].Stream.Size - LPart.StartPosition);
+      if Length(LPart.Data) > 0 then
+        ARequest.Parts[I].Stream.ReadBuffer(LPart.Data[0], Length(LPart.Data));
+    end;
+    LPost.Parts[I] := LPart;
+  end;
+  FPosts.Add(LPost);
+  if Assigned(FOnPost) then
+    Result := FOnPost(ARequest)
+  else
+    Result := StubResponse(200, '{"ok":true,"result":true}');
+end;
+
+function TRecordingTransport.Download(const ARequest: TTgDownloadRequest;
+  ADest: TStream): Integer;
+var
+  LDownload: TRecordedDownload;
+  LData: TBytes;
+begin
+  LDownload.Url := ARequest.Url;
+  LDownload.ResponseTimeoutMs := ARequest.ResponseTimeoutMs;
+  LDownload.HasCancel := Assigned(ARequest.Cancel);
+  FDownloads.Add(LDownload);
+  if Assigned(FOnDownload) then
+    Exit(FOnDownload(ARequest, ADest));
+  LData := TEncoding.UTF8.GetBytes(CRecordingDownloadData);
+  ADest.WriteBuffer(LData[0], Length(LData));
+  Result := 200;
+end;
+
+/// <summary>Выполняет AProc и возвращает сведения о его исключении (ErrorClass = '' — не было).</summary>
+function CatchError(const AProc: TProc): TCaughtError;
+begin
+  Result := Default(TCaughtError);
+  try
+    AProc();
+  except
+    on E: Exception do
+    begin
+      Result.ErrorClass := E.ClassName;
+      Result.Text := E.Message;
+      if E is ETgApiError then
+      begin
+        Result.Code := ETgApiError(E).ErrorCode;
+        Result.Method := ETgApiError(E).Method;
+        Result.RetryAfter := ETgApiError(E).RetryAfter;
+      end
+      else if E is ETgNetworkError then
+      begin
+        Result.Code := ETgNetworkError(E).StatusCode;
+        Result.Method := ETgNetworkError(E).Method;
+      end;
+    end;
+  end;
+end;
+
+/// <summary>Часть формы с именем AName из снятого запроса (пустая запись — нет такой).</summary>
+function RecordedPart(const APost: TRecordedPost; const AName: string): TRecordedPart;
+var
+  I: Integer;
+begin
+  for I := 0 to High(APost.Parts) do
+    if APost.Parts[I].Name = AName then
+      Exit(APost.Parts[I]);
+  Result := Default(TRecordedPart);
+end;
+
+/// <summary>Содержимое TBytesStream как текст UTF-8.</summary>
+function StreamText(AStream: TBytesStream): string;
+begin
+  Result := TEncoding.UTF8.GetString(AStream.Bytes, 0, AStream.Size);
+end;
+
+/// <summary>
+///   0.4.0: свой транспорт — наследник TTgTransportBase (Post/Download без
+///   сети) через TTgApi.Create(ATransport): URL метода, JSON-тело, части
+///   формы (очищенное имя файла, ContentType), позиция потоков 0 на каждой
+///   попытке после 429, маскировка токена, обёртка исключений Post,
+///   ETgApiError/ETgConflictError, проверки путей скачивания и LocalMode,
+///   статус скачивания, отмена во время Post и Download.
+/// </summary>
+procedure TestCustomTransportBase;
+const
+  CToken = '123456:CUSTOM-SECRET';
+  CSecret = 'CUSTOM-SECRET';
+  // Токен в URL-кодировке (':' → '%3a', строчные hex): маскируется без учёта регистра.
+  CTokenEncoded = '123456%3aCUSTOM-SECRET';
+  CApiUrl = 'https://api.example.test';
+  CUserOk = '{"ok":true,"result":{"id":77,"is_bot":true,"first_name":"Свой",' +
+    '"username":"own_transport_bot"}}';
+  CMessageOk = '{"ok":true,"result":' + CMessageJson + '}';
+  CRetryAfter0 = '{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 0",' +
+    '"parameters":{"retry_after":0}}';
+  CRetryAfter1 = '{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 1",' +
+    '"parameters":{"retry_after":1}}';
+  CRetryAfterLong = '{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 999",' +
+    '"parameters":{"retry_after":999}}';
+  CDocumentText = 'данные документа';
+  CFilePath = 'documents/file_7.txt';
+  // Пути скачивания, отклоняемые до сети: пустой, '..' в любом месте, UNC.
+  CBadPaths: array[0..7] of string = ('', '../secret.txt', 'documents/../../etc/passwd',
+    'a\..\b.txt', 'a/ .. /b.txt', '\\server\share\f.txt', '//server/share/f.txt', '/\server\f.txt');
+var
+  LSettings: TTgHttpSettings;
+  // Намеренно класс: тест задаёт обработчики и читает снятые запросы
+  // (Posts/Downloads); объект держит интерфейсная ссылка LTransport.
+  LImpl, LLocalImpl: TRecordingTransport;
+  LTransport, LLocalRef: ITgTransport;
+  LApi, LLocalApi: TTgApi;
+  LParams: TTgParams;
+  LValue: TJSONValue;
+  LBody: TJSONObject;
+  LPost: TRecordedPost;
+  LPart: TRecordedPart;
+  LUpload, LDest: TBytesStream;
+  LThumb: TBytes;
+  LCaught: TCaughtError;
+  LAttempts, I: Integer;
+  LSource: ITgCancellationSource;
+  LSawCancel: Boolean;
+  LPath, LLocalFile: string;
+begin
+  Check(Raises(
+    procedure
+    begin
+      TRecordingTransport.Create(TTgHttpSettings.Create('  ')).Free;
+    end, ETgError), 'пустой токен → ETgError из конструктора базы');
+  LSettings := TTgHttpSettings.Create(CToken);
+  LSettings.ApiUrl := CApiUrl + '/';
+  LSettings.ResponseTimeoutMs := 7000;
+  // Без лимитёра: тест не ждёт слотов отправки.
+  LSettings.GlobalRatePerSec := 0;
+  LSettings.PerChatIntervalMs := 0;
+  LImpl := TRecordingTransport.Create(LSettings);
+  LTransport := LImpl;
+  LApi := TTgApi.Create(LTransport);
+  LUpload := TBytesStream.Create(TEncoding.UTF8.GetBytes(CDocumentText));
+  LDest := TBytesStream.Create;
+  LLocalFile := '';
+  try
+    Check(LApi.Transport = LTransport, 'TTgApi.Create(ATransport): транспорт клиента — свой');
+    Check(Supports(LTransport, ITgCancellableTransport), 'база реализует ITgCancellableTransport');
+    CheckEquals(CApiUrl, (LTransport as ITgHttpSettingsProvider).GetSettings.ApiUrl,
+      'Settings.ApiUrl без завершающего /');
+
+    // (1) GetMe: URL метода, JSON-тело, таймаут, токен отмены.
+    LImpl.OnPost :=
+      function(const ARequest: TTgPostRequest): TTgHttpResponse
+      begin
+        Result := StubResponse(200, CUserOk);
+      end;
+    CheckEquals('own_transport_bot', LApi.GetMe.Username, 'GetMe через свой транспорт');
+    CheckEquals(1, LImpl.Posts.Count, 'GetMe: один Post');
+    LPost := LImpl.Posts[0];
+    CheckEquals('getMe', LPost.Method, 'GetMe: Method');
+    CheckEquals(CApiUrl + '/bot' + CToken + '/getMe', LPost.Url, 'GetMe: URL = ApiUrl/bot<токен>/getMe');
+    CheckEquals('application/json; charset=utf-8', LPost.ContentType, 'GetMe: ContentType JSON');
+    Check(not LPost.IsMultipart and (Length(LPost.Parts) = 0), 'GetMe: не multipart');
+    CheckEquals(7000, LPost.ResponseTimeoutMs, 'GetMe: ResponseTimeoutMs из настроек');
+    Check(LPost.HasCancel, 'GetMe: Post получает токен отмены операции');
+    LBody := TTgJson.ParseObjectUtf8(LPost.Body);
+    try
+      Check(Assigned(LBody) and (LBody.Count = 0), 'GetMe: тело — пустой JSON-объект');
+    finally
+      LBody.Free;
+    end;
+
+    // SendMessage: параметры — JSON в UTF-8.
+    LImpl.Clear;
+    LImpl.OnPost :=
+      function(const ARequest: TTgPostRequest): TTgHttpResponse
+      begin
+        Result := StubResponse(200, CMessageOk);
+      end;
+    CheckEquals(42, LApi.SendMessage(12345, 'Привет, "мир"').MessageId, 'SendMessage: ответ разобран');
+    CheckEquals(1, LImpl.Posts.Count, 'SendMessage: один Post');
+    LPost := LImpl.Posts[0];
+    CheckEquals(CApiUrl + '/bot' + CToken + '/sendMessage', LPost.Url, 'SendMessage: URL');
+    Check(not LPost.IsMultipart, 'SendMessage без файлов: не multipart');
+    LBody := TTgJson.ParseObjectUtf8(LPost.Body);
+    try
+      Check(Assigned(LBody), 'SendMessage: тело — JSON (UTF-8)');
+      if Assigned(LBody) then
+      begin
+        CheckEquals('12345', TTgJson.ToFormText(LBody.GetValue('chat_id')), 'SendMessage: chat_id');
+        CheckEquals('Привет, "мир"', TTgJson.GetStr(LBody, 'text'), 'SendMessage: text (кириллица, кавычки)');
+      end;
+    finally
+      LBody.Free;
+    end;
+
+    // getUpdates: таймаут ответа — не меньше timeout + запас long polling (15 с).
+    LImpl.Clear;
+    LImpl.OnPost :=
+      function(const ARequest: TTgPostRequest): TTgHttpResponse
+      begin
+        Result := StubResponse(200, '{"ok":true,"result":[]}');
+      end;
+    LParams := TTgParams.Create;
+    try
+      LParams.Add('timeout', 50);
+      LValue := LApi.Call('getUpdates', LParams);
+      LValue.Free;
+    finally
+      LParams.Free;
+    end;
+    CheckEquals(1, LImpl.Posts.Count, 'getUpdates: один Post');
+    CheckEquals((50 + 15) * 1000, LImpl.Posts[0].ResponseTimeoutMs, 'getUpdates timeout=50: таймаут ответа 65 с');
+
+    // (2) Файлы: части формы — поля, затем файлы; имя файла очищено; поток — с позиции 0.
+    LImpl.Clear;
+    LThumb := TBytes.Create(1, 2, 3);
+    // Пользователь оставил поток не в начале — отправляется всё равно целиком.
+    LUpload.Position := 5;
+    LParams := TTgParams.Create;
+    try
+      LParams.Add('chat_id', 12345);
+      LParams.Add('caption', 'Подпись');
+      LParams.AddFile('document', TTgInputFile.FromStream(LUpload, 'отчёт"'#1'.txt', 'text/plain'));
+      LParams.AddFile('thumbnail', TTgInputFile.FromBytes(LThumb, '"'#9, ''));
+      LValue := LApi.Call('sendDocument', LParams);
+      LValue.Free;
+    finally
+      LParams.Free;
+    end;
+    CheckEquals(1, LImpl.Posts.Count, 'sendDocument: один Post');
+    LPost := LImpl.Posts[0];
+    CheckEquals(CApiUrl + '/bot' + CToken + '/sendDocument', LPost.Url, 'sendDocument: URL');
+    Check(LPost.IsMultipart, 'sendDocument с файлами: multipart');
+    CheckEquals('', LPost.ContentType, 'multipart: ContentType пуст (границу задаёт наследник)');
+    CheckEquals(0, Length(LPost.Body), 'multipart: Body пуст');
+    CheckEquals(4, Length(LPost.Parts), 'multipart: 2 поля + 2 файла');
+    if Length(LPost.Parts) = 4 then
+    begin
+      CheckEquals('chat_id', LPost.Parts[0].Name, 'часть 1: поле chat_id');
+      CheckEquals('12345', LPost.Parts[0].Value, 'часть 1: значение');
+      Check(not LPost.Parts[0].IsFile, 'часть 1: не файл');
+      CheckEquals('caption', LPost.Parts[1].Name, 'часть 2: поле caption');
+      CheckEquals('Подпись', LPost.Parts[1].Value, 'часть 2: значение (кириллица)');
+      CheckEquals('document', LPost.Parts[2].Name, 'часть 3: файл document');
+      Check(LPost.Parts[2].IsFile, 'часть 3: файл');
+      CheckEquals('отчёт.txt', LPost.Parts[2].FileName, 'часть 3: имя без " и управляющих символов');
+      CheckEquals('text/plain', LPost.Parts[2].ContentType, 'часть 3: ContentType');
+      CheckEquals(0, LPost.Parts[2].StartPosition, 'часть 3: поток пользователя — с позиции 0');
+      CheckEquals(CDocumentText, TEncoding.UTF8.GetString(LPost.Parts[2].Data), 'часть 3: поток целиком');
+      CheckEquals('thumbnail', LPost.Parts[3].Name, 'часть 4: файл thumbnail');
+      CheckEquals('file', LPost.Parts[3].FileName, 'часть 4: имя из " и управляющих символов → file');
+      CheckEquals('', LPost.Parts[3].ContentType, 'часть 4: ContentType не задан — пусто');
+      Check((Length(LPost.Parts[3].Data) = 3) and (LPost.Parts[3].Data[2] = 3), 'часть 4: байты');
+    end;
+
+    // (3) 429 с retry_after 0 и 1 (ожидание базы — не меньше 1 с): каждая попытка — поток с позиции 0.
+    LImpl.Clear;
+    LAttempts := 0;
+    LImpl.OnPost :=
+      function(const ARequest: TTgPostRequest): TTgHttpResponse
+      begin
+        Inc(LAttempts);
+        case LAttempts of
+          1: Result := StubResponse(429, CRetryAfter0);
+          2: Result := StubResponse(429, CRetryAfter1);
+        else
+          Result := StubResponse(200, CMessageOk);
+        end;
+      end;
+    LUpload.Position := LUpload.Size;
+    CheckEquals(42, LApi.SendDocument(12345, TTgInputFile.FromStream(LUpload, 'a.txt')).MessageId,
+      '429 ×2 → повтор, ответ третьей попытки');
+    CheckEquals(3, LImpl.Posts.Count, '429: три попытки');
+    for I := 0 to LImpl.Posts.Count - 1 do
+    begin
+      LPart := RecordedPart(LImpl.Posts[I], 'document');
+      Check(LPart.IsFile, Format('429, попытка %d: часть document — файл', [I + 1]));
+      CheckEquals(0, LPart.StartPosition, Format('429, попытка %d: позиция потока 0', [I + 1]));
+      CheckEquals(CDocumentText, TEncoding.UTF8.GetString(LPart.Data),
+        Format('429, попытка %d: поток целиком', [I + 1]));
+    end;
+    // retry_after больше MaxRetryAfterSec — ошибка сразу, без ожидания и повтора.
+    LImpl.Clear;
+    LImpl.OnPost :=
+      function(const ARequest: TTgPostRequest): TTgHttpResponse
+      begin
+        Result := StubResponse(429, CRetryAfterLong);
+      end;
+    LCaught := CatchError(
+      procedure
+      begin
+        LApi.SendMessage(12345, 'x');
+      end);
+    CheckEquals('ETgApiError', LCaught.ErrorClass, '429, retry_after 999 > MaxRetryAfterSec → ETgApiError');
+    CheckEquals(429, LCaught.Code, '429: ErrorCode');
+    CheckEquals(999, LCaught.RetryAfter, '429: RetryAfter');
+    CheckEquals(1, LImpl.Posts.Count, '429 с большим retry_after: без повтора');
+
+    // (4) Ошибки Post. Сетевая ошибка с токеном в тексте → ETgNetworkError без токена.
+    LImpl.Clear;
+    LImpl.OnPost :=
+      function(const ARequest: TTgPostRequest): TTgHttpResponse
+      begin
+        raise EOSError.Create('connect failed: ' + ARequest.Url + ' (' + CTokenEncoded + ')');
+      end;
+    LCaught := CatchError(
+      procedure
+      begin
+        LApi.GetMe;
+      end);
+    CheckEquals('ETgNetworkError', LCaught.ErrorClass, 'EOSError из Post → ETgNetworkError');
+    Check(not Contains(CSecret, LCaught.Text), 'текст сетевой ошибки без токена: ' + LCaught.Text);
+    Check(Contains('***', LCaught.Text), 'токен заменён на ***');
+    Check(Contains('connect failed', LCaught.Text), 'текст исходной ошибки сохранён');
+    CheckEquals('getMe', LCaught.Method, 'ETgNetworkError.Method');
+    CheckEquals(0, LCaught.Code, 'ETgNetworkError.StatusCode = 0 (ответа не было)');
+    // Любое исключение, кроме ETgError, оборачивается.
+    LImpl.OnPost :=
+      function(const ARequest: TTgPostRequest): TTgHttpResponse
+      begin
+        raise Exception.Create('boom');
+      end;
+    LCaught := CatchError(
+      procedure
+      begin
+        LApi.GetMe;
+      end);
+    CheckEquals('ETgNetworkError', LCaught.ErrorClass, 'Exception из Post → ETgNetworkError');
+    Check(Contains('boom', LCaught.Text), 'Exception из Post: текст сохранён');
+    // ETgError из Post проходит без изменений.
+    LImpl.OnPost :=
+      function(const ARequest: TTgPostRequest): TTgHttpResponse
+      begin
+        raise ETgError.Create('своя ошибка транспорта');
+      end;
+    LCaught := CatchError(
+      procedure
+      begin
+        LApi.GetMe;
+      end);
+    CheckEquals('ETgError', LCaught.ErrorClass, 'ETgError из Post — без обёртки');
+    CheckEquals('своя ошибка транспорта', LCaught.Text, 'ETgError из Post — текст без изменений');
+    // Ответ {ok:false} → ETgApiError; токен в description маскируется.
+    LImpl.OnPost :=
+      function(const ARequest: TTgPostRequest): TTgHttpResponse
+      begin
+        Result := StubResponse(400, '{"ok":false,"error_code":400,' +
+          '"description":"Bad Request: chat not found (bot' + CToken + ')"}');
+      end;
+    LCaught := CatchError(
+      procedure
+      begin
+        LApi.SendMessage(12345, 'x');
+      end);
+    CheckEquals('ETgApiError', LCaught.ErrorClass, '{ok:false,error_code:400} → ETgApiError');
+    CheckEquals(400, LCaught.Code, 'ETgApiError.ErrorCode = 400');
+    CheckEquals('sendMessage', LCaught.Method, 'ETgApiError.Method');
+    Check(not Contains(CSecret, LCaught.Text), 'ETgApiError: токен в description замаскирован');
+    // 409 → ETgConflictError.
+    LImpl.OnPost :=
+      function(const ARequest: TTgPostRequest): TTgHttpResponse
+      begin
+        Result := StubResponse(409, '{"ok":false,"error_code":409,' +
+          '"description":"Conflict: terminated by other getUpdates request"}');
+      end;
+    LCaught := CatchError(
+      procedure
+      begin
+        LApi.GetMe;
+      end);
+    CheckEquals('ETgConflictError', LCaught.ErrorClass, '409 → ETgConflictError');
+    CheckEquals(409, LCaught.Code, 'ETgConflictError.ErrorCode = 409');
+    // Не JSON (страница прокси/балансировщика) → ETgNetworkError со статусом.
+    LImpl.OnPost :=
+      function(const ARequest: TTgPostRequest): TTgHttpResponse
+      begin
+        Result := StubResponse(502, '<html>Bad Gateway</html>');
+      end;
+    LCaught := CatchError(
+      procedure
+      begin
+        LApi.GetMe;
+      end);
+    CheckEquals('ETgNetworkError', LCaught.ErrorClass, 'ответ не JSON → ETgNetworkError');
+    CheckEquals(502, LCaught.Code, 'ответ не JSON: StatusCode = 502');
+
+    // (5) Скачивание: URL файла, тело в поток, статус, ошибки, пути.
+    LImpl.Clear;
+    LApi.DownloadFile(CFilePath, LDest);
+    CheckEquals(CRecordingDownloadData, StreamText(LDest), 'DownloadFile: тело записано в поток');
+    CheckEquals(1, LImpl.Downloads.Count, 'DownloadFile: один Download');
+    if LImpl.Downloads.Count = 1 then
+    begin
+      CheckEquals(CApiUrl + '/file/bot' + CToken + '/' + CFilePath, LImpl.Downloads[0].Url,
+        'DownloadFile: URL = ApiUrl/file/bot<токен>/<file_path>');
+      CheckEquals(7000, LImpl.Downloads[0].ResponseTimeoutMs, 'DownloadFile: таймаут из настроек');
+      Check(LImpl.Downloads[0].HasCancel, 'DownloadFile: Download получает токен отмены');
+    end;
+    LImpl.OnDownload :=
+      function(const ARequest: TTgDownloadRequest; ADest: TStream): Integer
+      begin
+        Result := 404;
+      end;
+    LCaught := CatchError(
+      procedure
+      begin
+        LApi.DownloadFile(CFilePath, LDest);
+      end);
+    CheckEquals('ETgNetworkError', LCaught.ErrorClass, 'Download 404 → ETgNetworkError');
+    CheckEquals(404, LCaught.Code, 'Download 404: StatusCode');
+    CheckEquals('downloadFile', LCaught.Method, 'Download 404: Method = downloadFile');
+    LImpl.OnDownload :=
+      function(const ARequest: TTgDownloadRequest; ADest: TStream): Integer
+      begin
+        raise EOSError.Create('read failed: ' + ARequest.Url);
+      end;
+    LCaught := CatchError(
+      procedure
+      begin
+        LApi.DownloadFile(CFilePath, LDest);
+      end);
+    CheckEquals('ETgNetworkError', LCaught.ErrorClass, 'EOSError из Download → ETgNetworkError');
+    Check(not Contains(CSecret, LCaught.Text), 'Download: текст ошибки без токена');
+    // Недопустимые пути отклоняются до Download.
+    LImpl.Clear;
+    for I := Low(CBadPaths) to High(CBadPaths) do
+    begin
+      LPath := CBadPaths[I];
+      LCaught := CatchError(
+        procedure
+        begin
+          LApi.DownloadFile(LPath, LDest);
+        end);
+      CheckEquals('ETgError', LCaught.ErrorClass, 'путь "' + LPath + '" → ETgError');
+    end;
+    CheckEquals(0, LImpl.Downloads.Count, 'недопустимые пути не доходят до Download');
+    // Абсолютный путь без LocalMode — обычное скачивание с сервера.
+    LLocalFile := TPath.Combine(TPath.GetTempPath, 'tgbot040c_' + TGUID.NewGuid.ToString + '.txt');
+    TFile.WriteAllBytes(LLocalFile, TEncoding.UTF8.GetBytes('локальный файл'));
+    LDest.Clear;
+    LApi.DownloadFile(LLocalFile, LDest);
+    CheckEquals(1, LImpl.Downloads.Count, 'LocalMode = False: абсолютный путь — через Download');
+    CheckEquals(CRecordingDownloadData, StreamText(LDest), 'LocalMode = False: тело от Download');
+    // LocalMode: абсолютный путь читается с диска без Download; UNC и '..' — по-прежнему ETgError.
+    LSettings.LocalMode := True;
+    LLocalImpl := TRecordingTransport.Create(LSettings);
+    LLocalRef := LLocalImpl;
+    LLocalApi := TTgApi.Create(LLocalRef);
+    try
+      LDest.Clear;
+      LLocalApi.DownloadFile(LLocalFile, LDest);
+      CheckEquals('локальный файл', StreamText(LDest), 'LocalMode: файл прочитан с диска');
+      CheckEquals(0, LLocalImpl.Downloads.Count, 'LocalMode: Download не вызван');
+      LDest.Clear;
+      LLocalApi.DownloadFile(CFilePath, LDest);
+      CheckEquals(1, LLocalImpl.Downloads.Count, 'LocalMode: относительный путь — через Download');
+      LCaught := CatchError(
+        procedure
+        begin
+          LLocalApi.DownloadFile('\\server\share\f.txt', LDest);
+        end);
+      CheckEquals('ETgError', LCaught.ErrorClass, 'LocalMode: UNC → ETgError');
+      LCaught := CatchError(
+        procedure
+        begin
+          LLocalApi.DownloadFile(ExtractFilePath(LLocalFile) + '..\' + ExtractFileName(LLocalFile), LDest);
+        end);
+      CheckEquals('ETgError', LCaught.ErrorClass, 'LocalMode: абсолютный путь с .. → ETgError');
+      CheckEquals(1, LLocalImpl.Downloads.Count, 'LocalMode: отклонённые пути не доходят до Download');
+    finally
+      LLocalApi.Free;
+      LLocalRef := nil;
+    end;
+
+    // (6) Отмена во время Post: ответ получен полностью — всё равно ETgCancelledError.
+    LImpl.Clear;
+    LSource := TTgCancellationSource.New;
+    LImpl.OnPost :=
+      function(const ARequest: TTgPostRequest): TTgHttpResponse
+      begin
+        LSource.Cancel;
+        Result := StubResponse(200, CUserOk);
+      end;
+    LCaught := CatchError(
+      procedure
+      var
+        LScope: TTgCancelScope;
+      begin
+        LScope := TTgCancelScope.Enter(LSource);
+        try
+          LApi.GetMe;
+        finally
+          LScope.Leave;
+        end;
+      end);
+    CheckEquals('ETgCancelledError', LCaught.ErrorClass, 'Cancel во время Post (ответ 200) → ETgCancelledError');
+    // Отмена из другого потока прерывает ожидание в Post; его исключение — не сетевая ошибка.
+    LSource := TTgCancellationSource.New;
+    LSawCancel := False;
+    LImpl.OnPost :=
+      function(const ARequest: TTgPostRequest): TTgHttpResponse
+      begin
+        CancelLater(LSource, 20);
+        LSawCancel := Assigned(ARequest.Cancel) and ARequest.Cancel.WaitFor(5000);
+        raise EOSError.Create('operation aborted: ' + ARequest.Url);
+      end;
+    LCaught := CatchError(
+      procedure
+      begin
+        LApi.Call('getMe', nil, LSource).Free;
+      end);
+    Check(LSawCancel, 'Post: отмена из другого потока видна через ARequest.Cancel');
+    CheckEquals('ETgCancelledError', LCaught.ErrorClass, 'исключение Post после отмены → ETgCancelledError');
+    // Отмена во время Download.
+    LSource := TTgCancellationSource.New;
+    LImpl.OnDownload :=
+      function(const ARequest: TTgDownloadRequest; ADest: TStream): Integer
+      begin
+        LSource.Cancel;
+        Result := 200;
+      end;
+    LCaught := CatchError(
+      procedure
+      begin
+        LApi.DownloadFile(CFilePath, LDest, LSource);
+      end);
+    CheckEquals('ETgCancelledError', LCaught.ErrorClass, 'Cancel во время Download → ETgCancelledError');
+    // Отмена операции не затрагивает транспорт: следующий вызов проходит.
+    LImpl.Clear;
+    LImpl.OnPost :=
+      function(const ARequest: TTgPostRequest): TTgHttpResponse
+      begin
+        Result := StubResponse(200, CUserOk);
+      end;
+    CheckEquals('own_transport_bot', LApi.GetMe.Username, 'после отмены операции транспорт работает');
+  finally
+    // Обработчики держат захваченные переменные теста — сбрасываются до освобождения.
+    LImpl.Clear;
+    LApi.Free;
+    LTransport := nil;
+    LDest.Free;
+    LUpload.Free;
+    if (LLocalFile <> '') and TFile.Exists(LLocalFile) then
+      TFile.Delete(LLocalFile);
+  end;
+end;
+
 procedure RunAll;
 begin
   Writeln('TgBot ', TgBotVersion, ' (Bot API ', TgBotApiVersion, ') — офлайн-тесты');
@@ -11797,6 +12471,8 @@ begin
     'адрес прокси без учётных данных в сетевой ошибке', TestProxyTransportSettings);
   RunTest('0.4.0: реестр транспорта по умолчанию — TTgHttpTransport при uses TgBot, без фабрики ETgError, ' +
     'своя фабрика, стек регистраций, снятие чужой не меняет текущую', TestDefaultTransportRegistry);
+  RunTest('0.4.0: свой транспорт (TTgTransportBase) через TTgApi — URL, JSON, multipart, 429 с позиции 0, ' +
+    'маскировка токена, ошибки Post/API/409, пути и LocalMode, статус скачивания, отмена', TestCustomTransportBase);
 {$IFDEF MSWINDOWS}
   RunTest('Завершение процесса при висящих обработчиках: < 2 с, код 0',
     TestProcessExitWithHangingHandlers);
