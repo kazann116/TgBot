@@ -696,7 +696,7 @@ begin
     LOnWebhookRegistered := FOnWebhookRegistered;
     FOnWebhookRegistered := nil;
     // Хранилище не переживает бота, даже если ядро держится дольше (контекст,
-    // WebhookReceiver): контексты обработчиков держат свой снимок, а
+    // выполняющийся Accept webhook): контексты обработчиков держат свой снимок, а
     // HandleRaw после Detach сразу выходит. Освобождается при выходе — вне блокировки.
     LStorage := FStateStorage;
     FStateStorage := nil;

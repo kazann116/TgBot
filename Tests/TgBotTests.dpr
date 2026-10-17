@@ -52,7 +52,8 @@ uses
 {$IFDEF TGBOT_TESTHOOKS}
   // Счётчики живых ядер и задач подготовки (TgTestLiveBotCores/TgTestLiveStartJobs).
   TgBot.Bot.Core,
-  // Источник long polling бота (TgTestBotPollSource): настройки Poll*.
+  // Источники бота (TgTestBotPollSource — настройки Poll*; TgTestBotWebhookSource —
+  // ленивое создание по Mode).
   TgBot.Bot,
 {$ENDIF}
   TgBot,
@@ -10622,8 +10623,8 @@ end;
 /// <summary>
 ///   Правки по ревью 0.3.0: WebhookReceiver — отдельный приёмник (через
 ///   Supports из него не получить ITgWebhookSource), после Free бота при
-///   живом приёмнике пользовательский StateStorage освобождён, Accept —
-///   Unavailable; после отпускания приёмника ядро освобождено (TGBOT_TESTHOOKS).
+///   живом приёмнике пользовательский StateStorage и ядро освобождены
+///   (TGBOT_TESTHOOKS), Accept — Unavailable.
 /// </summary>
 procedure TestBotWebhookReceiverReleases;
 const
@@ -10684,15 +10685,215 @@ begin
       begin
         Result := AtomicCmpExchange(GTrackedStorageLive, 0, 0) = LStorage0;
       end, 5000), 'после Free бота при живом приёмнике StateStorage освобождён');
-{$IFDEF TGBOT_TESTHOOKS}
-    Check(LiveBotCores > LCores0, 'приёмник удерживает закрытое ядро до отпускания');
-{$ENDIF}
+    // Приёмник отцеплен от источника при Free: ядро освобождается, пока
+    // ссылка на приёмник ещё жива.
+    Check(WaitLiveAtMost(LCores0, LJobs0, 5000), 'после Free бота при живом приёмнике ядро освобождено');
     Check(LReceiver.Accept(MsgUpdate(2, 100, 7, 'two'), CSecret) = TTgWebhookResult.Unavailable,
       'после Free бота: Accept → Unavailable');
     TThread.Sleep(100);
     Check(not LLog.Has('msg two'), 'после Free бота: обработчик не вызван');
     LReceiver := nil;
     Check(WaitLiveAtMost(LCores0, LJobs0, 5000), 'после отпускания приёмника ядро освобождено (счётчики)');
+  finally
+    LLog.Free;
+  end;
+end;
+
+{$IFDEF TGBOT_TESTHOOKS}
+/// <summary>
+///   Источник отпущен ботом: ссылка теста — единственная (счётчик ссылок
+///   объекта AObject = 1), ждёт не дольше 5 с. Объект, а не интерфейс:
+///   передача параметра не меняет счётчик.
+/// </summary>
+function WaitOnlyRef(AObject: TObject): Boolean;
+var
+  LObject: TInterfacedObject;
+begin
+  LObject := AObject as TInterfacedObject;
+  Result := WaitUntil(
+    function: Boolean
+    begin
+      Result := LObject.RefCount = 1;
+    end, 5000);
+end;
+
+/// <summary>
+///   У бота есть long polling. Отдельная функция: ссылка хука освобождается
+///   при выходе, а не держится скрытой временной переменной до конца теста.
+/// </summary>
+function BotHasPoll(ABot: TTgBot): Boolean;
+var
+  LSource: ITgLongPollSource;
+begin
+  LSource := TgTestBotPollSource(ABot);
+  Result := Assigned(LSource);
+end;
+
+/// <summary>У бота есть webhook-источник (см. BotHasPoll).</summary>
+function BotHasWebhook(ABot: TTgBot): Boolean;
+var
+  LSource: ITgWebhookSource;
+begin
+  LSource := TgTestBotWebhookSource(ABot);
+  Result := Assigned(LSource);
+end;
+{$ENDIF}
+
+/// <summary>
+///   Ленивые источники: (а) после Create и до Start источников нет
+///   (SourceState = Idle, HandleWebhook/WebhookReceiver — Unavailable);
+///   (б) Start в Polling создаёт только long polling, Stop → Mode = Webhook →
+///   Start — только webhook, long polling отпущен (и наоборот);
+///   (в) WebhookReceiver — тот же объект до и после Start, до Start —
+///   Unavailable, в Webhook — Accepted, после Free бота — Unavailable, а ядро
+///   освобождено, пока приёмник ещё жив; (г) дедупликация webhook переживает
+///   Stop/Start (тот же источник).
+/// </summary>
+procedure TestBotLazySources;
+const
+  CSecret = 'lazy_Secret-1';
+var
+  LTransport: TScriptCancellableTransport;
+  LTransportRef: ITgTransport;
+  LBot: TTgBot;
+  LLog: TTextLog;
+  LReceiver, LSame: ITgWebhookReceiver;
+  LCores0, LJobs0: Integer;
+{$IFDEF TGBOT_TESTHOOKS}
+  LPoll: ITgLongPollSource;
+  LWebhook, LOther: ITgWebhookSource;
+{$ENDIF}
+begin
+  LCores0 := LiveBotCores;
+  LJobs0 := LiveStartJobs;
+  LLog := TTextLog.Create;
+  try
+    LTransport := TScriptCancellableTransport.Create(
+      function(const AMethod: string; AParams: TTgParams): TJSONValue
+      begin
+        if AMethod = 'getUpdates' then
+        begin
+          if TTgJson.GetInt(AParams.Json, 'timeout') <> 0 then
+            Exit(HangUntilCancelled);
+          Exit(TJSONArray.Create);
+        end;
+        Result := TJSONTrue.Create;
+      end);
+    LTransportRef := LTransport;
+    LBot := TTgBot.Create(LTransportRef);
+    try
+      LBot.OnMessage :=
+        procedure(ACtx: ITgContext)
+        begin
+          LLog.Add('msg ' + ACtx.Text);
+        end;
+      // (а) До Start источников нет.
+{$IFDEF TGBOT_TESTHOOKS}
+      Check(not BotHasPoll(LBot), 'до Start: long polling не создан');
+      Check(not BotHasWebhook(LBot), 'до Start: webhook не создан');
+{$ENDIF}
+      Check(LBot.SourceState = TTgSourceState.Idle, 'до Start: SourceState = Idle');
+      LReceiver := LBot.WebhookReceiver;
+      Check(Assigned(LReceiver), 'до Start: WebhookReceiver задан');
+      Check(LReceiver.Accept(MsgUpdate(1, 100, 7, 'one'), CSecret) = TTgWebhookResult.Unavailable,
+        'до Start: WebhookReceiver → Unavailable');
+      LBot.Mode := TTgReceiveMode.Webhook;
+      Check(LBot.HandleWebhook(MsgUpdate(1, 100, 7, 'one'), CSecret) = TTgWebhookResult.Unavailable,
+        'Mode = Webhook, до Start: HandleWebhook → Unavailable');
+{$IFDEF TGBOT_TESTHOOKS}
+      Check(not BotHasWebhook(LBot), 'смена Mode до Start источник не создаёт');
+{$ENDIF}
+      // (б) Polling: только long polling.
+      LBot.Mode := TTgReceiveMode.Polling;
+      LBot.Start;
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := LTransport.Count('getUpdates') >= 1;
+        end, 5000), 'Polling: getUpdates отправлен');
+{$IFDEF TGBOT_TESTHOOKS}
+      LPoll := TgTestBotPollSource(LBot);
+      Check(Assigned(LPoll), 'Start в Polling: long polling создан');
+      Check(not BotHasWebhook(LBot), 'Start в Polling: webhook не создан');
+{$ENDIF}
+      Check(LReceiver.Accept(MsgUpdate(1, 100, 7, 'one'), CSecret) = TTgWebhookResult.Unavailable,
+        'Polling: WebhookReceiver → Unavailable');
+      Check(LBot.Stop, 'Polling: Stop = True');
+      // Stop → Mode = Webhook → Start: webhook создан, long polling отпущен.
+      LBot.Mode := TTgReceiveMode.Webhook;
+      LBot.WebhookUrl := 'https://example.org/lazy';
+      LBot.WebhookSecretToken := CSecret;
+      LBot.Start;
+      Check(WaitSetWebhook(LTransport, 1), 'Webhook: setWebhook');
+{$IFDEF TGBOT_TESTHOOKS}
+      LWebhook := TgTestBotWebhookSource(LBot);
+      Check(Assigned(LWebhook), 'Start в Webhook: webhook создан');
+      Check(not BotHasPoll(LBot), 'Start в Webhook: long polling отпущен ботом');
+      Check(WaitOnlyRef(LPoll as TObject), 'Start в Webhook: long polling больше никем не удерживается');
+      LPoll := nil;
+{$ENDIF}
+      // (в) Тот же приёмник, теперь с источником.
+      // Через локальную переменную: временная ссылка выражения жила бы до выхода.
+      LSame := LBot.WebhookReceiver;
+      Check(LSame = LReceiver, 'WebhookReceiver после Start — тот же объект');
+      LSame := nil;
+      Check(LReceiver.Accept(MsgUpdate(1, 100, 7, 'one'), CSecret) = TTgWebhookResult.Accepted,
+        'Webhook: WebhookReceiver → Accepted');
+      Check(WaitLogHas(LLog, 'msg one'), 'Webhook: обработчик вызван');
+      // (г) Stop/Start в том же режиме — тот же источник, повтор update_id не обрабатывается.
+      Check(LBot.Stop, 'Webhook: Stop = True');
+      Check(LReceiver.Accept(MsgUpdate(2, 100, 7, 'two'), CSecret) = TTgWebhookResult.Unavailable,
+        'Webhook после Stop: Unavailable');
+      LBot.Start;
+{$IFDEF TGBOT_TESTHOOKS}
+      LOther := TgTestBotWebhookSource(LBot);
+      Check(LOther = LWebhook, 'повторный Start в Webhook: тот же источник');
+      LOther := nil;
+{$ENDIF}
+      Check(LReceiver.Accept(MsgUpdate(1, 100, 7, 'one'), CSecret) = TTgWebhookResult.Accepted,
+        'повторный Start: повтор update_id → Accepted');
+      Check(LBot.HandleWebhook(MsgUpdate(2, 100, 7, 'two'), CSecret) = TTgWebhookResult.Accepted,
+        'повторный Start: новый update_id → Accepted');
+      Check(WaitLogHas(LLog, 'msg two'), 'повторный Start: новый update_id обработан');
+      TThread.Sleep(150);
+      CheckEquals(1, LLog.CountOf('msg one'), 'дедупликация пережила Stop/Start: повтор не обработан');
+      // Обратная смена: webhook отпущен, приёмник — Unavailable.
+      Check(LBot.Stop, 'Webhook: второй Stop = True');
+      LBot.Mode := TTgReceiveMode.Polling;
+      LBot.Start;
+{$IFDEF TGBOT_TESTHOOKS}
+      Check(BotHasPoll(LBot), 'Start в Polling после Webhook: long polling создан');
+      Check(not BotHasWebhook(LBot), 'Start в Polling после Webhook: webhook отпущен ботом');
+      Check(WaitOnlyRef(LWebhook as TObject), 'Start в Polling после Webhook: webhook больше никем не удерживается');
+      LWebhook := nil;
+{$ENDIF}
+      Check(LReceiver.Accept(MsgUpdate(3, 100, 7, 'three'), CSecret) = TTgWebhookResult.Unavailable,
+        'Polling после Webhook: WebhookReceiver → Unavailable');
+      LSame := LBot.WebhookReceiver;
+      Check(LSame = LReceiver, 'WebhookReceiver после смены Mode — тот же объект');
+      LSame := nil;
+      // Снова Webhook: новый источник — память дедупликации прежнего не переносится.
+      Check(LBot.Stop, 'Polling: второй Stop = True');
+      LBot.Mode := TTgReceiveMode.Webhook;
+      LBot.Start;
+      Check(LReceiver.Accept(MsgUpdate(1, 100, 7, 'one'), CSecret) = TTgWebhookResult.Accepted,
+        'снова Webhook: Accepted');
+      Check(WaitUntil(
+        function: Boolean
+        begin
+          Result := LLog.CountOf('msg one') = 2;
+        end, 5000), 'снова Webhook: новый источник, update_id обработан заново');
+    finally
+      // Free работающего в Webhook бота (Stop внутри).
+      LBot.Free;
+    end;
+    // (в) Приёмник жив, ядро — нет.
+    Check(WaitLiveAtMost(LCores0, LJobs0, 5000), 'после Free бота ядро освобождено, хотя приёмник ещё жив');
+    Check(LReceiver.Accept(MsgUpdate(4, 100, 7, 'four'), CSecret) = TTgWebhookResult.Unavailable,
+      'после Free бота: WebhookReceiver → Unavailable');
+    TThread.Sleep(100);
+    Check(not LLog.Has('msg three') and not LLog.Has('msg four'), 'Unavailable-запросы не обработаны');
+    LReceiver := nil;
   finally
     LLog.Free;
   end;
@@ -12499,7 +12700,10 @@ begin
   RunTest('0.3.0: TTgBot.WebhookReceiver — Accept при работе, Unavailable после Stop и Free, ' +
     'без утечек после отпускания', TestBotWebhookReceiver);
   RunTest('Ревью 0.3.0: WebhookReceiver — без доступа к ITgWebhookSource; после Free бота StateStorage ' +
-    'освобождён, Accept → Unavailable; ядро — после отпускания приёмника', TestBotWebhookReceiverReleases);
+    'и ядро освобождены, Accept → Unavailable', TestBotWebhookReceiverReleases);
+  RunTest('Ленивые источники: до Start источников нет; Start создаёт источник только для Mode, смена Mode ' +
+    'отпускает прежний; WebhookReceiver — тот же объект, после Free не держит ядро; дедупликация ' +
+    'переживает Stop/Start', TestBotLazySources);
   RunTest('0.3.0: компонент Polling/Webhook — значения по умолчанию, Assign, DFM (default не пишется), ' +
     'загрузка', TestComponentOptionsStreaming);
   RunTest('0.3.0: компонент Polling/Webhook → TTgBot (limit в getUpdates, RegisterOnStart = False, ' +
