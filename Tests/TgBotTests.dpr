@@ -10401,17 +10401,25 @@ var
 
 type
   /// <summary>
+  ///   Сбой TTestTranslator.TryTranslate: нет; исключение (EInvalidOperation);
+  ///   Abort (EAbort); нехватка памяти (OutOfMemoryError — синглтон RTL
+  ///   OutOfMemory, его освобождение после обработки ничего не делает).
+  /// </summary>
+  TTestTranslatorFault = (ttfNone, ttfError, ttfAbort, ttfOutOfMemory);
+
+  /// <summary>
   ///   Тестовый переводчик: словарь «английский текст → перевод», заполняется
   ///   в конструкторе и дальше не меняется (чтение из потоков безопасно).
-  ///   ARaise = True — TryTranslate выбрасывает исключение.
+  ///   AFault — сбой, которым TryTranslate завершается вместо перевода.
   /// </summary>
   TTestTranslator = class(TInterfacedObject, ITgTranslator)
   private
     FMap: TDictionary<string, string>;
-    FRaise: Boolean;
+    FFault: TTestTranslatorFault;
   public
     /// <summary>APairs — пары «ключ, перевод» подряд.</summary>
-    constructor Create(const APairs: array of string; ARaise: Boolean = False);
+    constructor Create(const APairs: array of string;
+      AFault: TTestTranslatorFault = ttfNone);
     destructor Destroy; override;
     function TryTranslate(const AMsgId: string; out AText: string): Boolean;
   end;
@@ -10421,14 +10429,17 @@ const
   CTrChatId = 'ПЕРЕВОД: идентификатор «%s» — не число';
   CTrChatEmpty = 'ПЕРЕВОД: пустой идентификатор чата';
 
-constructor TTestTranslator.Create(const APairs: array of string; ARaise: Boolean);
+constructor TTestTranslator.Create(const APairs: array of string;
+  AFault: TTestTranslatorFault);
 var
   I: Integer;
 begin
   inherited Create;
-  // Первым: деструктор уменьшает счётчик и при исключении конструктора.
+  // Сразу после inherited, до создания FMap: при исключении конструктора
+  // вызывается деструктор и уменьшает счётчик — увеличение должно ему
+  // предшествовать.
   TInterlocked.Increment(GTestTranslatorLive);
-  FRaise := ARaise;
+  FFault := AFault;
   FMap := TDictionary<string, string>.Create;
   I := 0;
   while I < High(APairs) do
@@ -10447,8 +10458,14 @@ end;
 
 function TTestTranslator.TryTranslate(const AMsgId: string; out AText: string): Boolean;
 begin
-  if FRaise then
-    raise EInvalidOperation.Create('Тест: сбой переводчика');
+  case FFault of
+    ttfError:
+      raise EInvalidOperation.Create('Тест: сбой переводчика');
+    ttfAbort:
+      System.SysUtils.Abort;
+    ttfOutOfMemory:
+      System.SysUtils.OutOfMemoryError;
+  end;
   Result := FMap.TryGetValue(AMsgId, AText);
 end;
 
@@ -10566,6 +10583,21 @@ begin
   CheckEquals(LLiveBefore, LiveTranslators, 'тестовые переводчики освобождены');
 end;
 
+/// <summary>
+///   AProc завершается исключением EOutOfMemory (другие исключения проходят
+///   наружу и проваливают тест).
+/// </summary>
+function RaisesOutOfMemory(const AProc: TProc): Boolean;
+begin
+  Result := False;
+  try
+    AProc();
+  except
+    on EOutOfMemory do
+      Result := True;
+  end;
+end;
+
 procedure TestTranslatorFaults;
 var
   LLanguage, LLang: TTgLanguage;
@@ -10579,7 +10611,7 @@ begin
   try
     // Исключение в TryTranslate поглощается — встроенный текст.
     LTranslator := TTestTranslator.Create([LoadResString(@SEnTokenRequired), CTrToken,
-      LoadResString(@SEnChatIdEmpty), CTrChatEmpty], True);
+      LoadResString(@SEnChatIdEmpty), CTrChatEmpty], ttfError);
     TgSetTranslator(LTranslator);
     for LLang := Low(TTgLanguage) to High(TTgLanguage) do
     begin
@@ -10596,6 +10628,41 @@ begin
           TTgChatId(Default(TTgChatId)).ToJson.Free;
         end, ETgError), LTag + 'исключение переводчика не подменяет ETgError библиотеки');
     end;
+
+    // EAbort в TryTranslate поглощается молча — встроенный текст.
+    LTranslator := TTestTranslator.Create([LoadResString(@SEnTokenRequired), CTrToken,
+      LoadResString(@SEnChatIdNotNumeric), CTrChatId], ttfAbort);
+    TgSetTranslator(LTranslator);
+    for LLang := Low(TTgLanguage) to High(TTgLanguage) do
+    begin
+      TgSetLanguage(LLang);
+      LTag := GetEnumName(TypeInfo(TTgLanguage), Ord(LLang)) + ': ';
+      CheckEquals(BuiltinText(LLang, @SRuTokenRequired, @SEnTokenRequired),
+        TgText(TTgText.TokenRequired), LTag + 'EAbort переводчика — встроенный текст');
+      CheckEquals(Format(BuiltinText(LLang, @SRuChatIdNotNumeric, @SEnChatIdNotNumeric), ['@abc']),
+        TgLangTextFmt(@SRuChatIdNotNumeric, @SEnChatIdNotNumeric, ['@abc']),
+        LTag + 'EAbort переводчика — встроенный текст с форматированием');
+    end;
+
+    // EOutOfMemory в TryTranslate не поглощается — передаётся вызывающему.
+    LTranslator := TTestTranslator.Create([LoadResString(@SEnTokenRequired), CTrToken,
+      LoadResString(@SEnChatIdNotNumeric), CTrChatId], ttfOutOfMemory);
+    TgSetTranslator(LTranslator);
+    Check(RaisesOutOfMemory(
+      procedure
+      begin
+        TgText(TTgText.TokenRequired);
+      end), 'EOutOfMemory переводчика проходит наружу из TgText');
+    Check(RaisesOutOfMemory(
+      procedure
+      begin
+        TgLangText(@SRuTokenRequired, @SEnTokenRequired);
+      end), 'EOutOfMemory переводчика проходит наружу из TgLangText');
+    Check(RaisesOutOfMemory(
+      procedure
+      begin
+        TgLangTextFmt(@SRuChatIdNotNumeric, @SEnChatIdNotNumeric, ['@abc']);
+      end), 'EOutOfMemory переводчика проходит наружу из TgLangTextFmt');
 
     // Неверные для аргументов спецификаторы перевода — Format встроенного текста.
     LTranslator := TTestTranslator.Create([
@@ -10629,6 +10696,65 @@ begin
       // Без форматирования перевод отдаётся как есть.
       CheckEquals('ПЕРЕВОД: число %d', TgLangText(@SRuChatIdNotNumeric, @SEnChatIdNotNumeric),
         LTag + 'TgLangText — перевод без форматирования');
+    end;
+
+    // Аргументы перевода сверяются с ключом (множество индексов и типы).
+    // Случаи «встроенный» Format сам бы не отверг — без сверки перевод
+    // применился бы с потерей или искажением аргументов.
+    LTranslator := TTestTranslator.Create([
+      // Меньше спецификаторов: %d (HTTP-код) потерян.
+      LoadResString(@SEnInvalidResponse), 'ПЕРЕВОД: некорректный ответ при вызове %s',
+      // Перестановка через явные индексы — допустима.
+      LoadResString(@SEnNetworkError), 'ПЕРЕВОД: %1:s (вызов %0:s)',
+      // Перестановка с разными типами — допустима.
+      LoadResString(@SEnApiError), 'ПЕРЕВОД: %2:s; метод %0:s, код %1:d',
+      // Повтор индекса — допустим.
+      LoadResString(@SEnViaProxy), 'ПЕРЕВОД: %0:s; прокси %1:s (%1:s)',
+      // '%%' — литерал, не аргумент.
+      LoadResString(@SEnDownloadFailed), 'ПЕРЕВОД: 100%% сбой, HTTP %d',
+      // Ширина, '-' и буква в верхнем регистре — допустимы.
+      LoadResString(@SEnChatIdNotNumeric), 'ПЕРЕВОД: «%-6S»',
+      // Другой тип того же индекса: %x вместо %d.
+      LoadResString(@SEnDtoEmptyItem), 'ПЕРЕВОД: элемент %x массива «%s»',
+      // '*' берёт аргумент 1 (у ключа там %d), значение — аргумент 2.
+      LoadResString(@SEnArgOutOfRange), 'ПЕРЕВОД: %s = %*d',
+      // Незавершённый спецификатор: Format молча обрезал бы вывод.
+      LoadResString(@SEnInvalidJson), 'ПЕРЕВОД: параметр %s и %',
+      // Повтор единственного индекса — допустим.
+      LoadResString(@SEnLocalPathNotAbsolute), 'ПЕРЕВОД: путь %0:s %0:s',
+      // Меньше спецификаторов через явный индекс: аргумент 0 потерян.
+      LoadResString(@SEnWhsPathTaken), 'ПЕРЕВОД: путь занят ботом %1:s']);
+    TgSetTranslator(LTranslator);
+    for LLang := Low(TTgLanguage) to High(TTgLanguage) do
+    begin
+      TgSetLanguage(LLang);
+      LTag := GetEnumName(TypeInfo(TTgLanguage), Ord(LLang)) + ': ';
+      CheckEquals(Format(BuiltinText(LLang, @SRuInvalidResponse, @SEnInvalidResponse), ['getMe', 502]),
+        TgTextFmt(TTgText.InvalidResponse, ['getMe', 502]),
+        LTag + 'меньше спецификаторов — встроенный');
+      CheckEquals('ПЕРЕВОД: timeout (вызов getMe)', TgTextFmt(TTgText.NetworkError, ['getMe', 'timeout']),
+        LTag + 'перестановка %1:s %0:s — перевод');
+      CheckEquals('ПЕРЕВОД: Bad; метод getMe, код 400', TgTextFmt(TTgText.ApiError, ['getMe', 400, 'Bad']),
+        LTag + 'перестановка %2:s %0:s %1:d — перевод');
+      CheckEquals('ПЕРЕВОД: err; прокси p:1 (p:1)', TgTextFmt(TTgText.ViaProxy, ['err', 'p:1']),
+        LTag + 'повтор индекса — перевод');
+      CheckEquals('ПЕРЕВОД: 100% сбой, HTTP 404', TgTextFmt(TTgText.DownloadFailed, [404]),
+        LTag + '%% в переводе — перевод');
+      CheckEquals('ПЕРЕВОД: «@abc  »', TgTextFmt(TTgText.ChatIdNotNumeric, ['@abc']),
+        LTag + 'ширина, - и %S — перевод');
+      CheckEquals(Format(BuiltinText(LLang, @SRuDtoEmptyItem, @SEnDtoEmptyItem), [3, 'photos']),
+        TgLangTextFmt(@SRuDtoEmptyItem, @SEnDtoEmptyItem, [3, 'photos']),
+        LTag + 'другой тип того же индекса — встроенный');
+      CheckEquals(Format(BuiltinText(LLang, @SRuArgOutOfRange, @SEnArgOutOfRange), ['limit', 0, 1]),
+        TgLangTextFmt(@SRuArgOutOfRange, @SEnArgOutOfRange, ['limit', 0, 1]),
+        LTag + '* берёт аргумент — встроенный');
+      CheckEquals(Format(BuiltinText(LLang, @SRuInvalidJson, @SEnInvalidJson), ['data']),
+        TgTextFmt(TTgText.InvalidJson, ['data']), LTag + 'незавершённый спецификатор — встроенный');
+      CheckEquals('ПЕРЕВОД: путь /a /a', TgTextFmt(TTgText.LocalPathNotAbsolute, ['/a']),
+        LTag + 'повтор единственного индекса — перевод');
+      CheckEquals(Format(BuiltinText(LLang, @SRuWhsPathTaken, @SEnWhsPathTaken), ['/hook', 'bot1']),
+        TgLangTextFmt(@SRuWhsPathTaken, @SEnWhsPathTaken, ['/hook', 'bot1']),
+        LTag + 'только %1:s из двух аргументов — встроенный');
     end;
     LTranslator := nil;
   finally
@@ -13816,8 +13942,10 @@ begin
     'непусты, RU ≠ EN, спецификаторы совпадают', TestTextsComplete);
   RunTest('Локализация, фаза 1: ITgTranslator — перевод при Ru и En, нет/пустой перевод, ' +
     'TgSetTranslator(nil), TgGetTranslator', TestTranslatorBasic);
-  RunTest('Локализация, фаза 1: ITgTranslator — исключение переводчика и неверные ' +
-    'спецификаторы перевода → встроенный текст', TestTranslatorFaults);
+  RunTest('Локализация, фаза 1: ITgTranslator — исключение переводчика и EAbort → ' +
+    'встроенный текст, EOutOfMemory — наружу; аргументы перевода против ключа: меньше, ' +
+    'другой тип, неверные → встроенный, перестановка %1:s %0:s и %% → перевод',
+    TestTranslatorFaults);
   RunTest('Локализация, фаза 1: ITgTranslator — 4 потока x 2000 чтений текстов, ' +
     'смена переводчика 500 раз', TestTranslatorThreads);
   RunTest('Варианты edit-методов: позиционные, inline → Boolean, chat_id любого вида', TestEditVariants);

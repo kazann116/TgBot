@@ -69,15 +69,27 @@ type
   ///   Подключаемый переводчик сообщений библиотеки (TgSetTranslator).
   ///   Ключ (msgid в стиле gettext) — английский текст сообщения до
   ///   подстановки аргументов Format, то есть LoadResString(SEn…) из
-  ///   TgBot.Consts. Перевод текста с форматированием должен содержать те же
-  ///   спецификаторы Format, что и ключ; при неверных спецификаторах
-  ///   используется встроенный текст. Перевод применяется при любом языке
-  ///   TgSetLanguage; нет перевода (False или пустая строка) — встроенный
-  ///   текст на текущем языке.
+  ///   TgBot.Consts. Если приложение локализовано ресурсными DLL (ITE,
+  ///   LoadResourceModule), строка SEn… уже переведена и ключ — не английский
+  ///   текст: используйте либо ITE, либо переводчик.
+  ///   Перевод текста с форматированием (TgTextFmt, TgLangTextFmt) должен
+  ///   использовать те же аргументы Format, что и ключ: совпадают множество
+  ///   индексов аргументов и тип каждого. Индекс — явный (%1:s; %:s — 0) или
+  ///   следующий за предыдущим; '*' в ширине или точности тоже берёт
+  ///   аргумент. Тип — буква спецификатора без учёта регистра (d, u и x —
+  ///   разные типы), у '*' — свой тип '*'. Порядок, повторы индекса, ширина,
+  ///   точность, '-' и '%%' не сравниваются: перестановка через явные индексы
+  ///   (%1:s … %0:d) допустима. Иначе (аргументов меньше или больше, другой
+  ///   тип, неизвестная буква, незавершённый спецификатор) — встроенный текст.
+  ///   Перевод текста без форматирования (TgText, TgLangText) отдаётся как
+  ///   есть. Перевод применяется при любом языке TgSetLanguage; нет перевода
+  ///   (False или пустая строка) — встроенный текст на текущем языке.
   ///   Реализация должна быть потокобезопасной: TryTranslate вызывается из
   ///   любых потоков одновременно (лучше — неизменяемый словарь, заполненный
-  ///   до TgSetTranslator). Исключения TryTranslate поглощаются библиотекой —
-  ///   используется встроенный текст.
+  ///   до TgSetTranslator). Исключения TryTranslate, кроме EOutOfMemory,
+  ///   поглощаются библиотекой — используется встроенный текст (в сборке с
+  ///   DEBUG на Windows исключение, кроме EAbort, пишется в
+  ///   OutputDebugString); EOutOfMemory передаётся вызывающему.
   /// </summary>
   ITgTranslator = interface
     ['{607EC7D6-C799-4FFD-8AD4-F401F7EFDC0B}']
@@ -512,6 +524,10 @@ function TgGetLanguage: TTgLanguage;
 ///   Устанавливает переводчик сообщений библиотеки (nil — без переводчика,
 ///   только встроенные тексты). Потокобезопасно; прежний переводчик
 ///   освобождается вне внутренней блокировки. Контракт — ITgTranslator.
+///   Вызовите TgSetTranslator(nil) до завершения программы (в своём
+///   finalization или OnDestroy), особенно если переводчик живёт в BPL/DLL —
+///   иначе последний _Release переводчика выполнится в finalization
+///   TgBot.Base, когда его модуль может быть уже выгружен.
 /// </summary>
 procedure TgSetTranslator(const ATranslator: ITgTranslator);
 /// <summary>Текущий переводчик сообщений библиотеки (nil — не установлен).</summary>
@@ -531,8 +547,9 @@ function TgTextFmt(AText: TTgText; const AArgs: array of const): string;
 function TgLangText(ARu, AEn: PResStringRec): string;
 /// <summary>
 ///   Служебное (для модулей библиотеки): TgLangText с форматированием (Format).
-///   Перевод с неверными для AArgs спецификаторами (EConvertError) —
-///   форматируется встроенный текст.
+///   Перевод, аргументы которого не совпадают с аргументами ключа (правила —
+///   ITgTranslator), или с неверными для AArgs спецификаторами
+///   (EConvertError) — форматируется встроенный текст.
 /// </summary>
 function TgLangTextFmt(ARu, AEn: PResStringRec; const AArgs: array of const): string;
 /// <summary>
@@ -544,9 +561,17 @@ function TgNewOwnerLink(AOwner: TObject): ITgOwnerLink;
 implementation
 
 uses
+{$IF DEFINED(DEBUG) and DEFINED(MSWINDOWS)}
+  Winapi.Windows,
+{$ENDIF}
   TgBot.Consts;
 
 const
+  // Наибольший индекс аргумента в подписи спецификаторов (TgFormatSignature):
+  // у ключей библиотеки аргументов единицы, больший индекс перевода заведомо
+  // не совпадёт с ключом.
+  CTgFormatMaxArgIndex = 255;
+
   // Тексты TTgText: пары ресурсных строк TgBot.Consts (SRu…, SEn…).
   CTexts: array[TTgText, TTgLanguage] of PResStringRec = (
     (@SRuTokenRequired, @SEnTokenRequired),
@@ -638,8 +663,21 @@ begin
   Result := LTranslator;
 end;
 
+{$IFDEF DEBUG}
+// Отладочная сборка: исключение переводчика — в отладочный вывод (Windows —
+// OutputDebugString; на других платформах средства в RTL нет — пропуск).
+procedure TgDebugTranslatorFault(E: Exception);
+begin
+{$IFDEF MSWINDOWS}
+  OutputDebugString(PChar(TgBotLibName + ': ITgTranslator.TryTranslate — ' +
+    E.ClassName + ': ' + E.Message));
+{$ENDIF}
+end;
+{$ENDIF}
+
 // Перевод ресурсной строки AEn установленным переводчиком. False — нет
-// переводчика, нет перевода, пустой перевод или исключение переводчика.
+// переводчика, нет перевода, пустой перевод или исключение переводчика
+// (кроме EOutOfMemory — оно передаётся вызывающему).
 function TgTryTranslate(AEn: PResStringRec; out AText: string): Boolean;
 var
   LTranslator: ITgTranslator;
@@ -652,8 +690,21 @@ begin
     Result := LTranslator.TryTranslate(LoadResString(AEn), AText) and (AText <> '');
   except
     // Ошибка переводчика не должна заменять собой ошибку, текст которой
-    // строится, — используется встроенный текст.
-    Result := False;
+    // строится, — используется встроенный текст. Нехватку памяти встроенный
+    // текст не исправит — она передаётся дальше.
+    on EOutOfMemory do
+      raise;
+    on EAbort do
+      Result := False; // «тихое» исключение — без отладочного вывода
+    on E: Exception do
+    begin
+{$IFDEF DEBUG}
+      TgDebugTranslatorFault(E);
+{$ENDIF}
+      Result := False;
+    end;
+  else
+    Result := False; // исключение — не потомок Exception
   end;
   if not Result then
     AText := '';
@@ -674,11 +725,148 @@ begin
     Result := TgBuiltinLangText(ARu, AEn);
 end;
 
+// Подпись спецификаторов строки формата Format: символ ASignature с
+// позицией Low(string) + I — тип аргумента с индексом I (буква
+// спецификатора в верхнем регистре или '*' для ширины/точности '*'), пробел —
+// аргумент не используется; длина — наибольший индекс + 1. Разбор повторяет
+// System.SysUtils.Format: %[index:][-][width][.prec]type; index — число
+// (одно ':' — индекс 0), без него — следующий аргумент после предыдущего;
+// число без ':' — ширина; '*' в width и prec берёт аргумент (до значения);
+// '%%' — литерал. False — подпись не определена: незавершённый спецификатор
+// или неизвестная буква (Format молча обрезал бы вывод или бросил
+// EConvertError), разные типы одного индекса, индекс больше
+// CTgFormatMaxArgIndex.
+function TgFormatSignature(const AFormat: string; out ASignature: string): Boolean;
+var
+  P, LEnd: PChar;
+  LArg, LNumber: Integer;
+  LType: Char;
+
+  // Отмечает аргумент LArg с типом AType; False — индекс вне диапазона или
+  // тот же индекс уже отмечен другим типом.
+  function UseArg(AType: Char): Boolean;
+  begin
+    if (LArg < 0) or (LArg > CTgFormatMaxArgIndex) then
+      Exit(False);
+    if Length(ASignature) <= LArg then
+      ASignature := ASignature + StringOfChar(' ', LArg + 1 - Length(ASignature));
+    if ASignature[Low(string) + LArg] = ' ' then
+      ASignature[Low(string) + LArg] := AType
+    else if ASignature[Low(string) + LArg] <> AType then
+      Exit(False);
+    Result := True;
+  end;
+
+  // Число из цифр ASCII с позиции P; больше CTgFormatMaxArgIndex — значение
+  // CTgFormatMaxArgIndex + 1 (без переполнения).
+  function ReadNumber: Integer;
+  begin
+    Result := 0;
+    while (P < LEnd) and CharInSet(P^, ['0'..'9']) do
+    begin
+      if Result <= CTgFormatMaxArgIndex then
+        Result := Result * 10 + (Ord(P^) - Ord('0'));
+      Inc(P);
+    end;
+    if Result > CTgFormatMaxArgIndex then
+      Result := CTgFormatMaxArgIndex + 1;
+  end;
+
+  // Ширина или точность: '*' берёт аргумент, иначе — пропуск цифр.
+  function ReadWidth: Boolean;
+  begin
+    if (P < LEnd) and (P^ = '*') then
+    begin
+      Inc(P);
+      if not UseArg('*') then
+        Exit(False);
+      Inc(LArg);
+    end
+    else
+      ReadNumber;
+    Result := True;
+  end;
+
+begin
+  ASignature := '';
+  P := PChar(AFormat);
+  LEnd := P + Length(AFormat);
+  LArg := -1;
+  while P < LEnd do
+  begin
+    if P^ <> '%' then
+    begin
+      Inc(P);
+      Continue;
+    end;
+    Inc(P);
+    if P >= LEnd then
+      Exit(False); // '%' в конце строки
+    if P^ = '%' then
+    begin
+      Inc(P);
+      Continue;
+    end;
+    Inc(LArg);
+    // Индекс («число:» или «:») либо ширина (число без ':').
+    if CharInSet(P^, ['0'..'9']) then
+    begin
+      LNumber := ReadNumber;
+      if (P < LEnd) and (P^ = ':') then
+      begin
+        Inc(P);
+        LArg := LNumber;
+      end;
+    end
+    else if P^ = ':' then
+    begin
+      Inc(P);
+      LArg := 0;
+    end;
+    if (P < LEnd) and (P^ = '-') then
+      Inc(P);
+    if not ReadWidth then
+      Exit(False);
+    if (P < LEnd) and (P^ = '.') then
+    begin
+      Inc(P);
+      if P >= LEnd then
+        Exit(False);
+      if not ReadWidth then
+        Exit(False);
+    end;
+    if P >= LEnd then
+      Exit(False);
+    LType := P^;
+    if CharInSet(LType, ['a'..'z']) then
+      LType := Char(Ord(LType) - (Ord('a') - Ord('A')));
+    if not CharInSet(LType, ['D', 'U', 'X', 'E', 'F', 'G', 'N', 'M', 'P', 'S']) then
+      Exit(False);
+    if not UseArg(LType) then
+      Exit(False);
+    Inc(P);
+  end;
+  Result := True;
+end;
+
+// Перевод ATranslation годится для ключа AMsgId: подписи спецификаторов
+// (TgFormatSignature) определены и совпадают.
+function TgSameFormatArgs(const ATranslation, AMsgId: string): Boolean;
+var
+  LTranslationSignature, LMsgIdSignature: string;
+begin
+  Result := TgFormatSignature(ATranslation, LTranslationSignature) and
+    TgFormatSignature(AMsgId, LMsgIdSignature) and
+    (LTranslationSignature = LMsgIdSignature);
+end;
+
 function TgLangTextFmt(ARu, AEn: PResStringRec; const AArgs: array of const): string;
 var
   LText: string;
 begin
-  if TgTryTranslate(AEn, LText) then
+  // Аргументы перевода сверяются с ключом: Format не бросает при лишних
+  // аргументах, и перевод с меньшим их числом молча потерял бы часть.
+  if TgTryTranslate(AEn, LText) and TgSameFormatArgs(LText, LoadResString(AEn)) then
   begin
     try
       Exit(Format(LText, AArgs));

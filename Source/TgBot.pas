@@ -181,7 +181,10 @@ type
   TTgLanguage = TgBot.Base.TTgLanguage;
   /// <summary>
   ///   Переводчик сообщений библиотеки (TgSetTranslator): ключ — английский
-  ///   текст сообщения; реализация должна быть потокобезопасной.
+  ///   текст сообщения (LoadResString(SEn…); при локализации ресурсными DLL —
+  ///   ITE — он уже переведён: используйте либо ITE, либо переводчик);
+  ///   реализация должна быть потокобезопасной. Контракт —
+  ///   TgBot.Base.ITgTranslator.
   /// </summary>
   ITgTranslator = TgBot.Base.ITgTranslator;
   /// <summary>Базовое исключение библиотеки.</summary>
@@ -439,6 +442,10 @@ function TgGetLanguage: TTgLanguage;
 /// <summary>
 ///   Устанавливает переводчик сообщений библиотеки (nil — только встроенные
 ///   тексты). Потокобезопасно; контракт — TgBot.Base.ITgTranslator.
+///   Вызовите TgSetTranslator(nil) до завершения программы (в своём
+///   finalization или OnDestroy), особенно если переводчик живёт в BPL/DLL —
+///   иначе последний _Release переводчика выполнится в finalization
+///   TgBot.Base, когда его модуль может быть уже выгружен.
 /// </summary>
 procedure TgSetTranslator(const ATranslator: ITgTranslator);
 /// <summary>Текущий переводчик сообщений библиотеки (nil — не установлен).</summary>
