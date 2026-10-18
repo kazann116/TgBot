@@ -47,6 +47,8 @@ uses
   TgBot.Updates,
   TgBot.Router,
   TgBot.Consts,
+  // Локализация, фаза 2: загрузчик .po — подключаемый модуль, не в фасаде.
+  TgBot.Po,
   // Владение, фаза 3: служебные ITgApiOwner/ITgRoutableContext (проверки Supports).
   TgBot.Context,
 {$IFDEF TGBOT_TESTHOOKS}
@@ -10159,7 +10161,7 @@ type
 const
   // Пары TgBot.Consts, не покрытые TTgText, TTgUpdatesText и TTgRouterText
   // (модули берут их через TgLangText напрямую). Новую такую пару — сюда.
-  CConstPairs: array[0..31] of TTextPair = (
+  CConstPairs: array[0..46] of TTextPair = (
     (Name: 'ProxyScheme'; Ru: @SRuProxyScheme; En: @SEnProxyScheme),
     (Name: 'ProxyBadHost'; Ru: @SRuProxyBadHost; En: @SEnProxyBadHost),
     (Name: 'ProxyPort'; Ru: @SRuProxyPort; En: @SEnProxyPort),
@@ -10191,11 +10193,26 @@ const
     (Name: 'WhsStartFailed'; Ru: @SRuWhsStartFailed; En: @SEnWhsStartFailed),
     (Name: 'WhsPathTaken'; Ru: @SRuWhsPathTaken; En: @SEnWhsPathTaken),
     (Name: 'WhsBadPath'; Ru: @SRuWhsBadPath; En: @SEnWhsBadPath),
-    (Name: 'WhsPublicUrlNotHttps'; Ru: @SRuWhsPublicUrlNotHttps; En: @SEnWhsPublicUrlNotHttps)
+    (Name: 'WhsPublicUrlNotHttps'; Ru: @SRuWhsPublicUrlNotHttps; En: @SEnWhsPublicUrlNotHttps),
+    (Name: 'PoLocation'; Ru: @SRuPoLocation; En: @SEnPoLocation),
+    (Name: 'PoLine'; Ru: @SRuPoLine; En: @SEnPoLine),
+    (Name: 'PoError'; Ru: @SRuPoError; En: @SEnPoError),
+    (Name: 'PoBadUtf8'; Ru: @SRuPoBadUtf8; En: @SEnPoBadUtf8),
+    (Name: 'PoCharset'; Ru: @SRuPoCharset; En: @SEnPoCharset),
+    (Name: 'PoUnterminated'; Ru: @SRuPoUnterminated; En: @SEnPoUnterminated),
+    (Name: 'PoBadEscape'; Ru: @SRuPoBadEscape; En: @SEnPoBadEscape),
+    (Name: 'PoUnexpected'; Ru: @SRuPoUnexpected; En: @SEnPoUnexpected),
+    (Name: 'PoExpectedString'; Ru: @SRuPoExpectedString; En: @SEnPoExpectedString),
+    (Name: 'PoMisplaced'; Ru: @SRuPoMisplaced; En: @SEnPoMisplaced),
+    (Name: 'PoOrphanString'; Ru: @SRuPoOrphanString; En: @SEnPoOrphanString),
+    (Name: 'PoNoMsgstr'; Ru: @SRuPoNoMsgstr; En: @SEnPoNoMsgstr),
+    (Name: 'PoWarnContext'; Ru: @SRuPoWarnContext; En: @SEnPoWarnContext),
+    (Name: 'PoWarnFormat'; Ru: @SRuPoWarnFormat; En: @SEnPoWarnFormat),
+    (Name: 'PoWarnDuplicate'; Ru: @SRuPoWarnDuplicate; En: @SEnPoWarnDuplicate)
   );
   // Всего пар SRu…/SEn… в TgBot.Consts: перечисления TTgText, TTgUpdatesText,
   // TTgRouterText и CConstPairs. Обновите при добавлении пары в TgBot.Consts.
-  CExpectedConstPairs = 67;
+  CExpectedConstPairs = 82;
 
 { TTestDto }
 
@@ -10881,6 +10898,642 @@ begin
   Check(TranslatorIs(LSaved), 'переводчик восстановлен');
   LSaved := nil;
   CheckEquals(LLiveBefore, LiveTranslators, 'все переводчики освобождены');
+end;
+
+{ Локализация, фаза 2: загрузчик переводов .po (TgBot.Po) }
+
+const
+  // Заголовок .po (5 строк, последняя пустая): UTF-8, язык de.
+  CPoHeader = 'msgid ""'#10'msgstr ""'#10 +
+    '"Content-Type: text/plain; charset=UTF-8\n"'#10'"Language: de\n"'#10#10;
+  CPoHeaderLines = 5;
+  CPoTrToken = 'PO: Bot-Token fehlt';
+  CPoTrChatId = 'PO: Chat-Kennung «%s» ist keine Zahl';
+  // Переводы строк, с которыми проверяется разбор.
+  CPoBreaks: array[0..2] of string = (#10, #13#10, #13);
+  CPoBreakNames: array[0..2] of string = ('LF', 'CRLF', 'CR');
+
+/// <summary>Текст для строки "…" .po: \, " и перевод строки экранированы.</summary>
+function PoQuote(const AText: string): string;
+begin
+  Result := AText.Replace('\', '\\').Replace('"', '\"').Replace(#10, '\n');
+end;
+
+/// <summary>Запись .po msgid/msgstr и пустая строка после неё (3 строки).</summary>
+function PoEntry(const AMsgId, AMsgStr: string): string;
+begin
+  Result := 'msgid "' + PoQuote(AMsgId) + '"'#10'msgstr "' + PoQuote(AMsgStr) + '"'#10#10;
+end;
+
+/// <summary>Байты .po: UTF-8, переводы строк #10 заменены на ABreak, BOM — по ABom.</summary>
+function PoBytes(const AText: string; ABom: Boolean = False; const ABreak: string = #10): TBytes;
+begin
+  Result := TEncoding.UTF8.GetBytes(AText.Replace(#10, ABreak));
+  if ABom then
+    Result := TBytes.Create($EF, $BB, $BF) + Result;
+end;
+
+/// <summary>Переводчик из байт ABytes (поток с именем ASourceName).</summary>
+function LoadPoBytes(const ABytes: TBytes; const ASourceName: string = 'test.po'): ITgPoTranslator;
+var
+  LStream: TBytesStream;
+begin
+  LStream := TBytesStream.Create(ABytes);
+  try
+    Result := TgLoadPoTranslatorFromStream(LStream, ASourceName);
+  finally
+    LStream.Free;
+  end;
+end;
+
+function LoadPoText(const AText: string; ABom: Boolean = False;
+  const ABreak: string = #10): ITgPoTranslator;
+begin
+  Result := LoadPoBytes(PoBytes(AText, ABom, ABreak));
+end;
+
+/// <summary>Перевод ключа AKey; '&lt;нет&gt;' — перевода нет.</summary>
+function PoTr(const ATranslator: ITgPoTranslator; const AKey: string): string;
+begin
+  if not ATranslator.TryTranslate(AKey, Result) then
+    Result := '<нет>';
+end;
+
+/// <summary>Предупреждения загрузки через ' | '.</summary>
+function PoWarnings(const ATranslator: ITgPoTranslator): string;
+begin
+  Result := string.Join(' | ', ATranslator.Warnings);
+end;
+
+/// <summary>Предупреждение загрузки потока test.po: место и описание.</summary>
+function PoWarning(ALine: Integer; const ADetail: string): string;
+begin
+  Result := TgLangTextFmt(@SRuPoLocation, @SEnPoLocation, ['test.po', ALine]) + ': ' + ADetail;
+end;
+
+/// <summary>
+///   Ошибка загрузки ABytes: текст ETgPoError и номер строки (ALine);
+///   нет исключения или другой класс — описание и ALine = -1.
+/// </summary>
+function PoErrorOf(const ABytes: TBytes; out ALine: Integer;
+  const ASourceName: string = 'bad.po'): string;
+begin
+  ALine := -1;
+  try
+    LoadPoBytes(ABytes, ASourceName);
+    Result := '<нет исключения>';
+  except
+    on E: ETgPoError do
+    begin
+      ALine := E.LineNumber;
+      Result := E.Message;
+    end;
+    on E: Exception do
+      Result := '<' + E.ClassName + '> ' + E.Message;
+  end;
+end;
+
+/// <summary>
+///   Загрузка AText (LF, CRLF с BOM, CR) — ETgPoError на строке ALine, в
+///   тексте есть ADetail.
+/// </summary>
+procedure CheckPoError(const AText: string; ALine: Integer; const ADetail, AWhat: string);
+var
+  I, LLine: Integer;
+  LMessage, LTag: string;
+begin
+  for I := Low(CPoBreaks) to High(CPoBreaks) do
+  begin
+    LTag := AWhat + ' (' + CPoBreakNames[I] + ')';
+    LMessage := PoErrorOf(PoBytes(AText, Odd(I), CPoBreaks[I]), LLine);
+    CheckEquals(ALine, LLine, LTag + ': номер строки — ' + LMessage);
+    Check(Contains(ADetail, LMessage), LTag + ': "' + ADetail + '" в "' + LMessage + '"');
+  end;
+end;
+
+type
+  /// <summary>
+  ///   Поток для TgLoadPoTranslatorFromStream: байты ABytes. AMaxRead > 0 —
+  ///   Read возвращает за вызов не больше 1, 2, …, AMaxRead, 1, … байт
+  ///   (детерминированно, по номеру вызова); AKnownSize = False — Seek (а с
+  ///   ним Size и Position) бросает EStreamError: размер неизвестен.
+  /// </summary>
+  TPoTestStream = class(TStream)
+  private
+    FBytes: TBytes;
+    FPos: Integer;
+    FMaxRead: Integer;
+    FKnownSize: Boolean;
+    FCalls: Integer;
+  public
+    constructor Create(const ABytes: TBytes; AMaxRead: Integer; AKnownSize: Boolean);
+    function Read(var Buffer; Count: Longint): Longint; override;
+    function Seek(const Offset: Int64; Origin: TSeekOrigin): Int64; override;
+    /// <summary>Число вызовов Read.</summary>
+    property Calls: Integer read FCalls;
+    /// <summary>Прочитано байт (позиция без Seek).</summary>
+    property ReadPos: Integer read FPos;
+  end;
+
+constructor TPoTestStream.Create(const ABytes: TBytes; AMaxRead: Integer; AKnownSize: Boolean);
+begin
+  inherited Create;
+  FBytes := ABytes;
+  FMaxRead := AMaxRead;
+  FKnownSize := AKnownSize;
+end;
+
+function TPoTestStream.Read(var Buffer; Count: Longint): Longint;
+var
+  LLimit: Integer;
+begin
+  Inc(FCalls);
+  Result := Length(FBytes) - FPos;
+  if Result > Count then
+    Result := Count;
+  if FMaxRead > 0 then
+  begin
+    LLimit := 1 + (FCalls - 1) mod FMaxRead;
+    if Result > LLimit then
+      Result := LLimit;
+  end;
+  if Result <= 0 then
+    Exit(0);
+  Move(FBytes[FPos], Buffer, Result);
+  Inc(FPos, Result);
+end;
+
+function TPoTestStream.Seek(const Offset: Int64; Origin: TSeekOrigin): Int64;
+begin
+  if not FKnownSize then
+    raise EStreamError.Create('TPoTestStream: Seek не поддерживается');
+  case Origin of
+    soBeginning:
+      Result := Offset;
+    soCurrent:
+      Result := FPos + Offset;
+  else
+    Result := Length(FBytes) + Offset;
+  end;
+  if (Result < 0) or (Result > Length(FBytes)) then
+    raise EStreamError.Create('TPoTestStream: позиция вне потока');
+  FPos := Result;
+end;
+
+procedure TestPoBasic;
+var
+  LLanguage, LLang: TTgLanguage;
+  LSaved: ITgTranslator;
+  LTr: ITgPoTranslator;
+  LText, LTag, LFile, LJunk: string;
+  LStream: TBytesStream;
+begin
+  LText := CPoHeader +
+    '# Перевод TgBot (тест)'#10 +
+    PoEntry(LoadResString(@SEnTokenRequired), CPoTrToken) +
+    PoEntry(LoadResString(@SEnChatIdNotNumeric), CPoTrChatId);
+  LLanguage := TgGetLanguage;
+  LSaved := TgGetTranslator;
+  LFile := '';
+  try
+    LTr := LoadPoText(LText);
+    CheckEquals(2, LTr.Count, 'Count');
+    CheckEquals('de', LTr.Language, 'Language из заголовка');
+    CheckEquals('', PoWarnings(LTr), 'предупреждений нет');
+    CheckEquals(CPoTrToken, PoTr(LTr, LoadResString(@SEnTokenRequired)), 'TryTranslate');
+    CheckEquals('<нет>', PoTr(LTr, ''), 'заголовок (msgid "") — не перевод');
+    CheckEquals('<нет>', PoTr(LTr, LoadResString(@SEnCancelled)), 'нет перевода');
+
+    // Перевод сообщений библиотеки через TgSetTranslator.
+    TgSetTranslator(LTr);
+    for LLang := Low(TTgLanguage) to High(TTgLanguage) do
+    begin
+      TgSetLanguage(LLang);
+      LTag := GetEnumName(TypeInfo(TTgLanguage), Ord(LLang)) + ': ';
+      CheckEquals(CPoTrToken, TgText(TTgText.TokenRequired), LTag + 'TgText — перевод из .po');
+      CheckEquals(Format(CPoTrChatId, ['@abc']), RaisedText(
+        procedure
+        begin
+          TTgChatId.FromUsername('abc').Id;
+        end, ETgError), LTag + 'ETgError библиотеки — перевод из .po');
+      CheckEquals(BuiltinText(LLang, @SRuChatIdEmpty, @SEnChatIdEmpty), RaisedText(
+        procedure
+        begin
+          TTgChatId(Default(TTgChatId)).ToJson.Free;
+        end, ETgError), LTag + 'нет перевода в .po — встроенный текст');
+    end;
+    TgSetTranslator(nil);
+
+    // Поток читается с текущей позиции до конца.
+    LJunk := 'мусор до .po';
+    LStream := TBytesStream.Create(TEncoding.UTF8.GetBytes(LJunk) + PoBytes(LText));
+    try
+      LStream.Position := Length(TEncoding.UTF8.GetBytes(LJunk));
+      LTr := TgLoadPoTranslatorFromStream(LStream);
+      CheckEquals(2, LTr.Count, 'поток: с текущей позиции');
+      CheckEquals(LStream.Size, LStream.Position, 'поток: прочитан до конца');
+    finally
+      LStream.Free;
+    end;
+    Check(Raises(
+      procedure
+      begin
+        TgLoadPoTranslatorFromStream(nil);
+      end, EArgumentNilException), 'поток nil — EArgumentNilException');
+
+    // Файл (свой временный — удаляется в finally).
+    LFile := TPath.Combine(TPath.GetTempPath, 'TgBotTests_' + TGUID.NewGuid.ToString + '.po');
+    TFile.WriteAllBytes(LFile, PoBytes(LText, True, #13#10));
+    LTr := TgLoadPoTranslator(LFile);
+    CheckEquals(2, LTr.Count, 'файл: Count');
+    CheckEquals(Format(CPoTrChatId, ['@abc']),
+      Format(PoTr(LTr, LoadResString(@SEnChatIdNotNumeric)), ['@abc']), 'файл: перевод');
+    // Ошибка в файле: имя файла и номер строки.
+    TFile.WriteAllBytes(LFile, PoBytes(CPoHeader + 'msgid "x'#10));
+    try
+      TgLoadPoTranslator(LFile);
+      Check(False, 'файл с ошибкой — ETgPoError');
+    except
+      on E: ETgPoError do
+      begin
+        CheckEquals(LFile, E.FileName, 'файл: ETgPoError.FileName');
+        CheckEquals(CPoHeaderLines + 1, E.LineNumber, 'файл: ETgPoError.LineNumber');
+        Check(Contains(LFile, E.Message), 'файл: имя файла в тексте — ' + E.Message);
+      end;
+    end;
+    LTr := nil;
+  finally
+    TgSetTranslator(LSaved);
+    TgSetLanguage(LLanguage);
+    if (LFile <> '') and TFile.Exists(LFile) then
+      TFile.Delete(LFile);
+  end;
+  Check(TranslatorIs(LSaved), 'переводчик восстановлен');
+  Check(TgGetLanguage = LLanguage, 'язык восстановлен');
+  Check((LFile = '') or not TFile.Exists(LFile), 'временный файл удалён');
+end;
+
+procedure TestPoSyntax;
+const
+  CEscaped = 'a\b"c'#10'd'#9'e'#13'f'#7'g'#8'h'#12'i'#11'j''k?lAB~'#8'1';
+var
+  LText, LTag: string;
+  LTr: ITgPoTranslator;
+  I: Integer;
+  LBom: Boolean;
+begin
+  LText := CPoHeader +
+    '#  комментарий переводчика'#10 +
+    '#. комментарий разработчика'#10 +
+    '#: Source/TgBot.Base.pas:42'#10 +
+    '#| msgid "old"'#10 +
+    '#, c-format'#10 +
+    // Многострочные msgid и msgstr; отступ перед строкой продолжения.
+    'msgid ""'#10 +
+    '"Multi "'#10 +
+    '"line %s"'#10 +
+    'msgstr ""'#10 +
+    '"Много"'#10 +
+    '  "строчный %s"'#10 +
+    #10 +
+    // Escape-последовательности: \ooo — до 3 цифр (\0101 = \010 + '1').
+    'msgid "esc"'#10 +
+    'msgstr "a\\b\"c\nd\te\rf\ag\bh\fi\vj\''k\?l\101\x42\x7e\0101"'#10 +
+    #10 +
+    // Несколько строк на одной строке файла; кавычка сразу после ключевого слова.
+    'msgid "one" "line"'#10 +
+    'msgstr"x" "y"'#10 +
+    #10 +
+    // Последняя запись — без пустой строки и перевода строки в конце.
+    'msgid "Юникод 👋"'#10 +
+    'msgstr "Unicode 👋 ✓"';
+  for I := Low(CPoBreaks) to High(CPoBreaks) do
+    for LBom := False to True do
+    begin
+      if LBom then
+        LTag := CPoBreakNames[I] + ', BOM: '
+      else
+        LTag := CPoBreakNames[I] + ': ';
+      LTr := LoadPoText(LText, LBom, CPoBreaks[I]);
+      CheckEquals(4, LTr.Count, LTag + 'Count');
+      CheckEquals('de', LTr.Language, LTag + 'Language');
+      CheckEquals('', PoWarnings(LTr), LTag + 'предупреждений нет');
+      CheckEquals('Многострочный %s', PoTr(LTr, 'Multi line %s'), LTag + 'многострочные строки');
+      CheckEquals(CEscaped, PoTr(LTr, 'esc'), LTag + 'escape-последовательности');
+      CheckEquals('xy', PoTr(LTr, 'oneline'), LTag + 'несколько строк на одной строке');
+      CheckEquals('Unicode 👋 ✓', PoTr(LTr, 'Юникод 👋'), LTag + 'Юникод, запись в конце файла');
+    end;
+  // Пустой файл и только комментарии — пустой переводчик.
+  LTr := LoadPoText('');
+  CheckEquals(0, LTr.Count, 'пустой файл: Count');
+  CheckEquals('', LTr.Language, 'пустой файл: Language');
+  LTr := LoadPoBytes(TBytes.Create($EF, $BB, $BF));
+  CheckEquals(0, LTr.Count, 'только BOM: Count');
+  LTr := LoadPoText('# только комментарий'#10#10);
+  CheckEquals(0, LTr.Count, 'только комментарий: Count');
+  // Заголовок с флагом fuzzy разбирается; допустимые charset.
+  LTr := LoadPoText('#, fuzzy'#10 + CPoHeader + PoEntry('A', 'Б'));
+  CheckEquals('de', LTr.Language, 'заголовок fuzzy: Language');
+  CheckEquals(1, LTr.Count, 'заголовок fuzzy: Count');
+  for LText in TArray<string>.Create('utf-8', 'UTF8', 'US-ASCII', 'ascii', '"UTF-8"', 'UTF-8; format=flowed') do
+    CheckEquals(1, LoadPoText('msgid ""'#10'msgstr "Content-Type: text/plain; charset=' +
+      PoQuote(LText) + '\n"'#10#10 + PoEntry('A', 'Б')).Count, 'charset ' + LText + ' допустим');
+  // msgstr [n]: пробелы и табуляции вокруг '[', номера и ']' (как в GNU).
+  LTr := LoadPoText('msgid "%d file"'#10'msgid_plural "%d files"'#10 +
+    'msgstr [0] "%d Datei"'#10'msgstr[ 1 ]"%d Dateien"'#10'msgstr'#9'['#9'2'#9']'#9'"x"'#10 +
+    'msgid "A"'#10'msgstr  "Б"'#10);
+  CheckEquals(2, LTr.Count, 'msgstr [n]: Count');
+  CheckEquals('', PoWarnings(LTr), 'msgstr [n]: предупреждений нет');
+  CheckEquals('%d Datei', PoTr(LTr, '%d file'), 'msgstr [0] с пробелом — перевод');
+  CheckEquals('Б', PoTr(LTr, 'A'), 'msgstr и два пробела — не msgstr[n]');
+  // Проверка подписи спецификаторов (TgSameFormatSignature).
+  Check(TgSameFormatSignature('', ''), 'подпись: без спецификаторов');
+  Check(TgSameFormatSignature('%s и %d', 'call %s code %d'), 'подпись: %s %d');
+  Check(TgSameFormatSignature('%1:d: %0:s', '%s at %d'), 'подпись: перестановка');
+  Check(TgSameFormatSignature('100%% %s', '%s'), 'подпись: %% — литерал');
+  Check(not TgSameFormatSignature('%d', '%s'), 'подпись: другой тип');
+  Check(not TgSameFormatSignature('%s', ''), 'подпись: лишний аргумент');
+  Check(not TgSameFormatSignature('100%', '100%'), 'подпись: одиночный % не определена');
+end;
+
+procedure TestPoSkipped;
+var
+  LText: string;
+  LTr: ITgPoTranslator;
+  LWarnings, LCopy: TArray<string>;
+  LExpected: TArray<string>;
+  LSaved: ITgTranslator;
+  I: Integer;
+begin
+  // Номера строк — в комментариях справа (заголовок — строки 1–5).
+  LText := CPoHeader +
+    '#, fuzzy, c-format'#10 + PoEntry('Fuzzy', 'Неточно') +              // 6–9
+    '#, fuzzy'#10'#~ msgid "Old"'#10'#~ msgstr "Старое"'#10#10 +          // 10–13
+    PoEntry('AfterObsolete', 'После устаревшей') +                        // 14–16
+    PoEntry('Empty', '') +                                                // 17–19
+    'msgid "%d file"'#10'msgid_plural "%d files"'#10 +                    // 20–21
+    'msgstr[0] "%d файл"'#10'msgstr[1] "%d файла"'#10'msgstr[2] "%d файлов"'#10#10 + // 22–25
+    'msgid "Only1"'#10'msgid_plural "Only1s"'#10 +                        // 26–27
+    'msgstr[1] "x"'#10'msgstr[0] ""'#10#10 +                              // 28–30
+    'msgctxt "menu"'#10 + PoEntry('Ctx', 'Контекст') +                    // 31–34
+    'msgctxt "menu2"'#10 + PoEntry('Ctx2', '') +                          // 35–38
+    PoEntry('Value %s', 'Значение %d') +                                  // 39–41
+    PoEntry('Plain', 'Без формата %s') +                                  // 42–44
+    PoEntry('%s at %d', '%1:d: %0:s') +                                   // 45–47
+    PoEntry('Dup', 'Первый') +                                            // 48–50
+    PoEntry('Dup', 'Второй') +                                            // 51–53
+    // Знак процента: msgid без '%' — простой текст, с '%' — строка формата.
+    PoEntry('Percent', '100% готово') +                                   // 54–56
+    PoEntry('Percent2', 'Скидка 50%%') +                                  // 57–59
+    PoEntry('%d%% done', '%d% готово') +                                  // 60–62
+    PoEntry('%d%% left', 'осталось %d%%');                                // 63–65
+  LTr := LoadPoText(LText);
+  CheckEquals(7, LTr.Count,
+    'Count: AfterObsolete, %d file, %s at %d, Dup, Percent, Percent2, %d%% left');
+  CheckEquals('<нет>', PoTr(LTr, 'Fuzzy'), 'fuzzy — пропуск');
+  CheckEquals('<нет>', PoTr(LTr, 'Old'), '#~ — пропуск');
+  CheckEquals('После устаревшей', PoTr(LTr, 'AfterObsolete'),
+    'флаг fuzzy устаревшей записи не переходит на следующую');
+  CheckEquals('<нет>', PoTr(LTr, 'Empty'), 'пустой msgstr — пропуск');
+  CheckEquals('%d файл', PoTr(LTr, '%d file'), 'plural — msgstr[0]');
+  CheckEquals('<нет>', PoTr(LTr, '%d files'), 'msgid_plural — не ключ');
+  CheckEquals('<нет>', PoTr(LTr, 'Only1'), 'plural: пустой msgstr[0] — пропуск');
+  CheckEquals('<нет>', PoTr(LTr, 'Ctx'), 'msgctxt — пропуск');
+  CheckEquals('<нет>', PoTr(LTr, 'Value %s'), 'спецификаторы не совпадают — отброшено');
+  CheckEquals('<нет>', PoTr(LTr, 'Plain'), 'лишний спецификатор — отброшено');
+  CheckEquals('%1:d: %0:s', PoTr(LTr, '%s at %d'), 'перестановка через индексы — принято');
+  CheckEquals('Второй', PoTr(LTr, 'Dup'), 'повтор — действует последний');
+  CheckEquals('100% готово', PoTr(LTr, 'Percent'), 'msgid без %: одиночный % — литерал, принято');
+  CheckEquals('Скидка 50%%', PoTr(LTr, 'Percent2'), 'msgid без %: %% — как есть, принято');
+  CheckEquals('<нет>', PoTr(LTr, '%d%% done'), 'msgid с %: одиночный % в переводе — отброшено');
+  CheckEquals('осталось %d%%', PoTr(LTr, '%d%% left'), 'msgid с %: %% — литерал, принято');
+  LExpected := TArray<string>.Create(
+    PoWarning(31, TgLangTextFmt(@SRuPoWarnContext, @SEnPoWarnContext, ['menu'])),
+    PoWarning(39, TgLangTextFmt(@SRuPoWarnFormat, @SEnPoWarnFormat, ['Value %s'])),
+    PoWarning(42, TgLangTextFmt(@SRuPoWarnFormat, @SEnPoWarnFormat, ['Plain'])),
+    PoWarning(51, TgLangTextFmt(@SRuPoWarnDuplicate, @SEnPoWarnDuplicate, ['Dup', 48])),
+    PoWarning(60, TgLangTextFmt(@SRuPoWarnFormat, @SEnPoWarnFormat, ['%d%% done'])));
+  LWarnings := LTr.Warnings;
+  CheckEquals(Length(LExpected), Length(LWarnings), 'число предупреждений — ' + PoWarnings(LTr));
+  for I := 0 to Min(Length(LExpected), Length(LWarnings)) - 1 do
+    CheckEquals(LExpected[I], LWarnings[I], 'предупреждение ' + IntToStr(I));
+  // Warnings — копия: изменение полученного массива не меняет переводчик.
+  LCopy := LTr.Warnings;
+  if Length(LCopy) > 0 then
+  begin
+    LCopy[0] := 'изменено';
+    CheckEquals(LExpected[0], LTr.Warnings[0], 'Warnings — копия');
+  end;
+  // Длинный msgid в предупреждении сокращается; переводы строк — пробелы.
+  LTr := LoadPoText(PoEntry(StringOfChar('x', 70) + '%s'#10, 'перевод'));
+  CheckEquals(PoWarning(1, TgLangTextFmt(@SRuPoWarnFormat, @SEnPoWarnFormat,
+    [StringOfChar('x', 60) + '…'])), PoWarnings(LTr), 'длинный msgid сокращён');
+  // Перевод простого текста с '%' выводится библиотекой как есть (TgText).
+  LSaved := TgGetTranslator;
+  try
+    TgSetTranslator(LoadPoText(PoEntry(LoadResString(@SEnCancelled), 'Отменено на 100%')));
+    CheckEquals('Отменено на 100%', TgText(TTgText.Cancelled), 'TgText: % в переводе простого текста');
+  finally
+    TgSetTranslator(LSaved);
+  end;
+  Check(TranslatorIs(LSaved), 'переводчик восстановлен');
+end;
+
+procedure TestPoErrors;
+const
+  H = CPoHeader;
+  L = CPoHeaderLines;
+var
+  LLanguage, LLang: TTgLanguage;
+  LMessage, LTag: string;
+  LLine, I: Integer;
+  LBad: TBytes;
+begin
+  LLanguage := TgGetLanguage;
+  try
+    for LLang := Low(TTgLanguage) to High(TTgLanguage) do
+    begin
+      TgSetLanguage(LLang);
+      LTag := GetEnumName(TypeInfo(TTgLanguage), Ord(LLang)) + ': ';
+      // Полный текст: место (имя потока и строка) и описание.
+      LMessage := PoErrorOf(PoBytes(H + 'msgid "a'#10), LLine);
+      CheckEquals(TgLangTextFmt(@SRuPoError, @SEnPoError,
+        [TgLangTextFmt(@SRuPoLocation, @SEnPoLocation, ['bad.po', L + 1]),
+        TgLangText(@SRuPoUnterminated, @SEnPoUnterminated)]), LMessage, LTag + 'текст ETgPoError');
+      LMessage := PoErrorOf(PoBytes(H + 'msgid "a'#10), LLine, '');
+      CheckEquals(TgLangTextFmt(@SRuPoError, @SEnPoError,
+        [TgLangTextFmt(@SRuPoLine, @SEnPoLine, [L + 1]),
+        TgLangText(@SRuPoUnterminated, @SEnPoUnterminated)]), LMessage,
+        LTag + 'текст ETgPoError потока без имени');
+      Check(Raises(
+        procedure
+        begin
+          LoadPoText('"a"');
+        end, ETgError), LTag + 'ETgPoError — потомок ETgError');
+
+      CheckPoError('msgid ""'#10'msgstr ""'#10'"Content-Type: text/plain; charset=windows-1251\n"'#10,
+        1, TgLangTextFmt(@SRuPoCharset, @SEnPoCharset, ['windows-1251']), LTag + 'charset не UTF-8');
+      CheckPoError('msgid ""'#10'msgstr "Content-Type: text/plain; charset=CHARSET\n"'#10,
+        1, TgLangTextFmt(@SRuPoCharset, @SEnPoCharset, ['CHARSET']), LTag + 'charset шаблона .pot');
+      CheckPoError(H + 'msgid "a\q"'#10'msgstr "b"'#10, L + 1,
+        TgLangTextFmt(@SRuPoBadEscape, @SEnPoBadEscape, ['\q']), LTag + 'незнакомое экранирование');
+      CheckPoError(H + 'msgid "a"'#10'msgstr "\303\251"'#10, L + 2,
+        TgLangTextFmt(@SRuPoBadEscape, @SEnPoBadEscape, ['\303']), LTag + '\ooo вне ASCII');
+      CheckPoError(H + 'msgid "a"'#10'msgstr "\xg"'#10, L + 2,
+        TgLangTextFmt(@SRuPoBadEscape, @SEnPoBadEscape, ['\x']), LTag + '\x без цифр');
+      CheckPoError(H + 'msgid "a"'#10'msgstr "\xC3"'#10, L + 2,
+        TgLangTextFmt(@SRuPoBadEscape, @SEnPoBadEscape, ['\xC3']), LTag + '\xHH вне ASCII');
+      CheckPoError(H + 'msgid "a"'#10'msgstr "\0"'#10, L + 2,
+        TgLangTextFmt(@SRuPoBadEscape, @SEnPoBadEscape, ['\0']), LTag + '\0');
+      CheckPoError(H + PoEntry('a', 'b') + 'msgid "c'#10'msgstr "d"'#10, L + 4,
+        TgLangText(@SRuPoUnterminated, @SEnPoUnterminated), LTag + 'незакрытая кавычка');
+      CheckPoError(H + 'msgid "a\"'#10'msgstr "b"'#10, L + 1,
+        TgLangText(@SRuPoUnterminated, @SEnPoUnterminated), LTag + 'экранированная последняя кавычка');
+      CheckPoError(H + 'msgid "a" b'#10'msgstr "c"'#10, L + 1,
+        TgLangTextFmt(@SRuPoUnexpected, @SEnPoUnexpected, ['b']), LTag + 'мусор после строки');
+      CheckPoError(H + 'msgfoo "a"'#10, L + 1,
+        TgLangTextFmt(@SRuPoUnexpected, @SEnPoUnexpected, ['msgfoo "a"']), LTag + 'неизвестное ключевое слово');
+      CheckPoError(H + 'msgid1 "a"'#10, L + 1,
+        TgLangTextFmt(@SRuPoUnexpected, @SEnPoUnexpected, ['msgid1 "a"']), LTag + 'msgid1');
+      CheckPoError('"abc"'#10, 1,
+        TgLangText(@SRuPoOrphanString, @SEnPoOrphanString), LTag + 'строка без ключевого слова');
+      CheckPoError(H + 'msgid "a"'#10'"b"'#10, L + 1,
+        TgLangText(@SRuPoNoMsgstr, @SEnPoNoMsgstr), LTag + 'msgid без msgstr в конце файла');
+      CheckPoError(H + 'msgid "a"'#10'msgid "b"'#10'msgstr "c"'#10, L + 1,
+        TgLangText(@SRuPoNoMsgstr, @SEnPoNoMsgstr), LTag + 'msgid после msgid');
+      CheckPoError(H + 'msgctxt "a"'#10'msgctxt "b"'#10, L + 2,
+        TgLangTextFmt(@SRuPoMisplaced, @SEnPoMisplaced, ['msgctxt']), LTag + 'msgctxt после msgctxt');
+      CheckPoError(H + PoEntry('a', 'b') + 'msgstr "x"'#10, L + 4,
+        TgLangTextFmt(@SRuPoMisplaced, @SEnPoMisplaced, ['msgstr']), LTag + 'msgstr без msgid');
+      CheckPoError(H + 'msgid "a"'#10'msgid_plural "b"'#10'msgstr "c"'#10, L + 3,
+        TgLangTextFmt(@SRuPoMisplaced, @SEnPoMisplaced, ['msgstr']), LTag + 'msgstr после msgid_plural');
+      CheckPoError(H + 'msgid "a"'#10'msgstr[0] "c"'#10, L + 2,
+        TgLangTextFmt(@SRuPoMisplaced, @SEnPoMisplaced, ['msgstr[0]']), LTag + 'msgstr[0] без msgid_plural');
+      CheckPoError(H + 'msgid "a"'#10'msgid_plural "b"'#10'msgstr[x] "c"'#10, L + 3,
+        TgLangTextFmt(@SRuPoUnexpected, @SEnPoUnexpected, ['msgstr[x] "c"']), LTag + 'msgstr[x]');
+      CheckPoError(H + 'msgid'#10, L + 1,
+        TgLangTextFmt(@SRuPoExpectedString, @SEnPoExpectedString, ['msgid']), LTag + 'msgid без строки');
+      // Отличие от GNU: строка "…" на следующей строке после ключевого слова.
+      CheckPoError(H + 'msgid'#10'"a"'#10'msgstr "b"'#10, L + 1,
+        TgLangTextFmt(@SRuPoExpectedString, @SEnPoExpectedString, ['msgid']), LTag + 'msgid и строка на разных строках');
+      // msgstr [n] с пробелами: ошибки и ключевое слово в тексте — как в файле.
+      CheckPoError(H + 'msgid "a"'#10'msgstr [0] "c"'#10, L + 2,
+        TgLangTextFmt(@SRuPoMisplaced, @SEnPoMisplaced, ['msgstr [0]']), LTag + 'msgstr [0] без msgid_plural');
+      CheckPoError(H + 'msgid "a"'#10'msgid_plural "b"'#10'msgstr [x] "c"'#10, L + 3,
+        TgLangTextFmt(@SRuPoUnexpected, @SEnPoUnexpected, ['msgstr [x] "c"']), LTag + 'msgstr [x]');
+      CheckPoError(H + 'msgid "a"'#10'msgid_plural "b"'#10'msgstr [0 "c"'#10, L + 3,
+        TgLangTextFmt(@SRuPoUnexpected, @SEnPoUnexpected, ['msgstr [0 "c"']), LTag + 'msgstr [0 без ]');
+      // Длинный текст в сообщении сокращается до 60 символов (хвост строки не копируется).
+      CheckPoError(H + 'msgid "a"'#10'msgstr[' + StringOfChar('0', 100) + '] "c"'#10, L + 2,
+        TgLangTextFmt(@SRuPoMisplaced, @SEnPoMisplaced, ['msgstr[' + StringOfChar('0', 53) + '…']),
+        LTag + 'msgstr[000…] — номер сокращён');
+      CheckPoError(H + 'msgfoo ' + StringOfChar('y', 1000) + '  '#10, L + 1,
+        TgLangTextFmt(@SRuPoUnexpected, @SEnPoUnexpected, ['msgfoo ' + StringOfChar('y', 53) + '…']),
+        LTag + 'длинный неожиданный текст сокращён');
+      CheckPoError(H + 'msgfoo "a"'#9'  '#10, L + 1,
+        TgLangTextFmt(@SRuPoUnexpected, @SEnPoUnexpected, ['msgfoo "a"']), LTag + 'хвостовые пробелы отброшены');
+
+      // Неверный UTF-8 (обрыв последовательности, избыточные формы 2/3/4
+      // байт, суррогат, больше U+10FFFF, одиночный байт продолжения, байт
+      // FF) — номер строки байта при LF, CRLF+BOM, CR.
+      for LBad in TArray<TBytes>.Create(TBytes.Create($C3, $28), TBytes.Create($C0, $AF),
+        TBytes.Create($E0, $80, $80), TBytes.Create($F0, $80, $80, $80),
+        TBytes.Create($ED, $A0, $80), TBytes.Create($F4, $90, $80, $80),
+        TBytes.Create($80), TBytes.Create($FF)) do
+        for I := Low(CPoBreaks) to High(CPoBreaks) do
+        begin
+          LMessage := PoErrorOf(PoBytes(H + 'msgid "a"'#10'msgstr "', Odd(I), CPoBreaks[I]) + LBad +
+            PoBytes('"'#10, False, CPoBreaks[I]), LLine);
+          CheckEquals(L + 2, LLine, LTag + 'UTF-8 (' + CPoBreakNames[I] + '): строка — ' + LMessage);
+          Check(Contains(TgLangText(@SRuPoBadUtf8, @SEnPoBadUtf8), LMessage),
+            LTag + 'UTF-8 (' + CPoBreakNames[I] + '): текст — ' + LMessage);
+        end;
+      // 4-байтная последовательность (начало 👋 F0 9F 91 8B), оборванная в
+      // конце файла без перевода строки: в строке msgstr и в комментарии.
+      for I := Low(CPoBreaks) to High(CPoBreaks) do
+      begin
+        LMessage := PoErrorOf(PoBytes(H + 'msgid "a"'#10'msgstr "', Odd(I), CPoBreaks[I]) +
+          TBytes.Create($F0, $9F, $91), LLine);
+        CheckEquals(L + 2, LLine, LTag + 'UTF-8 обрыв в конце (' + CPoBreakNames[I] + '): строка — ' +
+          LMessage);
+        Check(Contains(TgLangText(@SRuPoBadUtf8, @SEnPoBadUtf8), LMessage),
+          LTag + 'UTF-8 обрыв в конце (' + CPoBreakNames[I] + '): текст — ' + LMessage);
+        LMessage := PoErrorOf(PoBytes(H + PoEntry('a', 'b') + '# ', Odd(I), CPoBreaks[I]) +
+          TBytes.Create($F0, $9F, $91), LLine);
+        CheckEquals(L + 4, LLine, LTag + 'UTF-8 обрыв в комментарии в конце (' + CPoBreakNames[I] +
+          '): строка — ' + LMessage);
+        Check(Contains(TgLangText(@SRuPoBadUtf8, @SEnPoBadUtf8), LMessage),
+          LTag + 'UTF-8 обрыв в комментарии в конце (' + CPoBreakNames[I] + '): текст — ' + LMessage);
+      end;
+    end;
+  finally
+    TgSetLanguage(LLanguage);
+  end;
+  Check(TgGetLanguage = LLanguage, 'язык восстановлен');
+end;
+
+procedure TestPoStream;
+const
+  // Смещение 4-байтного символа UTF-8: байты 65534–65537 — через границу 64 КиБ
+  // (начальная ёмкость буфера чтения при неизвестном размере).
+  CEmojiOffset = 65534;
+  CMaxReads: array[0..2] of Integer = (0, 7, 1);
+var
+  LPrefix, LPad, LTag: string;
+  LBytes: TBytes;
+  LStream: TPoTestStream;
+  LTr: ITgPoTranslator;
+  LKnownSize: Boolean;
+  I: Integer;
+
+  procedure CheckLoaded(const ATr: ITgPoTranslator; const AWhat: string);
+  begin
+    CheckEquals(2, ATr.Count, AWhat + 'Count');
+    CheckEquals('', PoWarnings(ATr), AWhat + 'предупреждений нет');
+    CheckEquals(LPad + '👋', PoTr(ATr, 'Long'), AWhat + 'перевод с эмодзи на границе 64 КиБ');
+    CheckEquals('После 👋', PoTr(ATr, 'After'), AWhat + 'запись после границы');
+  end;
+
+begin
+  LPrefix := CPoHeader + 'msgid "Long"'#10'msgstr "';
+  LPad := StringOfChar('x', CEmojiOffset - Length(TEncoding.UTF8.GetBytes(LPrefix)));
+  LBytes := PoBytes(LPrefix + LPad + '👋"'#10#10 + PoEntry('After', 'После 👋'));
+  CheckEquals($F0, LBytes[CEmojiOffset], 'первый байт эмодзи — на смещении 65534');
+  CheckEquals($8B, LBytes[CEmojiOffset + 3], 'последний байт эмодзи — на смещении 65537');
+  Check(Length(LBytes) > 64 * 1024, 'поток больше 64 КиБ');
+  CheckLoaded(LoadPoBytes(LBytes), 'TBytesStream: ');
+  // Свой поток: Read целиком или по 1–7 / 1 байту; размер известен или нет.
+  for I := Low(CMaxReads) to High(CMaxReads) do
+    for LKnownSize := False to True do
+    begin
+      LTag := Format('Read до %d байт, Size %s: ', [CMaxReads[I], BoolToStr(LKnownSize, True)]);
+      LStream := TPoTestStream.Create(LBytes, CMaxReads[I], LKnownSize);
+      try
+        LTr := TgLoadPoTranslatorFromStream(LStream, 'test.po');
+        CheckLoaded(LTr, LTag);
+        CheckEquals(Length(LBytes), LStream.ReadPos, LTag + 'прочитан до конца');
+        if CMaxReads[I] > 0 then
+          Check(LStream.Calls >= Length(LBytes) div CMaxReads[I], LTag + 'короткие Read: ' +
+            IntToStr(LStream.Calls) + ' вызовов');
+      finally
+        LStream.Free;
+      end;
+    end;
+  LTr := nil;
+  // Поток без Size: ошибка UTF-8 за границей 64 КиБ — номер строки верный.
+  LStream := TPoTestStream.Create(PoBytes(LPrefix + LPad + '"'#10#10'msgid "b"'#10'msgstr "') +
+    TBytes.Create($F0, $9F, $91), 7, False);
+  try
+    try
+      TgLoadPoTranslatorFromStream(LStream);
+      Check(False, 'обрыв UTF-8 в конце потока без Size — ETgPoError');
+    except
+      on E: ETgPoError do
+        CheckEquals(CPoHeaderLines + 5, E.LineNumber, 'обрыв UTF-8 в конце потока без Size: строка');
+    end;
+  finally
+    LStream.Free;
+  end;
 end;
 
 { Владение, фаза 5: ITgJsonHolder, ITgOwnerLink, номер запуска компонента }
@@ -13948,6 +14601,16 @@ begin
     TestTranslatorFaults);
   RunTest('Локализация, фаза 1: ITgTranslator — 4 потока x 2000 чтений текстов, ' +
     'смена переводчика 500 раз', TestTranslatorThreads);
+  RunTest('Локализация, фаза 2: .po — перевод через TgSetTranslator и ETgError, поток с ' +
+    'текущей позиции, файл, Count, Language', TestPoBasic);
+  RunTest('Локализация, фаза 2: .po — многострочные строки, escape, BOM/без, LF/CRLF/CR, ' +
+    'charset, TgSameFormatSignature', TestPoSyntax);
+  RunTest('Локализация, фаза 2: .po — fuzzy, #~, пустой msgstr, plural → [0], msgctxt, ' +
+    'повтор, спецификаторы → Warnings', TestPoSkipped);
+  RunTest('Локализация, фаза 2: .po — ошибки разбора ETgPoError с номером строки (RU/EN), ' +
+    'charset, экранирование, кавычка, мусор, UTF-8', TestPoErrors);
+  RunTest('Локализация, фаза 2: .po — поток > 64 КиБ, эмодзи на границе 64 КиБ, короткие Read ' +
+    '(1–7 байт), поток без Size', TestPoStream);
   RunTest('Варианты edit-методов: позиционные, inline → Boolean, chat_id любого вида', TestEditVariants);
   RunTest('Варианты answerCallbackQuery/sendMessage/sendPhoto/sendDocument', TestSendAndAnswerVariants);
   RunTest('Варианты: Async и Try', TestVariantsAsyncAndTry);

@@ -16,7 +16,7 @@
   - секции по подсистемам с префиксами: ядро — без префикса (SRu<Имя>),
     JSON — SRuJson…, DTO — SRuDto…, обновления — SRuUpd…, маршрутизатор —
     SRuRoute…, TTgBot — SRuBot…, компонент — SRuComp…, webhook-сервер —
-    SRuWhs…;
+    SRuWhs…, загрузчик переводов .po — SRuPo…;
   - подстановки (%s, %d) сохраняйте в переводе в том же порядке и количестве.
 
   Перевод (Translation Manager / ITE): обе группы, SRu… и SEn…, —
@@ -232,6 +232,47 @@ resourcestring
     '(Telegram принимает только HTTPS): %s';
   SEnWhsPublicUrlNotHttps = 'The webhook server PublicUrl must start with https:// ' +
     '(Telegram accepts HTTPS only): %s';
+
+  { Загрузчик переводов .po (TgBot.Po). Место в файле: имя файла и номер
+    строки (PoLocation) или только номер строки — поток без имени (PoLine).
+    Ошибка разбора (ETgPoError): место, затем описание (PoError). Ключевые
+    слова gettext (msgid, msgstr…) и имена кодировок не переводятся. }
+
+  SRuPoLocation = '%s, строка %d';
+  SEnPoLocation = '%s, line %d';
+  SRuPoLine = 'строка %d';
+  SEnPoLine = 'line %d';
+  SRuPoError = 'Ошибка разбора файла перевода .po (%s): %s';
+  SEnPoError = 'Error parsing the .po translation file (%s): %s';
+  SRuPoBadUtf8 = 'текст не в кодировке UTF-8';
+  SEnPoBadUtf8 = 'the text is not valid UTF-8';
+  SRuPoCharset = 'кодировка "%s" не поддерживается, нужна UTF-8 (Content-Type: charset)';
+  SEnPoCharset = 'charset "%s" is not supported, UTF-8 is required (Content-Type: charset)';
+  SRuPoUnterminated = 'незакрытая кавычка';
+  SEnPoUnterminated = 'unterminated string: closing quote is missing';
+  SRuPoBadEscape = 'недопустимая escape-последовательность "%s"';
+  SEnPoBadEscape = 'invalid escape sequence "%s"';
+  SRuPoUnexpected = 'неожиданный текст "%s"';
+  SEnPoUnexpected = 'unexpected text "%s"';
+  SRuPoExpectedString = 'после %s ожидается строка в кавычках';
+  SEnPoExpectedString = 'a quoted string is expected after %s';
+  SRuPoMisplaced = 'ключевое слово %s здесь недопустимо';
+  SEnPoMisplaced = 'keyword %s is not allowed here';
+  SRuPoOrphanString = 'строка в кавычках без ключевого слова (msgid, msgstr…)';
+  SEnPoOrphanString = 'quoted string without a keyword (msgid, msgstr…)';
+  SRuPoNoMsgstr = 'запись без msgstr';
+  SEnPoNoMsgstr = 'entry without msgstr';
+
+  { Загрузчик .po: предупреждения (ITgPoTranslator.Warnings) — запись
+    пропущена или заменена. Подстановки: начало msgctxt/msgid (до 60
+    символов); у PoWarnDuplicate затем строка прежней записи. }
+
+  SRuPoWarnContext = 'запись с msgctxt "%s" пропущена: контекст не поддерживается';
+  SEnPoWarnContext = 'entry with msgctxt "%s" skipped: context is not supported';
+  SRuPoWarnFormat = 'перевод отброшен: спецификаторы Format не совпадают с msgid "%s"';
+  SEnPoWarnFormat = 'translation dropped: Format specifiers do not match msgid "%s"';
+  SRuPoWarnDuplicate = 'повтор msgid "%s" (прежний — строка %d): действует последний';
+  SEnPoWarnDuplicate = 'duplicate msgid "%s" (previous at line %d): the last one is used';
 
 implementation
 

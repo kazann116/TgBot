@@ -121,6 +121,7 @@
         <DCCReference Include="..\Source\TgBot.Bot.pas"/>
         <DCCReference Include="..\Source\TgBot.pas"/>
         <DCCReference Include="..\Source\TgBot.Component.pas"/>
+        <DCCReference Include="..\Source\TgBot.Po.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

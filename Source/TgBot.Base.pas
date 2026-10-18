@@ -82,8 +82,10 @@ type
   ///   (%1:s … %0:d) допустима. Иначе (аргументов меньше или больше, другой
   ///   тип, неизвестная буква, незавершённый спецификатор) — встроенный текст.
   ///   Перевод текста без форматирования (TgText, TgLangText) отдаётся как
-  ///   есть. Перевод применяется при любом языке TgSetLanguage; нет перевода
-  ///   (False или пустая строка) — встроенный текст на текущем языке.
+  ///   есть, без Format: '%' в нём — литерал, '%%' не сокращается до '%'
+  ///   (литерал '%%' нужен только в строках формата). Перевод применяется
+  ///   при любом языке TgSetLanguage; нет перевода (False или пустая
+  ///   строка) — встроенный текст на текущем языке.
   ///   Реализация должна быть потокобезопасной: TryTranslate вызывается из
   ///   любых потоков одновременно (лучше — неизменяемый словарь, заполненный
   ///   до TgSetTranslator). Исключения TryTranslate, кроме EOutOfMemory,
@@ -553,6 +555,18 @@ function TgLangText(ARu, AEn: PResStringRec): string;
 /// </summary>
 function TgLangTextFmt(ARu, AEn: PResStringRec; const AArgs: array of const): string;
 /// <summary>
+///   Строки формата A и B берут одни и те же аргументы Format по правилам
+///   ITgTranslator (множество индексов и тип каждого; порядок, повторы,
+///   ширина, точность и '%%' не сравниваются) — той же проверкой
+///   TgLangTextFmt отбрасывает неподходящий перевод. Строки без
+///   спецификаторов совпадают. False — подписи разные или у одной из строк
+///   не определены (незавершённый спецификатор, неизвестная буква, разные
+///   типы одного индекса, в том числе одиночный '%' — литерал пишется '%%').
+///   Для загрузчиков переводов (TgBot.Po): проверка пары msgid/msgstr.
+///   Потокобезопасно.
+/// </summary>
+function TgSameFormatSignature(const A, B: string): Boolean;
+/// <summary>
 ///   Служебное (для компонентов библиотеки): новая связь ITgOwnerLink с
 ///   владельцем AOwner.
 /// </summary>
@@ -849,15 +863,13 @@ begin
   Result := True;
 end;
 
-// Перевод ATranslation годится для ключа AMsgId: подписи спецификаторов
-// (TgFormatSignature) определены и совпадают.
-function TgSameFormatArgs(const ATranslation, AMsgId: string): Boolean;
+// Подписи спецификаторов (TgFormatSignature) A и B определены и совпадают.
+function TgSameFormatSignature(const A, B: string): Boolean;
 var
-  LTranslationSignature, LMsgIdSignature: string;
+  LSignatureA, LSignatureB: string;
 begin
-  Result := TgFormatSignature(ATranslation, LTranslationSignature) and
-    TgFormatSignature(AMsgId, LMsgIdSignature) and
-    (LTranslationSignature = LMsgIdSignature);
+  Result := TgFormatSignature(A, LSignatureA) and TgFormatSignature(B, LSignatureB) and
+    (LSignatureA = LSignatureB);
 end;
 
 function TgLangTextFmt(ARu, AEn: PResStringRec; const AArgs: array of const): string;
@@ -866,7 +878,7 @@ var
 begin
   // Аргументы перевода сверяются с ключом: Format не бросает при лишних
   // аргументах, и перевод с меньшим их числом молча потерял бы часть.
-  if TgTryTranslate(AEn, LText) and TgSameFormatArgs(LText, LoadResString(AEn)) then
+  if TgTryTranslate(AEn, LText) and TgSameFormatSignature(LText, LoadResString(AEn)) then
   begin
     try
       Exit(Format(LText, AArgs));

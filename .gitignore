@@ -18,6 +18,8 @@ Win64/
 Linux64/
 Android/
 Android64/
+# Локальные сборки тестов (скрипты и логи)
+Tests/_build/
 
 # Служебные файлы IDE
 __history/
