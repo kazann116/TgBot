@@ -11536,6 +11536,108 @@ begin
   end;
 end;
 
+{ Локализация, фаза 3: каталог Locale\ru.po (Tools\Locale\MakePot.ps1) }
+
+/// <summary>
+///   Locale\ru.po проекта: первая папка вверх от папки программы (Tests\,
+///   Tests\Bin\Win64\…), где есть Locale\ru.po и Source\TgBot.Consts.pas;
+///   '' — не найден (программа запущена вне дерева проекта).
+/// </summary>
+function FindProjectRuPo: string;
+const
+  CMaxDepth = 8;
+var
+  LDir, LParent: string;
+  I: Integer;
+begin
+  LDir := ExtractFilePath(TPath.GetFullPath(ParamStr(0)));
+  for I := 0 to CMaxDepth do
+  begin
+    Result := LDir + 'Locale' + PathDelim + 'ru.po';
+    if TFile.Exists(Result) and TFile.Exists(LDir + 'Source' + PathDelim + 'TgBot.Consts.pas') then
+      Exit;
+    // Выше корня диска не подниматься ('C:\' → 'C:' — уже не папка).
+    LParent := ExtractFilePath(ExcludeTrailingPathDelimiter(LDir));
+    if (LParent = '') or (LParent = LDir) or not IsPathDelimiter(LParent, Length(LParent)) then
+      Break;
+    LDir := LParent;
+  end;
+  Result := '';
+end;
+
+procedure TestPoRuLocale;
+var
+  LFile: string;
+  LTr: ITgPoTranslator;
+  LSaved: ITgTranslator;
+  LLanguage: TTgLanguage;
+  LText: TTgText;
+  LUpdText: TTgUpdatesText;
+  LRouteText: TTgRouterText;
+  LRuText: array[TTgText] of string;
+  LRuUpd: array[TTgUpdatesText] of string;
+  LRuRoute: array[TTgRouterText] of string;
+  LEnTexts: TDictionary<string, Boolean>;
+  I: Integer;
+begin
+  LFile := FindProjectRuPo;
+  if LFile = '' then
+  begin
+    Skip('Locale\ru.po проекта не найден вверх от ' + ExtractFilePath(ParamStr(0)));
+    Exit;
+  end;
+  LTr := TgLoadPoTranslator(LFile);
+  CheckEquals('', PoWarnings(LTr), 'ru.po: предупреждений нет');
+  CheckEquals('ru', LTr.Language, 'ru.po: Language');
+  LLanguage := TgGetLanguage;
+  LSaved := TgGetTranslator;
+  LEnTexts := TDictionary<string, Boolean>.Create;
+  try
+    // Встроенные русские тексты перечислений — без переводчика.
+    TgSetTranslator(nil);
+    TgSetLanguage(TTgLanguage.Ru);
+    for LText := Low(TTgText) to High(TTgText) do
+      LRuText[LText] := TgText(LText);
+    for LUpdText := Low(TTgUpdatesText) to High(TTgUpdatesText) do
+      LRuUpd[LUpdText] := TgUpdatesText(LUpdText);
+    for LRouteText := Low(TTgRouterText) to High(TTgRouterText) do
+      LRuRoute[LRouteText] := TgRouterText(LRouteText);
+    // Записи ru.po — разные тексты SEn… (MakePot объединяет одинаковые пары в одну запись;
+    // сравнение строк словаря — с учётом регистра, как msgid).
+    TgSetLanguage(TTgLanguage.En);
+    for LText := Low(TTgText) to High(TTgText) do
+      LEnTexts.AddOrSetValue(TgText(LText), True);
+    for LUpdText := Low(TTgUpdatesText) to High(TTgUpdatesText) do
+      LEnTexts.AddOrSetValue(TgUpdatesText(LUpdText), True);
+    for LRouteText := Low(TTgRouterText) to High(TTgRouterText) do
+      LEnTexts.AddOrSetValue(TgRouterText(LRouteText), True);
+    for I := Low(CConstPairs) to High(CConstPairs) do
+      LEnTexts.AddOrSetValue(LoadResString(CConstPairs[I].En), True);
+    CheckEquals(LEnTexts.Count, LTr.Count, 'ru.po: Count = числу разных текстов SEn… TgBot.Consts');
+    // Язык En и переводчик ru.po: ключ — английский текст, перевод — русский.
+    TgSetTranslator(LTr);
+    TgSetLanguage(TTgLanguage.En);
+    for LText := Low(TTgText) to High(TTgText) do
+      CheckEquals(LRuText[LText], TgText(LText),
+        'TTgText.' + GetEnumName(TypeInfo(TTgText), Ord(LText)) + ': перевод из ru.po');
+    for LUpdText := Low(TTgUpdatesText) to High(TTgUpdatesText) do
+      CheckEquals(LRuUpd[LUpdText], TgUpdatesText(LUpdText),
+        'TTgUpdatesText.' + GetEnumName(TypeInfo(TTgUpdatesText), Ord(LUpdText)) + ': перевод из ru.po');
+    for LRouteText := Low(TTgRouterText) to High(TTgRouterText) do
+      CheckEquals(LRuRoute[LRouteText], TgRouterText(LRouteText),
+        'TTgRouterText.' + GetEnumName(TypeInfo(TTgRouterText), Ord(LRouteText)) + ': перевод из ru.po');
+    for I := Low(CConstPairs) to High(CConstPairs) do
+      CheckEquals(LoadResString(CConstPairs[I].Ru), TgLangText(CConstPairs[I].Ru, CConstPairs[I].En),
+        'Consts.' + CConstPairs[I].Name + ': перевод из ru.po');
+  finally
+    TgSetTranslator(LSaved);
+    TgSetLanguage(LLanguage);
+    LEnTexts.Free;
+  end;
+  Check(TranslatorIs(LSaved), 'переводчик восстановлен');
+  Check(TgGetLanguage = LLanguage, 'язык восстановлен');
+end;
+
 { Владение, фаза 5: ITgJsonHolder, ITgOwnerLink, номер запуска компонента }
 
 type
@@ -14611,6 +14713,8 @@ begin
     'charset, экранирование, кавычка, мусор, UTF-8', TestPoErrors);
   RunTest('Локализация, фаза 2: .po — поток > 64 КиБ, эмодзи на границе 64 КиБ, короткие Read ' +
     '(1–7 байт), поток без Size', TestPoStream);
+  RunTest('Локализация, фаза 3: Locale\ru.po проекта — без предупреждений, Count = разных текстов ' +
+    'SEn… TgBot.Consts, Language ru; при En каждый текст переводится в русский', TestPoRuLocale);
   RunTest('Варианты edit-методов: позиционные, inline → Boolean, chat_id любого вида', TestEditVariants);
   RunTest('Варианты answerCallbackQuery/sendMessage/sendPhoto/sendDocument', TestSendAndAnswerVariants);
   RunTest('Варианты: Async и Try', TestVariantsAsyncAndTry);

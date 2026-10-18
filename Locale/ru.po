@@ -1,0 +1,473 @@
+# Русский перевод сообщений TgBot — тексты SRu… из Source/TgBot.Consts.pas.
+# Создан Tools/Locale/MakePot.ps1 — не правьте вручную: измените Source/TgBot.Consts.pas
+# и перезапустите скрипт.
+msgid ""
+msgstr ""
+"Project-Id-Version: TgBot 0.4.2\n"
+"Report-Msgid-Bugs-To: https://github.com/kazann116/TgBot/issues\n"
+"PO-Revision-Date: 2026-10-18 00:00+0000\n"
+"Last-Translator: TgBot <https://github.com/kazann116/TgBot>\n"
+"Language-Team: TgBot <https://github.com/kazann116/TgBot>\n"
+"Language: ru\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=3; plural=(n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2);\n"
+"X-Generator: TgBot Tools/Locale/MakePot.ps1\n"
+
+#. SEnTokenRequired
+#: Source/TgBot.Consts.pas:39
+msgid "Bot token is not specified"
+msgstr "Не задан токен бота"
+
+#. SEnOptionalEmpty
+#: Source/TgBot.Consts.pas:41
+msgid "Optional value is not set"
+msgstr "Опциональное значение не задано"
+
+#. SEnChatIdEmpty
+#: Source/TgBot.Consts.pas:43
+msgid "Chat identifier is not specified"
+msgstr "Идентификатор чата не задан"
+
+#. SEnChatIdNotNumeric
+#: Source/TgBot.Consts.pas:45
+#, object-pascal-format
+msgid "Chat identifier \"%s\" is not numeric"
+msgstr "Идентификатор чата \"%s\" не является числом"
+
+#. SEnInputFileEmpty
+#: Source/TgBot.Consts.pas:47
+msgid "Input file is not specified"
+msgstr "Файл не задан"
+
+#. SEnInputFileNotUpload
+#: Source/TgBot.Consts.pas:49
+msgid "Input file must be uploaded and cannot be passed as a string"
+msgstr "Файл требует загрузки и не может быть передан строкой"
+
+#. SEnInputFileStreamNil
+#: Source/TgBot.Consts.pas:51
+msgid "Upload stream is not assigned (nil)"
+msgstr "Поток для загрузки файла не задан (nil)"
+
+#. SEnLocalPathNotAbsolute
+#: Source/TgBot.Consts.pas:53
+#, object-pascal-format
+msgid "Path \"%s\" must be absolute"
+msgstr "Путь \"%s\" должен быть абсолютным"
+
+#. SEnParamNameEmpty
+#: Source/TgBot.Consts.pas:55
+msgid "Parameter name is not specified"
+msgstr "Имя параметра не задано"
+
+#. SEnInvalidJson
+#: Source/TgBot.Consts.pas:57
+#, object-pascal-format
+msgid "Invalid JSON in parameter \"%s\""
+msgstr "Некорректный JSON в параметре \"%s\""
+
+#. SEnApiError
+#: Source/TgBot.Consts.pas:59
+#, object-pascal-format
+msgid "Telegram Bot API error in method %s (code %d): %s"
+msgstr "Ошибка Telegram Bot API в методе %s (код %d): %s"
+
+#. SEnNetworkError
+#: Source/TgBot.Consts.pas:61
+#, object-pascal-format
+msgid "Network error while calling %s: %s"
+msgstr "Сетевая ошибка при вызове %s: %s"
+
+#. SEnInvalidResponse
+#: Source/TgBot.Consts.pas:63
+#, object-pascal-format
+msgid "Invalid server response while calling %s (HTTP %d)"
+msgstr "Некорректный ответ сервера при вызове %s (HTTP %d)"
+
+#. SEnUnexpectedResult
+#: Source/TgBot.Consts.pas:65
+#, object-pascal-format
+msgid "Unexpected result format of method %s"
+msgstr "Неожиданный формат результата метода %s"
+
+#. SEnCancelled
+#: Source/TgBot.Consts.pas:67
+msgid "Operation cancelled"
+msgstr "Операция прервана"
+
+#. SEnFilePathEmpty
+#: Source/TgBot.Consts.pas:69
+msgid "Server file path (file_path) is not specified"
+msgstr "Не задан путь к файлу на сервере (file_path)"
+
+#. SEnFilePathInvalid
+#: Source/TgBot.Consts.pas:71
+#, object-pascal-format
+msgid "Invalid server file path: \"%s\""
+msgstr "Недопустимый путь к файлу на сервере: \"%s\""
+
+#. SEnDownloadFailed
+#: Source/TgBot.Consts.pas:73
+#, object-pascal-format
+msgid "File download failed (HTTP %d)"
+msgstr "Не удалось скачать файл (HTTP %d)"
+
+#. SEnTransportRequired
+#: Source/TgBot.Consts.pas:75
+msgid "Bot API transport is not specified"
+msgstr "Не задан транспорт Bot API"
+
+#. SEnConflict
+#: Source/TgBot.Consts.pas:78
+#, object-pascal-format
+msgid "Conflict in method %s (code %d): %s. Another bot instance with this token is probably running, or a webhook is set while using getUpdates"
+msgstr "Конфликт в методе %s (код %d): %s. Вероятно, запущен другой экземпляр бота с этим токеном или для getUpdates установлен webhook"
+
+#. SEnClientClosed
+#: Source/TgBot.Consts.pas:81
+msgid "Bot API client is being destroyed: asynchronous call cancelled"
+msgstr "Клиент Bot API уничтожается: асинхронный вызов отменён"
+
+#. SEnViaProxy
+#: Source/TgBot.Consts.pas:84
+#, object-pascal-format
+msgid "%s; the request was sent via proxy %s"
+msgstr "%s; запрос шёл через прокси %s"
+
+#. SEnProxyScheme
+#: Source/TgBot.Consts.pas:92
+#, object-pascal-format
+msgid "Proxy scheme \"%s\" is not supported: only an HTTP proxy (CONNECT) is supported, SOCKS/HTTPS proxies are not. Leave Scheme empty and Host without a scheme or with http://"
+msgstr "Схема прокси \"%s\" не поддерживается: поддерживается только HTTP-прокси (CONNECT), SOCKS/HTTPS-прокси — нет. Оставьте Scheme пустым, Host — без схемы или с http://"
+
+#. SEnProxyBadHost
+#: Source/TgBot.Consts.pas:96
+msgid "Invalid proxy address (Host): specify host or host:port without a path or credentials — set the login and password in UserName/Password"
+msgstr "Недопустимый адрес прокси (Host): укажите хост или хост:порт без пути и учётных данных — логин и пароль задаются в UserName/Password"
+
+#. SEnProxyPort
+#: Source/TgBot.Consts.pas:99
+#, object-pascal-format
+msgid "Proxy %s: specify the proxy port 1-65535 (Port or \"host:port\" in Host), got %d"
+msgstr "Прокси %s: укажите порт прокси 1–65535 (Port или \"хост:порт\" в Host), задано %d"
+
+#. SEnProxyPortConflict
+#: Source/TgBot.Consts.pas:101
+#, object-pascal-format
+msgid "Proxy %s: the port in Host (%d) does not match Port (%d)"
+msgstr "Прокси %s: порт в Host (%d) не совпадает с Port (%d)"
+
+#. SEnDefaultTransportMissing
+#: Source/TgBot.Consts.pas:108
+msgid "No default transport is registered: add TgBot.Http (or TgBot) to uses or pass your own transport"
+msgstr "Транспорт по умолчанию не зарегистрирован: подключите TgBot.Http (или TgBot) или передайте свой транспорт"
+
+#. SEnArgNil
+#: Source/TgBot.Consts.pas:115
+#, object-pascal-format
+msgid "Parameter %s must not be nil"
+msgstr "Параметр %s не может быть nil"
+
+#. SEnArgOutOfRange
+#: Source/TgBot.Consts.pas:117
+#, object-pascal-format
+msgid "Parameter %s = %d is out of range (minimum %d)"
+msgstr "Параметр %s = %d вне допустимого диапазона (минимум %d)"
+
+#. SEnJsonNotInteger
+#: Source/TgBot.Consts.pas:123
+#, object-pascal-format
+msgid "Field \"%s\": value %s is not an integer within the Int64 range"
+msgstr "Поле «%s»: значение %s не является целым числом в диапазоне Int64"
+
+#. SEnJsonIntegerRange
+#: Source/TgBot.Consts.pas:125
+#, object-pascal-format
+msgid "Field \"%s\": value %s is out of the Integer range"
+msgstr "Поле «%s»: значение %s вне диапазона Integer"
+
+#. SEnJsonNotFloat
+#: Source/TgBot.Consts.pas:127
+#, object-pascal-format
+msgid "Field \"%s\": value %s cannot be represented as a floating-point number"
+msgstr "Поле «%s»: значение %s не представимо вещественным числом"
+
+#. SEnJsonFloatInvalid
+#: Source/TgBot.Consts.pas:129
+#, object-pascal-format
+msgid "Parameter \"%s\": invalid floating-point value (NaN or infinity)"
+msgstr "Параметр «%s»: недопустимое вещественное значение (NaN или бесконечность)"
+
+#. SEnDtoNotObject
+#: Source/TgBot.Consts.pas:134
+#, object-pascal-format
+msgid "The value is not a JSON object (field %s)"
+msgstr "Значение не является JSON-объектом (поле %s)"
+
+#. SEnDtoFileUpload
+#: Source/TgBot.Consts.pas:136
+#, object-pascal-format
+msgid "Field %s: file upload is not possible outside method parameters"
+msgstr "Поле %s: загрузка файла невозможна вне параметров метода"
+
+#. SEnDtoUnsupported
+#: Source/TgBot.Consts.pas:138
+#, object-pascal-format
+msgid "Object of type %s does not support serialization"
+msgstr "Объект типа %s не поддерживает сериализацию"
+
+#. SEnDtoEmptyItem
+#: Source/TgBot.Consts.pas:140
+#, object-pascal-format
+msgid "Item %d of array \"%s\" is not set (nil or empty union)"
+msgstr "Элемент %d массива «%s» не задан (nil или пустое объединение)"
+
+#. SEnDtoNotJsonDto
+#: Source/TgBot.Consts.pas:142
+#, object-pascal-format
+msgid "Object of type %s is not a JSON-based DTO (ITgJsonObject)"
+msgstr "Объект типа %s не является DTO поверх JSON (ITgJsonObject)"
+
+#. SEnUpdSourceRunning
+#: Source/TgBot.Consts.pas:148
+msgid "Update source is already running"
+msgstr "Источник обновлений уже запущен"
+
+#. SEnUpdDispatcherRunning
+#: Source/TgBot.Consts.pas:150
+msgid "Update dispatcher is already running"
+msgstr "Диспетчер обновлений уже запущен"
+
+#. SEnUpdStopFromHandler
+#: Source/TgBot.Consts.pas:153
+msgid "Cannot wait for the bot to stop from an update handler: use RequestStop"
+msgstr "Нельзя ждать остановки бота из обработчика обновления: используйте RequestStop"
+
+#. SEnUpdNoChat
+#: Source/TgBot.Consts.pas:156
+msgid "The update has no chat to reply to"
+msgstr "В обновлении нет чата для ответа"
+
+#. SEnUpdRunNotMainThread
+#: Source/TgBot.Consts.pas:158
+msgid "Run with Delivery = Main must be called from the main thread"
+msgstr "Run с Delivery = Main можно вызывать только из главного потока"
+
+#. SEnUpdRunUnsupported
+#: Source/TgBot.Consts.pas:160
+msgid "Run is not available on this platform: use Start and Stop"
+msgstr "Run недоступен на этой платформе: используйте Start и Stop"
+
+#. SEnUpdBotRunning
+#: Source/TgBot.Consts.pas:162
+msgid "The bot is already running"
+msgstr "Бот уже запущен"
+
+#. SEnUpdHandlerFiltered
+#: Source/TgBot.Consts.pas:165
+#, object-pascal-format
+msgid "%s is assigned, but AllowedUpdates does not include \"%s\": the server will not send such updates"
+msgstr "Назначен %s, но AllowedUpdates не содержит \"%s\": такие обновления сервер присылать не будет"
+
+#. SEnUpdWebhookUrlRequired
+#: Source/TgBot.Consts.pas:168
+msgid "Webhook mode: WebhookUrl (the public HTTPS address of the bot) is not set"
+msgstr "Режим Webhook: не задан WebhookUrl (внешний HTTPS-адрес бота)"
+
+#. SEnUpdWebhookBadSecret
+#: Source/TgBot.Consts.pas:170
+msgid "Invalid webhook secret: 1-256 characters A-Z, a-z, 0-9, \"_\" and \"-\" are required"
+msgstr "Недопустимый секрет webhook: нужно 1–256 символов A-Z, a-z, 0-9, \"_\" и \"-\""
+
+#. SEnUpdWebhookUnsupported
+#: Source/TgBot.Consts.pas:172
+msgid "Webhook mode is not available on this platform: use Polling"
+msgstr "Режим Webhook недоступен на этой платформе: используйте Polling"
+
+#. SEnUpdNoRandom
+#: Source/TgBot.Consts.pas:174
+msgid "The OS cryptographic random number generator is not available"
+msgstr "Криптостойкий генератор случайных чисел ОС недоступен"
+
+#. SEnRouteEmptyKey
+#: Source/TgBot.Consts.pas:181
+#, object-pascal-format
+msgid "Empty router rule key (%s)"
+msgstr "Пустой ключ правила маршрутизатора (%s)"
+
+#. SEnRouteBadCommand
+#: Source/TgBot.Consts.pas:183
+#, object-pascal-format
+msgid "Invalid command name \"%s\": spaces and \"@\" are not allowed"
+msgstr "Недопустимое имя команды \"%s\": пробелы и \"@\" не допускаются"
+
+#. SEnBotWebhookNotHttps
+#: Source/TgBot.Consts.pas:189
+msgid "Webhook mode: WebhookUrl must start with https:// (Telegram accepts HTTPS only; http:// is allowed only with a Local Bot API server)"
+msgstr "Режим Webhook: WebhookUrl должен начинаться с https:// (Telegram принимает только HTTPS; http:// — только с Local Bot API server)"
+
+#. SEnBotWebhookNoSecret
+#: Source/TgBot.Consts.pas:193
+msgid "Webhook without a secret: when registering outside the bot, pass secret_token and set WebhookSecretToken — otherwise anyone who knows the URL can send updates"
+msgstr "Webhook без секрета: при регистрации вне бота передайте secret_token и задайте WebhookSecretToken — иначе обновление может прислать любой, кто знает URL"
+
+#. SEnCompBotActive
+#: Source/TgBot.Consts.pas:200
+msgid "Cannot change TTelegramBot properties while the bot is running (Active = True)"
+msgstr "Нельзя менять свойства TTelegramBot, пока бот работает (Active = True)"
+
+#. SEnCompNoWebhookPath
+#: Source/TgBot.Consts.pas:203
+msgid "TTelegramBot: the webhook path for Webhook.Server is not set — set the component Name or Webhook.Path"
+msgstr "TTelegramBot: не задан путь webhook для Webhook.Server — задайте Name компонента или Webhook.Path"
+
+#. SEnCompNoCertificate
+#: Source/TgBot.Consts.pas:206
+#, object-pascal-format
+msgid "TTelegramBot: Webhook.Certificate file not found: %s"
+msgstr "TTelegramBot: файл сертификата Webhook.Certificate не найден: %s"
+
+#. SEnCompRunNotMain
+#: Source/TgBot.Consts.pas:208
+msgid "TTelegramBot.Run with Delivery = Main must be called from the main thread"
+msgstr "TTelegramBot.Run с Delivery = Main можно вызывать только из главного потока"
+
+#. SEnCompRunUnsupported
+#: Source/TgBot.Consts.pas:210
+msgid "TTelegramBot.Run is not available on this platform: use Active"
+msgstr "TTelegramBot.Run недоступен на этой платформе: используйте Active"
+
+#. SEnWhsServerActive
+#: Source/TgBot.Consts.pas:218
+msgid "Cannot change Port, BindAddress and MaxConnections while the server is running"
+msgstr "Нельзя менять Port, BindAddress и MaxConnections, пока сервер работает"
+
+#. SEnWhsBadPort
+#: Source/TgBot.Consts.pas:220
+#, object-pascal-format
+msgid "Invalid port %d (0-65535)"
+msgstr "Недопустимый порт %d (0–65535)"
+
+#. SEnWhsBadBodySize
+#: Source/TgBot.Consts.pas:222
+#, object-pascal-format
+msgid "Invalid MaxBodySize %d (must be greater than 0)"
+msgstr "Недопустимый MaxBodySize %d (нужно больше 0)"
+
+#. SEnWhsBadConnections
+#: Source/TgBot.Consts.pas:224
+#, object-pascal-format
+msgid "Invalid MaxConnections %d (must be 0 or greater)"
+msgstr "Недопустимый MaxConnections %d (нужно 0 и больше)"
+
+#. SEnWhsStartFailed
+#: Source/TgBot.Consts.pas:226
+#, object-pascal-format
+msgid "Failed to start the webhook server on %s:%d: %s"
+msgstr "Не удалось запустить webhook-сервер на %s:%d: %s"
+
+#. SEnWhsPathTaken
+#: Source/TgBot.Consts.pas:228
+#, object-pascal-format
+msgid "Webhook path \"%s\" is already used by another bot (%s)"
+msgstr "Путь webhook \"%s\" уже занят другим ботом (%s)"
+
+#. SEnWhsBadPath
+#: Source/TgBot.Consts.pas:230
+#, object-pascal-format
+msgid "Invalid webhook path \"%s\": spaces, \"?\" and \"#\" are not allowed"
+msgstr "Недопустимый путь webhook \"%s\": пробелы, \"?\" и \"#\" не допускаются"
+
+#. SEnWhsPublicUrlNotHttps
+#: Source/TgBot.Consts.pas:233
+#, object-pascal-format
+msgid "The webhook server PublicUrl must start with https:// (Telegram accepts HTTPS only): %s"
+msgstr "PublicUrl webhook-сервера должен начинаться с https:// (Telegram принимает только HTTPS): %s"
+
+#. SEnPoLocation
+#: Source/TgBot.Consts.pas:242
+#, object-pascal-format
+msgid "%s, line %d"
+msgstr "%s, строка %d"
+
+#. SEnPoLine
+#: Source/TgBot.Consts.pas:244
+#, object-pascal-format
+msgid "line %d"
+msgstr "строка %d"
+
+#. SEnPoError
+#: Source/TgBot.Consts.pas:246
+#, object-pascal-format
+msgid "Error parsing the .po translation file (%s): %s"
+msgstr "Ошибка разбора файла перевода .po (%s): %s"
+
+#. SEnPoBadUtf8
+#: Source/TgBot.Consts.pas:248
+msgid "the text is not valid UTF-8"
+msgstr "текст не в кодировке UTF-8"
+
+#. SEnPoCharset
+#: Source/TgBot.Consts.pas:250
+#, object-pascal-format
+msgid "charset \"%s\" is not supported, UTF-8 is required (Content-Type: charset)"
+msgstr "кодировка \"%s\" не поддерживается, нужна UTF-8 (Content-Type: charset)"
+
+#. SEnPoUnterminated
+#: Source/TgBot.Consts.pas:252
+msgid "unterminated string: closing quote is missing"
+msgstr "незакрытая кавычка"
+
+#. SEnPoBadEscape
+#: Source/TgBot.Consts.pas:254
+#, object-pascal-format
+msgid "invalid escape sequence \"%s\""
+msgstr "недопустимая escape-последовательность \"%s\""
+
+#. SEnPoUnexpected
+#: Source/TgBot.Consts.pas:256
+#, object-pascal-format
+msgid "unexpected text \"%s\""
+msgstr "неожиданный текст \"%s\""
+
+#. SEnPoExpectedString
+#: Source/TgBot.Consts.pas:258
+#, object-pascal-format
+msgid "a quoted string is expected after %s"
+msgstr "после %s ожидается строка в кавычках"
+
+#. SEnPoMisplaced
+#: Source/TgBot.Consts.pas:260
+#, object-pascal-format
+msgid "keyword %s is not allowed here"
+msgstr "ключевое слово %s здесь недопустимо"
+
+#. SEnPoOrphanString
+#: Source/TgBot.Consts.pas:262
+msgid "quoted string without a keyword (msgid, msgstr…)"
+msgstr "строка в кавычках без ключевого слова (msgid, msgstr…)"
+
+#. SEnPoNoMsgstr
+#: Source/TgBot.Consts.pas:264
+msgid "entry without msgstr"
+msgstr "запись без msgstr"
+
+#. SEnPoWarnContext
+#: Source/TgBot.Consts.pas:271
+#, object-pascal-format
+msgid "entry with msgctxt \"%s\" skipped: context is not supported"
+msgstr "запись с msgctxt \"%s\" пропущена: контекст не поддерживается"
+
+#. SEnPoWarnFormat
+#: Source/TgBot.Consts.pas:273
+#, object-pascal-format
+msgid "translation dropped: Format specifiers do not match msgid \"%s\""
+msgstr "перевод отброшен: спецификаторы Format не совпадают с msgid \"%s\""
+
+#. SEnPoWarnDuplicate
+#: Source/TgBot.Consts.pas:275
+#, object-pascal-format
+msgid "duplicate msgid \"%s\" (previous at line %d): the last one is used"
+msgstr "повтор msgid \"%s\" (прежний — строка %d): действует последний"

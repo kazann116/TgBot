@@ -310,6 +310,9 @@ try {
     $list += Get-WhiteFiles 'Tests' @('*.dpr', '*.pas', '*.dproj', '*.ps1') -Recurse
     $list += Get-WhiteFiles 'Tools\TgBotGen' @('*.dpr', '*.pas', '*.dproj')
     $list += Get-WhiteFiles 'Tools\TgBotGen\Spec' @("api-$api.html", "model-$api.json", "returns-$api.json", 'overrides.json')
+    # Каталоги перевода gettext (Locale\tgbot.pot, Locale\ru.po) и их генератор.
+    $list += Get-WhiteFiles 'Locale' @('*.pot', '*.po')
+    $list += Get-WhiteFiles 'Tools\Locale' @('MakePot.ps1')
     $list += Get-WhiteFiles 'Install' @('*.ps1', '*.cmd')
     $list += Get-WhiteFiles '.' @('README.md', 'README.ru.md', 'CHANGELOG.md', 'LICENSE', 'LICENSE.txt', 'LICENSE.md')
     $list = @($list | Where-Object { $_ } | ForEach-Object { $_ -replace '^\.\\', '' } |
@@ -321,6 +324,7 @@ try {
         'Tests\NoNet\check.ps1', 'Tools\TgBotGen\TgBotGen.dpr',
         "Tools\TgBotGen\Spec\api-$api.html", "Tools\TgBotGen\Spec\model-$api.json",
         "Tools\TgBotGen\Spec\returns-$api.json", 'Tools\TgBotGen\Spec\overrides.json',
+        'Locale\tgbot.pot', 'Locale\ru.po', 'Tools\Locale\MakePot.ps1',
         'Install\Install.ps1', 'Install\Uninstall.ps1', 'Install\Install.cmd', 'Install\Uninstall.cmd',
         'README.md', 'README.ru.md', 'CHANGELOG.md')
     $missing = @($required | Where-Object { $list -notcontains $_ })
