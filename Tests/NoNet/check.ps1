@@ -11,6 +11,15 @@
   умолчанию не зарегистрирована и GetMe работает через свой транспорт;
   код выхода программы 0 — PASS.
 
+  Перед сборкой проверяет исходники Source (рекурсивно, *.pas и *.inc,
+  включая Design и Generated): нет вызовов TMonitor.Wait/Pulse/PulseAll и
+  System.MonitorWait/MonitorPulse/MonitorPulseAll (вызов — имя и '(',
+  пробелы и переносы между ними допускаются) и примитивов RTL, ждущих через
+  TMonitor (TLightweightEvent, TLightweightSemaphore, TCountdownEvent,
+  TConditionVariable*, по имени типа). TMonitor.Enter/Exit и
+  TLightweightMREW разрешены. Найдено — FAIL (код 1); подробнее — у функции
+  Find-MonitorWaitUsages.
+
   Компилятор (первое найденное):
   1) -Compiler — полный путь к dcc64.exe или dcc32.exe (платформа — по имени);
   2) -BdsRoot — папка RAD Studio (bin\dcc64.exe или bin\dcc32.exe);
@@ -22,8 +31,9 @@
   Вывод (exe, map, dcu) — в <OutDir>\<версия BDS>-<платформа>; файлы
   перезаписываются при каждом запуске, скрипт ничего не удаляет.
 
-  Коды выхода: 0 — PASS; 1 — FAIL (запрещённые модули, ошибка сборки или
-  программы); 2 — компилятор не найден или неверные параметры.
+  Коды выхода: 0 — PASS; 1 — FAIL (TMonitor.Wait/Pulse в исходниках,
+  запрещённые модули, ошибка сборки или программы); 2 — компилятор не найден
+  или неверные параметры.
 
 .PARAMETER Platform
   Win64 (по умолчанию) или Win32. При -Compiler определяется по имени компилятора.
@@ -93,6 +103,57 @@ function Find-BdsRootInRegistry([string]$AVersion) {
   if ($LBest.Count -gt 0) { return $LBest[0].Root }
   return $null
 }
+
+# Исходники: ожидания только на TEvent, без TMonitor.Wait/Pulse. Ищет в
+# ASourceDir рекурсивно (*.pas, *.inc — в т.ч. Design и Generated), без учёта
+# регистра (как Delphi), по всему тексту файла (не построчно):
+#  - вызовы TMonitor.Wait/Pulse/PulseAll и MonitorWait/MonitorPulse/
+#    MonitorPulseAll (с префиксом System. и без). Считается только имя со
+#    скобкой '(' после него; пробелы и переносы строк вокруг '.' и перед '('
+#    допускаются. Упоминание без скобки («TMonitor.Wait/Pulse» в
+#    комментарии) не считается, со скобкой — считается и в комментарии;
+#  - примитивы RTL, ждущие через TMonitor: TLightweightEvent,
+#    TLightweightSemaphore, TCountdownEvent, TConditionVariable* — по имени
+#    типа где угодно, включая комментарии и строки.
+# Разрешены TMonitor.Enter/TryEnter/Exit и TLightweightMREW (TgBot.Webhook) —
+# они не ждут через TMonitor.Wait. Возвращает строки «файл:строка: найденное»;
+# $null — нет исходников (проверять нечего, это ошибка вызова).
+function Find-MonitorWaitUsages([string]$ASourceDir) {
+  $LPattern = '\bTMonitor\s*\.\s*(Wait|Pulse|PulseAll)\s*\(|' +
+    '\bMonitor(Wait|Pulse|PulseAll)\s*\(|' +
+    '\b(TLightweightEvent|TLightweightSemaphore|TCountdownEvent|TConditionVariable\w*)\b'
+  $LRegex = New-Object System.Text.RegularExpressions.Regex($LPattern,
+    [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+  $LRoot = (Resolve-Path -LiteralPath $ASourceDir).Path.TrimEnd('\')
+  $LFiles = @(Get-ChildItem -LiteralPath $LRoot -Recurse -File |
+    Where-Object { @('.pas', '.inc') -contains $_.Extension.ToLowerInvariant() } |
+    Sort-Object FullName)
+  if ($LFiles.Count -eq 0) { return $null }
+  $LHits = @()
+  foreach ($LFile in $LFiles) {
+    # ReadAllText: UTF-8 по умолчанию, BOM распознаётся.
+    $LText = [IO.File]::ReadAllText($LFile.FullName)
+    foreach ($LMatch in $LRegex.Matches($LText)) {
+      $LLine = $LText.Substring(0, $LMatch.Index).Split("`n").Count
+      $LName = $LFile.FullName.Substring($LRoot.Length).TrimStart('\')
+      $LHits += ('{0}:{1}: {2}' -f $LName, $LLine, ($LMatch.Value -replace '\s+', ' '))
+    }
+  }
+  return ,$LHits
+}
+
+# --- Исходники ---
+$LSourceDir = Join-Path $PSScriptRoot '..\..\Source'
+if (-not (Test-Path -LiteralPath $LSourceDir -PathType Container)) {
+  Write-Fail "нет папки исходников $LSourceDir" 2
+}
+$LWaitHits = Find-MonitorWaitUsages $LSourceDir
+if ($null -eq $LWaitHits) { Write-Fail "в $LSourceDir нет *.pas/*.inc — проверять нечего" 1 }
+if ($LWaitHits.Count -gt 0) {
+  $LWaitHits | ForEach-Object { Write-Host "  $_" }
+  Write-Fail 'в Source есть TMonitor.Wait/Pulse/PulseAll, MonitorWait/Pulse/PulseAll или примитивы на них' 1
+}
+Write-Host 'Source: TMonitor.Wait/Pulse/PulseAll, MonitorWait/Pulse/PulseAll и примитивы на них не используются'
 
 # --- Компилятор ---
 if ($Compiler) {

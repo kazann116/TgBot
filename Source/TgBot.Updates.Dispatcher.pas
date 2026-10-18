@@ -170,6 +170,12 @@ uses
 const
   // Предел потоков диспетчера.
   CMaxParallelLimit = 64;
+  // Порция конечного ожидания места в Post (мс). Остаток срока считается по
+  // монотонному TStopwatch, а TEvent.WaitFor на Linux/Android ждёт до
+  // абсолютного момента по CLOCK_REALTIME (sem_timedwait) — поэтому ждём
+  // порциями, каждая сверяется с TStopwatch заново. Скачок часов назад
+  // посреди порции всё же затянет её на величину скачка (ограничение RTL).
+  CPostWaitSliceMs = 200;
 
 type
   /// <summary>Состояние полосы диспетчера.</summary>
@@ -186,10 +192,45 @@ type
     destructor Destroy; override;
   end;
 
+  {
+    Ожидания ядра и заданий главного потока — без TMonitor.Wait/Pulse/PulseAll
+    (из TMonitor допустимы только Enter/Exit, в т.ч. внутри TCriticalSection
+    на POSIX). Схема везде одна: условие проверяется под замком; если ждать
+    нужно — ждущий отмечается (счётчик спящих или список ожидающих), выходит
+    из замка, ждёт TEvent с автосбросом, снова входит и перепроверяет
+    условие. Выставленное событие хранит сигнал до пробуждения, поэтому
+    SetEvent между выходом из замка и WaitFor не теряется; лишнее (позднее)
+    пробуждение безопасно — условие перепроверяется. ResetEvent в циклах
+    ожидания не используется.
+  }
+
+  /// <summary>
+  ///   Сигнал пробуждения: TEvent с автосбросом с подсчётом ссылок. Поздний
+  ///   Signal (после ухода ждущего) безопасен: объект жив, пока на него есть
+  ///   ссылка, а ждущий перепроверяет условие.
+  /// </summary>
+  ITgWakeSignal = interface
+    /// <summary>Будит одного ждущего (или следующий WaitFor).</summary>
+    procedure Signal;
+    /// <summary>Ждёт сигнала не дольше ATimeoutMs; причину пробуждения не сообщает.</summary>
+    procedure WaitFor(ATimeoutMs: Cardinal);
+  end;
+
+  /// <summary>Реализация ITgWakeSignal.</summary>
+  TTgWakeSignal = class(TInterfacedObject, ITgWakeSignal)
+  private
+    FEvent: TEvent;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure Signal;
+    procedure WaitFor(ATimeoutMs: Cardinal);
+  end;
+
   /// <summary>Внутреннее состояние одного запуска диспетчера (ITgDispatchCore).</summary>
   TTgDispatchCore = class(TInterfacedObject, ITgDispatchCore)
   private
-    FLock: TObject;
+    FLock: TCriticalSection;
     FLanes: TDictionary<string, TTgLane>;
     FReady: TQueue<TTgLane>;
     FCount: Integer;
@@ -197,6 +238,12 @@ type
     FCapacity: Integer;
     FStopping: Boolean;
     FWorkers: Integer;
+    // Потоки, ждущие готовых полос (под FLock), и их событие (см. WorkerLoop).
+    FSleepingWorkers: Integer;
+    FWorkReady: TEvent;
+    // Производители, ждущие места в очереди, и пул их сигналов (под FLock, см. Post).
+    FSpaceWaiters: TList<ITgWakeSignal>;
+    FSignalPool: TStack<ITgWakeSignal>;
     FAllExited: TEvent;
     FIdle: TEvent;
     FCancel: ITgCancellationSource;
@@ -204,9 +251,14 @@ type
     FHandler: TTgRawHandler;
     FOnError: TTgRawErrorHandler;
     FOnProcessed: TProc<Int64>;
-    procedure Deliver(const AUpdate: ITgRawUpdate);
-    procedure DeliverMain(const AUpdate: ITgRawUpdate);
-    procedure FinishLane(ALane: TTgLane);
+    procedure Deliver(const AUpdate: ITgRawUpdate; const ASignal: ITgWakeSignal);
+    procedure DeliverMain(const AUpdate: ITgRawUpdate; const ASignal: ITgWakeSignal);
+    procedure FinishLane(ALane: TTgLane; AFailed: Boolean);
+    // Вызываются под FLock.
+    procedure WakeWorker;
+    procedure WakeSpaceWaiter;
+    procedure WakeSpaceWaiters;
+    function AcquireSignal: ITgWakeSignal;
   public
     constructor Create(ADispatcher: TTgUpdateDispatcher);
     destructor Destroy; override;
@@ -247,12 +299,17 @@ type
   /// <summary>
   ///   Задание для главного потока (Delivery = Main). Состояния:
   ///   0 — ждёт, 1 — выполняется, 2 — выполнено, 3 — брошено (процедура в
-  ///   очереди ничего не сделает).
+  ///   очереди ничего не сделает). Состояние меняется атомарно
+  ///   (TInterlocked), ожидание — на сигнале потока диспетчера.
   /// </summary>
   TTgMainJob = class(TInterfacedObject, ITgMainJob)
   private
     FState: Integer;
+    // Сигнал потока диспетчера (один на поток, общий для его заданий):
+    // брошенное задание держит его живым, поздний Signal безопасен.
+    FSignal: ITgWakeSignal;
   public
+    constructor Create(const ASignal: ITgWakeSignal);
     function TryStart(const ACancel: ITgCancellation): Boolean;
     procedure Finish;
     procedure Wake;
@@ -280,66 +337,81 @@ begin
   inherited Destroy;
 end;
 
+{ TTgWakeSignal }
+
+constructor TTgWakeSignal.Create;
+begin
+  inherited Create;
+  // Автосброс: сигнал забирает один ждущий, ResetEvent не нужен.
+  FEvent := TEvent.Create(nil, False, False, '');
+end;
+
+destructor TTgWakeSignal.Destroy;
+begin
+  FreeAndNil(FEvent);
+  inherited Destroy;
+end;
+
+procedure TTgWakeSignal.Signal;
+begin
+  FEvent.SetEvent;
+end;
+
+procedure TTgWakeSignal.WaitFor(ATimeoutMs: Cardinal);
+begin
+  // Результат не важен: ждущий всегда перепроверяет своё условие.
+  FEvent.WaitFor(ATimeoutMs);
+end;
+
 { TTgMainJob }
+
+constructor TTgMainJob.Create(const ASignal: ITgWakeSignal);
+begin
+  inherited Create;
+  FSignal := ASignal;
+end;
 
 function TTgMainJob.TryStart(const ACancel: ITgCancellation): Boolean;
 begin
-  TMonitor.Enter(Self);
-  try
-    Result := FState = 0;
-    if not Result then
-      Exit;
-    // Диспетчер уже останавливается — не начинаем.
-    if ACancel.IsCancelled then
-    begin
-      FState := 3;
-      TMonitor.PulseAll(Self);
-      Exit(False);
-    end;
-    FState := 1;
-  finally
-    TMonitor.Exit(Self);
+  // Диспетчер уже останавливается — не начинаем (не начатое — бросаем).
+  if ACancel.IsCancelled then
+  begin
+    if TInterlocked.CompareExchange(FState, 3, 0) = 0 then
+      FSignal.Signal;
+    Exit(False);
   end;
+  // Брошено потоком диспетчера (3) или уже выполнялось — отказ.
+  Result := TInterlocked.CompareExchange(FState, 1, 0) = 0;
 end;
 
 procedure TTgMainJob.Finish;
 begin
-  TMonitor.Enter(Self);
-  try
-    FState := 2;
-    TMonitor.PulseAll(Self);
-  finally
-    TMonitor.Exit(Self);
-  end;
+  TInterlocked.Exchange(FState, 2);
+  FSignal.Signal;
 end;
 
 procedure TTgMainJob.Wake;
 begin
-  TMonitor.Enter(Self);
-  try
-    TMonitor.PulseAll(Self);
-  finally
-    TMonitor.Exit(Self);
-  end;
+  FSignal.Signal;
 end;
 
 procedure TTgMainJob.WaitFor(const ACancel: ITgCancellation);
+var
+  LState: Integer;
 begin
-  TMonitor.Enter(Self);
-  try
-    while True do
-    begin
-      if FState in [2, 3] then
-        Exit;
-      if (FState = 0) and ACancel.IsCancelled then
-      begin
-        FState := 3;
-        Exit;
-      end;
-      TMonitor.Wait(Self, INFINITE);
-    end;
-  finally
-    TMonitor.Exit(Self);
+  while True do
+  begin
+    LState := TInterlocked.CompareExchange(FState, 0, 0);
+    if LState >= 2 then
+      Exit;
+    // Отмена: не начатое задание бросается. Главный поток мог успеть его
+    // начать (CompareExchange не удался) — тогда ждём Finish.
+    if (LState = 0) and ACancel.IsCancelled and
+      (TInterlocked.CompareExchange(FState, 3, 0) = 0) then
+      Exit;
+    // Finish, отказ TryStart и отмена выставляют сигнал после смены
+    // состояния; сигнал прежнего задания этого потока — лишний виток цикла.
+    FSignal.WaitFor(INFINITE);
   end;
 end;
 
@@ -412,9 +484,12 @@ end;
 constructor TTgDispatchCore.Create(ADispatcher: TTgUpdateDispatcher);
 begin
   inherited Create;
-  FLock := TObject.Create;
+  FLock := TCriticalSection.Create;
   FLanes := TDictionary<string, TTgLane>.Create;
   FReady := TQueue<TTgLane>.Create;
+  FWorkReady := TEvent.Create(nil, False, False, '');
+  FSpaceWaiters := TList<ITgWakeSignal>.Create;
+  FSignalPool := TStack<ITgWakeSignal>.Create;
   FAllExited := TEvent.Create(nil, True, True, '');
   FIdle := TEvent.Create(nil, True, True, '');
   FCancel := TTgCancellationSource.New;
@@ -443,6 +518,9 @@ begin
       LLane.Free;
   FreeAndNil(FLanes);
   FreeAndNil(FReady);
+  FreeAndNil(FSpaceWaiters);
+  FreeAndNil(FSignalPool);
+  FreeAndNil(FWorkReady);
   FreeAndNil(FAllExited);
   FreeAndNil(FIdle);
   FreeAndNil(FLock);
@@ -452,62 +530,124 @@ end;
 
 procedure TTgDispatchCore.WorkerStarted;
 begin
-  TMonitor.Enter(FLock);
+  FLock.Enter;
   try
     Inc(FWorkers);
     FAllExited.ResetEvent;
   finally
-    TMonitor.Exit(FLock);
+    FLock.Leave;
   end;
 end;
 
 procedure TTgDispatchCore.WorkerExited;
 begin
-  TMonitor.Enter(FLock);
+  FLock.Enter;
   try
     Dec(FWorkers);
     if FWorkers = 0 then
       FAllExited.SetEvent;
   finally
-    TMonitor.Exit(FLock);
+    FLock.Leave;
   end;
+end;
+
+procedure TTgDispatchCore.WakeWorker;
+begin
+  // Событие с автосбросом: будит одного спящего, тот передаёт дальше.
+  if FSleepingWorkers > 0 then
+    FWorkReady.SetEvent;
+end;
+
+procedure TTgDispatchCore.WakeSpaceWaiter;
+begin
+  // Место есть — будим первого ждущего, не всех: толпа производителей на
+  // одно место дала бы конвой на замке. Эстафета: каждый выходящий из Post
+  // (занял место, срок, отмена) снова вызывает WakeSpaceWaiter, поэтому
+  // оставшееся место не теряется. Разбуженный ещё в списке — повторный
+  // Signal сольётся, он перепроверит место под замком сам.
+  if (FSpaceWaiters.Count > 0) and (FCount < FCapacity) then
+    FSpaceWaiters[0].Signal;
+end;
+
+procedure TTgDispatchCore.WakeSpaceWaiters;
+var
+  LSignal: ITgWakeSignal;
+begin
+  // Остановка или отмена: будим всех — каждый перепроверит свой токен.
+  for LSignal in FSpaceWaiters do
+    LSignal.Signal;
+end;
+
+function TTgDispatchCore.AcquireSignal: ITgWakeSignal;
+begin
+  // Сигналы переиспользуются: создаются, только когда ждущих больше, чем в пуле.
+  if FSignalPool.Count > 0 then
+    Result := FSignalPool.Pop
+  else
+    Result := TTgWakeSignal.Create;
 end;
 
 procedure TTgDispatchCore.WorkerLoop;
 var
   LLane: TTgLane;
   LUpdate: ITgRawUpdate;
+  LSignal: ITgWakeSignal;
+  LFailed: Boolean;
 begin
+  // Ожидание заданий главного потока — на сигнале этого потока.
+  if FDelivery = TTgDelivery.Main then
+    LSignal := TTgWakeSignal.Create;
   while True do
   begin
-    TMonitor.Enter(FLock);
+    FLock.Enter;
     try
       while (FReady.Count = 0) and not FStopping do
-        TMonitor.Wait(FLock, INFINITE);
+      begin
+        // Сон вне замка; SetEvent до WaitFor не теряется (см. WakeWorker).
+        Inc(FSleepingWorkers);
+        FLock.Leave;
+        try
+          FWorkReady.WaitFor(INFINITE);
+        finally
+          FLock.Enter;
+          Dec(FSleepingWorkers);
+        end;
+      end;
       if FStopping then
+      begin
+        // Эстафета остановки: следующий спящий.
+        WakeWorker;
         Exit;
+      end;
       LLane := FReady.Dequeue;
       LLane.State := TTgLaneState.Running;
       LUpdate := LLane.Items.Dequeue;
       Dec(FCount);
       Inc(FBusy);
+      // Сигналы события сливаются: остались готовые полосы — будим следующего.
+      if FReady.Count > 0 then
+        WakeWorker;
       // Ждущие Post: в очереди появилось место.
-      TMonitor.PulseAll(FLock);
+      WakeSpaceWaiter;
     finally
-      TMonitor.Exit(FLock);
+      FLock.Leave;
     end;
+    // Сбой доставки (исключение мимо Execute) завершает поток: FinishLane
+    // тогда передаёт готовые полосы спящему (см. FinishLane).
+    LFailed := True;
     try
-      Deliver(LUpdate);
+      Deliver(LUpdate, LSignal);
+      LFailed := False;
     finally
       LUpdate := nil;
-      FinishLane(LLane);
+      FinishLane(LLane, LFailed);
     end;
   end;
 end;
 
-procedure TTgDispatchCore.FinishLane(ALane: TTgLane);
+procedure TTgDispatchCore.FinishLane(ALane: TTgLane; AFailed: Boolean);
 begin
-  TMonitor.Enter(FLock);
+  FLock.Enter;
   try
     Dec(FBusy);
     if ALane.Items.Count > 0 then
@@ -515,7 +655,6 @@ begin
       // В конец общей очереди: другие чаты не голодают.
       ALane.State := TTgLaneState.Ready;
       FReady.Enqueue(ALane);
-      TMonitor.PulseAll(FLock);
     end
     else
     begin
@@ -523,28 +662,35 @@ begin
         FLanes.Remove(ALane.Key);
       ALane.Free;
     end;
+    // Обычно не будим: этот поток сразу вернётся в WorkerLoop и сам возьмёт
+    // голову FReady (остались ещё — разбудит следующего там же). Полосы,
+    // поставленные в FReady, пока он был занят, будили спящих сами (Post),
+    // а при отсутствии спящих их возьмёт любой вернувшийся поток. При сбое
+    // доставки поток выходит и за FReady не вернётся — передаём спящему.
+    if AFailed and (FReady.Count > 0) then
+      WakeWorker;
     if (FCount = 0) and (FBusy = 0) then
       FIdle.SetEvent;
   finally
-    TMonitor.Exit(FLock);
+    FLock.Leave;
   end;
 end;
 
-procedure TTgDispatchCore.Deliver(const AUpdate: ITgRawUpdate);
+procedure TTgDispatchCore.Deliver(const AUpdate: ITgRawUpdate; const ASignal: ITgWakeSignal);
 begin
   if FDelivery = TTgDelivery.Main then
-    DeliverMain(AUpdate)
+    DeliverMain(AUpdate, ASignal)
   else
     Execute(AUpdate);
 end;
 
-procedure TTgDispatchCore.DeliverMain(const AUpdate: ITgRawUpdate);
+procedure TTgDispatchCore.DeliverMain(const AUpdate: ITgRawUpdate; const ASignal: ITgWakeSignal);
 var
   LJob: ITgMainJob;
   LCore: ITgDispatchCore;
   LRegistration: IInterface;
 begin
-  LJob := TTgMainJob.Create;
+  LJob := TTgMainJob.Create(ASignal);
   LCore := Self;
   // Отмена диспетчера будит ожидание: не начатое задание бросается.
   LRegistration := FCancel.Register(NewJobWakeCallback(LJob));
@@ -595,34 +741,65 @@ function TTgDispatchCore.Post(const AUpdate: ITgRawUpdate;
   const ACancel: ITgCancellation; ATimeoutMs: Cardinal): Boolean;
 var
   LRegistration: IInterface;
+  LSignal: ITgWakeSignal;
   LLane: TTgLane;
   LKey: string;
   LWatch: TStopwatch;
   LLeft: Int64;
+  LWaitMs: Cardinal;
+  LRegistered: Boolean;
 begin
   LRegistration := nil;
+  LRegistered := False;
+  LSignal := nil;
   LKey := AUpdate.ChatKey;
   LWatch := TStopwatch.StartNew;
-  TMonitor.Enter(FLock);
+  FLock.Enter;
   try
     while (FCount >= FCapacity) and not FStopping and
       not (Assigned(ACancel) and ACancel.IsCancelled) do
     begin
-      // Отмена ACancel будит ожидание места (подписка — только при блокировке).
-      if Assigned(ACancel) and not Assigned(LRegistration) then
-      begin
-        LRegistration := ACancel.Register(NewPulseCallback(Self));
-        Continue;
-      end;
+      // Срок — первым: TryPost с нулевым (истёкшим) сроком не подписывается
+      // на отмену и не встаёт в список ждущих.
       if ATimeoutMs = INFINITE then
-        TMonitor.Wait(FLock, INFINITE)
+        LWaitMs := INFINITE
       else
       begin
         // Ограниченное ожидание (webhook): очередь так и не освободилась — отказ.
         LLeft := Int64(ATimeoutMs) - LWatch.ElapsedMilliseconds;
         if LLeft <= 0 then
           Exit(False);
-        TMonitor.Wait(FLock, Cardinal(LLeft));
+        LWaitMs := Cardinal(Min(LLeft, CPostWaitSliceMs));
+      end;
+      // Личный сигнал из пула — один на весь Post: встаёт в конец списка
+      // ждущих при первой блокировке и стоит там до выхода (очерёдность
+      // сохраняется). Выставляют его под замком освобождение места
+      // (первому, эстафетой), BeginStop и отмена ACancel (WakeWaiters).
+      if not Assigned(LSignal) then
+      begin
+        LSignal := AcquireSignal;
+        FSpaceWaiters.Add(LSignal);
+      end;
+      // Отмена ACancel будит ожидание места (подписка — один раз, только при
+      // блокировке; флаг, а не проверка nil: сторонний токен мог вернуть nil
+      // без отмены). Register — вне замка: у отменённого токена колбэк
+      // (WakeWaiters) выполняется сразу, чужой код под замком ядра не вызываем.
+      if Assigned(ACancel) and not LRegistered then
+      begin
+        LRegistered := True;
+        FLock.Leave;
+        try
+          LRegistration := ACancel.Register(NewPulseCallback(Self));
+        finally
+          FLock.Enter;
+        end;
+        Continue;
+      end;
+      FLock.Leave;
+      try
+        LSignal.WaitFor(LWaitMs);
+      finally
+        FLock.Enter;
       end;
     end;
     if FStopping or (Assigned(ACancel) and ACancel.IsCancelled) then
@@ -645,11 +822,26 @@ begin
     begin
       LLane.State := TTgLaneState.Ready;
       FReady.Enqueue(LLane);
-      TMonitor.PulseAll(FLock);
+      WakeWorker;
     end;
     Result := True;
   finally
-    TMonitor.Exit(FLock);
+    try
+      // Сначала — из списка ждущих: вне списка сигнал никто не выставит
+      // (Signal — только под замком и только списку). Оставшийся
+      // выставленным даст следующему владельцу из пула лишний виток.
+      if Assigned(LSignal) then
+      begin
+        FSpaceWaiters.Remove(LSignal);
+        FSignalPool.Push(LSignal);
+        LSignal := nil;
+      end;
+      // Эстафета при любом выходе (место занято, срок, отмена): место ещё
+      // есть — будим следующего ждущего.
+      WakeSpaceWaiter;
+    finally
+      FLock.Leave;
+    end;
   end;
 end;
 
@@ -657,7 +849,7 @@ procedure TTgDispatchCore.BeginStop;
 var
   LLane: TTgLane;
 begin
-  TMonitor.Enter(FLock);
+  FLock.Enter;
   try
     FStopping := True;
     // Необработанная очередь выбрасывается; выполняющиеся полосы освободят потоки.
@@ -673,30 +865,37 @@ begin
     FCount := 0;
     if FBusy = 0 then
       FIdle.SetEvent;
-    TMonitor.PulseAll(FLock);
+    // Спящие потоки — эстафетой (см. WorkerLoop), ждущие Post — все.
+    WakeWorker;
+    WakeSpaceWaiters;
   finally
-    TMonitor.Exit(FLock);
+    FLock.Leave;
   end;
   FCancel.Cancel;
 end;
 
 function TTgDispatchCore.Stopping: Boolean;
 begin
-  TMonitor.Enter(FLock);
+  FLock.Enter;
   try
     Result := FStopping;
   finally
-    TMonitor.Exit(FLock);
+    FLock.Leave;
   end;
 end;
 
 procedure TTgDispatchCore.WakeWaiters;
 begin
-  TMonitor.Enter(FLock);
+  // Колбэк отмены держит ядро (интерфейс), не сигнал: поздний вызов после
+  // снятия подписки безопасен — список ждущих уже без этого Post.
+  // Отмена любого токена ACancel будит всех ждущих места в этом ядре, а не
+  // только Post с этим токеном: прочие сделают лишний виток и снова уснут.
+  // Допустимо — отмена редкая, а сигнал на токен не хранится.
+  FLock.Enter;
   try
-    TMonitor.PulseAll(FLock);
+    WakeSpaceWaiters;
   finally
-    TMonitor.Exit(FLock);
+    FLock.Leave;
   end;
 end;
 
