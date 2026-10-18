@@ -22,7 +22,8 @@
   - состояние диалогов: ITgStateStorage;
   - псевдонимы типов из сигнатур контрактов: ITgCancellation,
     ITgCancellationSource, TTgInputFile (TgBot.Base), TTgParams
-    (TgBot.Json). Обобщённый TTgOptional<T> (AllowedUpdates источников)
+    (TgBot.Json); контракт переводчика сообщений ITgTranslator
+    (TgBot.Base). Обобщённый TTgOptional<T> (AllowedUpdates источников)
     псевдонимом не реэкспортируется (ограничение языка) — для объявления
     переменных этого типа нужен TgBot.Base в uses.
 
@@ -70,6 +71,11 @@ type
   ITgCancellationSource = TgBot.Base.ITgCancellationSource;
   /// <summary>Входной файл (TgBot.Base.TTgInputFile; сертификат ITgWebhookSource).</summary>
   TTgInputFile = TgBot.Base.TTgInputFile;
+  /// <summary>
+  ///   Переводчик сообщений библиотеки (TgBot.Base.ITgTranslator;
+  ///   устанавливается TgSetTranslator).
+  /// </summary>
+  ITgTranslator = TgBot.Base.ITgTranslator;
   /// <summary>Параметры метода Bot API (TgBot.Json.TTgParams).</summary>
   TTgParams = TgBot.Json.TTgParams;
 

@@ -79,7 +79,7 @@
   - псевдонимы бота TTgBot, TTgBotState, TTgReceiveMode (TgBot.Bot;
     внутреннее ядро бота — TgBot.Bot.Core);
   - функции TgHtmlEscape, TgMarkdownV2Escape и обёртки TgSetLanguage,
-    TgBotThreadPool и т.п.
+    TgSetTranslator, TgBotThreadPool и т.п.
 
   Обобщённый TTgOptional<T> псевдонимом не реэкспортируется (ограничение
   языка): поля опций принимают значения неявно (LOptions.ParseMode :=
@@ -179,6 +179,11 @@ type
 
   /// <summary>Язык сообщений библиотеки (TgSetLanguage).</summary>
   TTgLanguage = TgBot.Base.TTgLanguage;
+  /// <summary>
+  ///   Переводчик сообщений библиотеки (TgSetTranslator): ключ — английский
+  ///   текст сообщения; реализация должна быть потокобезопасной.
+  /// </summary>
+  ITgTranslator = TgBot.Base.ITgTranslator;
   /// <summary>Базовое исключение библиотеки.</summary>
   ETgError = TgBot.Base.ETgError;
   /// <summary>Ошибка, возвращённая Telegram Bot API (ok = false).</summary>
@@ -431,6 +436,13 @@ function TgCreateDefaultTransport(const ASettings: TTgHttpSettings): ITgTranspor
 procedure TgSetLanguage(ALanguage: TTgLanguage);
 /// <summary>Текущий язык сообщений библиотеки.</summary>
 function TgGetLanguage: TTgLanguage;
+/// <summary>
+///   Устанавливает переводчик сообщений библиотеки (nil — только встроенные
+///   тексты). Потокобезопасно; контракт — TgBot.Base.ITgTranslator.
+/// </summary>
+procedure TgSetTranslator(const ATranslator: ITgTranslator);
+/// <summary>Текущий переводчик сообщений библиотеки (nil — не установлен).</summary>
+function TgGetTranslator: ITgTranslator;
 
 /// <summary>
 ///   Строка инлайн-клавиатуры для фабрик с массивами массивов: вложенный
@@ -522,6 +534,16 @@ end;
 function TgGetLanguage: TTgLanguage;
 begin
   Result := TgBot.Base.TgGetLanguage;
+end;
+
+procedure TgSetTranslator(const ATranslator: ITgTranslator);
+begin
+  TgBot.Base.TgSetTranslator(ATranslator);
+end;
+
+function TgGetTranslator: ITgTranslator;
+begin
+  Result := TgBot.Base.TgGetTranslator;
 end;
 
 function TgBotThreadPool: TThreadPool;

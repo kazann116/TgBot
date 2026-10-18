@@ -65,6 +65,29 @@ type
     ViaProxy
   );
 
+  /// <summary>
+  ///   Подключаемый переводчик сообщений библиотеки (TgSetTranslator).
+  ///   Ключ (msgid в стиле gettext) — английский текст сообщения до
+  ///   подстановки аргументов Format, то есть LoadResString(SEn…) из
+  ///   TgBot.Consts. Перевод текста с форматированием должен содержать те же
+  ///   спецификаторы Format, что и ключ; при неверных спецификаторах
+  ///   используется встроенный текст. Перевод применяется при любом языке
+  ///   TgSetLanguage; нет перевода (False или пустая строка) — встроенный
+  ///   текст на текущем языке.
+  ///   Реализация должна быть потокобезопасной: TryTranslate вызывается из
+  ///   любых потоков одновременно (лучше — неизменяемый словарь, заполненный
+  ///   до TgSetTranslator). Исключения TryTranslate поглощаются библиотекой —
+  ///   используется встроенный текст.
+  /// </summary>
+  ITgTranslator = interface
+    ['{607EC7D6-C799-4FFD-8AD4-F401F7EFDC0B}']
+    /// <summary>
+    ///   True и перевод в AText — перевод ключа AMsgId найден;
+    ///   False — перевода нет.
+    /// </summary>
+    function TryTranslate(const AMsgId: string; out AText: string): Boolean;
+  end;
+
   /// <summary>Базовое исключение библиотеки.</summary>
   ETgError = class(Exception);
 
@@ -485,17 +508,31 @@ type
 procedure TgSetLanguage(ALanguage: TTgLanguage);
 /// <summary>Текущий язык сообщений библиотеки.</summary>
 function TgGetLanguage: TTgLanguage;
-/// <summary>Локализованный текст на текущем языке.</summary>
+/// <summary>
+///   Устанавливает переводчик сообщений библиотеки (nil — без переводчика,
+///   только встроенные тексты). Потокобезопасно; прежний переводчик
+///   освобождается вне внутренней блокировки. Контракт — ITgTranslator.
+/// </summary>
+procedure TgSetTranslator(const ATranslator: ITgTranslator);
+/// <summary>Текущий переводчик сообщений библиотеки (nil — не установлен).</summary>
+function TgGetTranslator: ITgTranslator;
+/// <summary>
+///   Локализованный текст: перевод ITgTranslator, если есть, иначе — на
+///   текущем языке.
+/// </summary>
 function TgText(AText: TTgText): string;
-/// <summary>Локализованный текст с форматированием (Format).</summary>
+/// <summary>Локализованный текст (как TgText) с форматированием (Format).</summary>
 function TgTextFmt(AText: TTgText; const AArgs: array of const): string;
 /// <summary>
 ///   Служебное (для модулей библиотеки): текст пары ресурсных строк
-///   TgBot.Consts (SRu…/SEn…) на текущем языке библиотеки.
+///   TgBot.Consts (SRu…/SEn…): перевод ITgTranslator по ключу
+///   LoadResString(AEn), если есть, иначе — на текущем языке библиотеки.
 /// </summary>
 function TgLangText(ARu, AEn: PResStringRec): string;
 /// <summary>
 ///   Служебное (для модулей библиотеки): TgLangText с форматированием (Format).
+///   Перевод с неверными для AArgs спецификаторами (EConvertError) —
+///   форматируется встроенный текст.
 /// </summary>
 function TgLangTextFmt(ARu, AEn: PResStringRec; const AArgs: array of const): string;
 /// <summary>
@@ -547,6 +584,11 @@ const
 var
   // Язык сообщений библиотеки; меняется только через TgSetLanguage.
   TgBotLanguage: TTgLanguage = TTgLanguage.Ru;
+  // Переводчик сообщений (TgSetTranslator); читается и меняется только под
+  // GTranslatorLock. Замок создаётся в initialization и освобождается в
+  // finalization (после него — nil: тексты без переводчика).
+  GTranslator: ITgTranslator;
+  GTranslatorLock: TCriticalSection;
 
 procedure TgSetLanguage(ALanguage: TTgLanguage);
 begin
@@ -558,7 +600,67 @@ begin
   Result := TgBotLanguage;
 end;
 
-function TgLangText(ARu, AEn: PResStringRec): string;
+procedure TgSetTranslator(const ATranslator: ITgTranslator);
+var
+  LLock: TCriticalSection;
+  LOld: ITgTranslator;
+begin
+  LLock := GTranslatorLock;
+  if LLock = nil then
+    Exit; // модуль уже финализирован
+  LLock.Enter;
+  try
+    LOld := GTranslator;
+    GTranslator := ATranslator;
+  finally
+    LLock.Leave;
+  end;
+  // LOld отпускается при выходе — вне блокировки: деструктор прежнего
+  // переводчика (чужой код) не выполняется под замком.
+end;
+
+function TgGetTranslator: ITgTranslator;
+var
+  LLock: TCriticalSection;
+  LTranslator: ITgTranslator;
+begin
+  LLock := GTranslatorLock;
+  if LLock = nil then
+    Exit(nil); // модуль уже финализирован
+  LLock.Enter;
+  try
+    LTranslator := GTranslator;
+  finally
+    LLock.Leave;
+  end;
+  // Присваивание Result — после Leave: прежнее значение переменной
+  // вызывающего освобождается вне блокировки.
+  Result := LTranslator;
+end;
+
+// Перевод ресурсной строки AEn установленным переводчиком. False — нет
+// переводчика, нет перевода, пустой перевод или исключение переводчика.
+function TgTryTranslate(AEn: PResStringRec; out AText: string): Boolean;
+var
+  LTranslator: ITgTranslator;
+begin
+  AText := '';
+  LTranslator := TgGetTranslator;
+  if LTranslator = nil then
+    Exit(False);
+  try
+    Result := LTranslator.TryTranslate(LoadResString(AEn), AText) and (AText <> '');
+  except
+    // Ошибка переводчика не должна заменять собой ошибку, текст которой
+    // строится, — используется встроенный текст.
+    Result := False;
+  end;
+  if not Result then
+    AText := '';
+end;
+
+// Встроенный текст пары ресурсных строк на текущем языке библиотеки.
+function TgBuiltinLangText(ARu, AEn: PResStringRec): string;
 begin
   if TgBotLanguage = TTgLanguage.En then
     Result := LoadResString(AEn)
@@ -566,9 +668,26 @@ begin
     Result := LoadResString(ARu);
 end;
 
-function TgLangTextFmt(ARu, AEn: PResStringRec; const AArgs: array of const): string;
+function TgLangText(ARu, AEn: PResStringRec): string;
 begin
-  Result := Format(TgLangText(ARu, AEn), AArgs);
+  if not TgTryTranslate(AEn, Result) then
+    Result := TgBuiltinLangText(ARu, AEn);
+end;
+
+function TgLangTextFmt(ARu, AEn: PResStringRec; const AArgs: array of const): string;
+var
+  LText: string;
+begin
+  if TgTryTranslate(AEn, LText) then
+  begin
+    try
+      Exit(Format(LText, AArgs));
+    except
+      on EConvertError do
+        ; // спецификаторы перевода не подходят к AArgs — встроенный текст
+    end;
+  end;
+  Result := Format(TgBuiltinLangText(ARu, AEn), AArgs);
 end;
 
 function TgText(AText: TTgText): string;
@@ -578,7 +697,8 @@ end;
 
 function TgTextFmt(AText: TTgText; const AArgs: array of const): string;
 begin
-  Result := Format(TgText(AText), AArgs);
+  Result := TgLangTextFmt(CTexts[AText, TTgLanguage.Ru], CTexts[AText, TTgLanguage.En],
+    AArgs);
 end;
 
 type
@@ -1281,5 +1401,14 @@ begin
     raise ETgError.Create(TgText(TTgText.InputFileNotUpload));
   Result := FValue;
 end;
+
+initialization
+  GTranslatorLock := TCriticalSection.Create;
+
+finalization
+  // Сначала отпускаем переводчик (вне блокировки), затем — сам замок;
+  // после этого тексты строятся без переводчика.
+  TgSetTranslator(nil);
+  FreeAndNil(GTranslatorLock);
 
 end.

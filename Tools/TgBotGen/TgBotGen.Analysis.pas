@@ -456,12 +456,12 @@ const
     'while', 'with', 'xor', 'operator');
 
   // Имена ядра и рантайма, с которыми не должны совпадать генерируемые.
-  CRuntimeNames: array[0..29] of string = ('TTgLanguage', 'TTgText', 'TTgErrorKind',
+  CRuntimeNames: array[0..30] of string = ('TTgLanguage', 'TTgText', 'TTgErrorKind',
     'TTgErrorInfo', 'TTgOptional', 'TTgChatId', 'TTgInputFileKind', 'TTgInputFile',
     'TTgParamFile', 'TTgParams', 'TTgJson', 'TTgProxySettings', 'TTgHttpSettings',
     'TTgHttpResponse', 'ITgTransport', 'TTgRateLimiter', 'TTgHttpTransport',
     'ITgJsonObject', 'ITgOutObject', 'TTgJsonHolder', 'TTgJsonDto', 'TTgOutObject',
-    'TTgDtoFactory', 'TTgDto', 'TTgApiCore', 'TTgApi', 'ETgError',
+    'TTgDtoFactory', 'TTgDto', 'TTgApiCore', 'TTgApi', 'ETgError', 'ITgTranslator',
     // Построители клавиатур (TgBot.pas).
     'TTgKeyboard', 'TTgInlineKeyboardBuilder', 'TTgReplyKeyboardBuilder');
 

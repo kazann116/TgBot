@@ -1130,6 +1130,7 @@ var
   LApi: TTgApi;
   LTransport: TFakeTransport;
   LStream: TBytesStream;
+  LLanguage: TTgLanguage;
 begin
   LApi := NewApi(
     function(const AMethod: string; AParams: TTgParams): TJSONValue
@@ -1157,6 +1158,7 @@ begin
       TTgApi.Create(ITgTransport(nil)).Free;
     end, ETgError), 'nil-транспорт → ETgError');
 
+  LLanguage := TgGetLanguage;
   TgSetLanguage(TTgLanguage.En);
   try
     Check(TgGetLanguage = TTgLanguage.En, 'TgGetLanguage');
@@ -1166,8 +1168,9 @@ begin
         TTgChatId(Default(TTgChatId)).ToJson.Free;
       end, ETgError), 'пустой ChatId → ETgError');
   finally
-    TgSetLanguage(TTgLanguage.Ru);
+    TgSetLanguage(LLanguage);
   end;
+  Check(TgGetLanguage = LLanguage, 'язык восстановлен');
   CheckEquals('10.3', TgBotApiVersion, 'TgBotApiVersion');
   Check(TgBotVersion <> '', 'TgBotVersion');
   CheckEquals(Format('%d.%d.%d', [TgBotVersionMajor, TgBotVersionMinor, TgBotVersionRelease]),
@@ -10390,6 +10393,370 @@ begin
   Check(TgGetLanguage = LLanguage, 'язык восстановлен');
 end;
 
+{ Локализация, фаза 1: подключаемый переводчик ITgTranslator }
+
+var
+  // Число живых TTestTranslator: переводчики, отпущенные библиотекой, освобождены.
+  GTestTranslatorLive: Integer;
+
+type
+  /// <summary>
+  ///   Тестовый переводчик: словарь «английский текст → перевод», заполняется
+  ///   в конструкторе и дальше не меняется (чтение из потоков безопасно).
+  ///   ARaise = True — TryTranslate выбрасывает исключение.
+  /// </summary>
+  TTestTranslator = class(TInterfacedObject, ITgTranslator)
+  private
+    FMap: TDictionary<string, string>;
+    FRaise: Boolean;
+  public
+    /// <summary>APairs — пары «ключ, перевод» подряд.</summary>
+    constructor Create(const APairs: array of string; ARaise: Boolean = False);
+    destructor Destroy; override;
+    function TryTranslate(const AMsgId: string; out AText: string): Boolean;
+  end;
+
+const
+  CTrToken = 'ПЕРЕВОД: токен не задан';
+  CTrChatId = 'ПЕРЕВОД: идентификатор «%s» — не число';
+  CTrChatEmpty = 'ПЕРЕВОД: пустой идентификатор чата';
+
+constructor TTestTranslator.Create(const APairs: array of string; ARaise: Boolean);
+var
+  I: Integer;
+begin
+  inherited Create;
+  // Первым: деструктор уменьшает счётчик и при исключении конструктора.
+  TInterlocked.Increment(GTestTranslatorLive);
+  FRaise := ARaise;
+  FMap := TDictionary<string, string>.Create;
+  I := 0;
+  while I < High(APairs) do
+  begin
+    FMap.AddOrSetValue(APairs[I], APairs[I + 1]);
+    Inc(I, 2);
+  end;
+end;
+
+destructor TTestTranslator.Destroy;
+begin
+  FMap.Free;
+  TInterlocked.Decrement(GTestTranslatorLive);
+  inherited;
+end;
+
+function TTestTranslator.TryTranslate(const AMsgId: string; out AText: string): Boolean;
+begin
+  if FRaise then
+    raise EInvalidOperation.Create('Тест: сбой переводчика');
+  Result := FMap.TryGetValue(AMsgId, AText);
+end;
+
+/// <summary>
+///   Переводчик с переводами TokenRequired, ChatIdNotNumeric, ChatIdEmpty и
+///   пустым переводом OptionalEmpty.
+/// </summary>
+function NewTestTranslator: ITgTranslator;
+begin
+  Result := TTestTranslator.Create([
+    LoadResString(@SEnTokenRequired), CTrToken,
+    LoadResString(@SEnChatIdNotNumeric), CTrChatId,
+    LoadResString(@SEnChatIdEmpty), CTrChatEmpty,
+    LoadResString(@SEnOptionalEmpty), '']);
+end;
+
+/// <summary>Встроенный текст пары на языке ALang (без переводчика).</summary>
+function BuiltinText(ALang: TTgLanguage; ARu, AEn: PResStringRec): string;
+begin
+  if ALang = TTgLanguage.En then
+    Result := LoadResString(AEn)
+  else
+    Result := LoadResString(ARu);
+end;
+
+function LiveTranslators: Integer;
+begin
+  Result := TInterlocked.CompareExchange(GTestTranslatorLive, 0, 0);
+end;
+
+/// <summary>
+///   Текущий переводчик (фасада или, при ABase, TgBot.Base) — AExpected.
+///   Отдельной функцией: временная ссылка результата TgGetTranslator
+///   отпускается при выходе из неё, а не в конце теста (иначе она держала
+///   бы переводчик до проверки освобождения).
+/// </summary>
+function TranslatorIs(const AExpected: ITgTranslator; ABase: Boolean = False): Boolean;
+begin
+  if ABase then
+    Result := TgBot.Base.TgGetTranslator = AExpected
+  else
+    Result := TgGetTranslator = AExpected;
+end;
+
+procedure TestTranslatorBasic;
+var
+  LLanguage, LLang: TTgLanguage;
+  LSaved, LTranslator: ITgTranslator;
+  LLiveBefore: Integer;
+  LTag: string;
+begin
+  LLiveBefore := LiveTranslators;
+  LLanguage := TgGetLanguage;
+  LSaved := TgGetTranslator;
+  try
+    Check(LSaved = nil, 'по умолчанию переводчика нет');
+    LTranslator := NewTestTranslator;
+    TgSetTranslator(LTranslator);
+    Check(TranslatorIs(LTranslator), 'TgGetTranslator возвращает установленный');
+    Check(TranslatorIs(LTranslator, True), 'фасад и TgBot.Base — один переводчик');
+    for LLang := Low(TTgLanguage) to High(TTgLanguage) do
+    begin
+      TgSetLanguage(LLang);
+      LTag := GetEnumName(TypeInfo(TTgLanguage), Ord(LLang)) + ': ';
+      // Перевод применяется при любом языке.
+      CheckEquals(CTrToken, TgText(TTgText.TokenRequired), LTag + 'TgText — перевод');
+      CheckEquals(CTrToken, TgLangText(@SRuTokenRequired, @SEnTokenRequired),
+        LTag + 'TgLangText — перевод');
+      CheckEquals(Format(CTrChatId, ['@abc']), TgTextFmt(TTgText.ChatIdNotNumeric, ['@abc']),
+        LTag + 'TgTextFmt — перевод');
+      CheckEquals(Format(CTrChatId, ['@abc']),
+        TgLangTextFmt(@SRuChatIdNotNumeric, @SEnChatIdNotNumeric, ['@abc']),
+        LTag + 'TgLangTextFmt — перевод');
+      CheckEquals(CTrChatEmpty, RaisedText(
+        procedure
+        begin
+          TTgChatId(Default(TTgChatId)).ToJson.Free;
+        end, ETgError), LTag + 'ETgError библиотеки — перевод');
+      CheckEquals(Format(CTrChatId, ['@abc']), RaisedText(
+        procedure
+        begin
+          TTgChatId.FromUsername('abc').Id;
+        end, ETgError), LTag + 'ETgError библиотеки с форматированием — перевод');
+      // Нет перевода — встроенный текст на текущем языке.
+      CheckEquals(BuiltinText(LLang, @SRuCancelled, @SEnCancelled), TgText(TTgText.Cancelled),
+        LTag + 'нет перевода — встроенный текст');
+      CheckEquals(Format(BuiltinText(LLang, @SRuApiError, @SEnApiError), ['getMe', 400, 'Bad']),
+        TgTextFmt(TTgText.ApiError, ['getMe', 400, 'Bad']),
+        LTag + 'нет перевода — встроенный текст с форматированием');
+      // Пустой перевод — встроенный текст.
+      CheckEquals(BuiltinText(LLang, @SRuOptionalEmpty, @SEnOptionalEmpty),
+        TgText(TTgText.OptionalEmpty), LTag + 'пустой перевод — встроенный текст');
+    end;
+    TgSetTranslator(nil);
+    Check(TranslatorIs(nil), 'TgSetTranslator(nil) — переводчика нет');
+    Check(LTranslator <> nil, 'ссылка вызывающего не тронута');
+    for LLang := Low(TTgLanguage) to High(TTgLanguage) do
+    begin
+      TgSetLanguage(LLang);
+      LTag := GetEnumName(TypeInfo(TTgLanguage), Ord(LLang)) + ': ';
+      CheckEquals(BuiltinText(LLang, @SRuTokenRequired, @SEnTokenRequired),
+        TgText(TTgText.TokenRequired), LTag + 'без переводчика — встроенный текст');
+      CheckEquals(Format(BuiltinText(LLang, @SRuChatIdNotNumeric, @SEnChatIdNotNumeric), ['@abc']),
+        TgLangTextFmt(@SRuChatIdNotNumeric, @SEnChatIdNotNumeric, ['@abc']),
+        LTag + 'без переводчика — встроенный текст с форматированием');
+    end;
+    LTranslator := nil;
+  finally
+    TgSetTranslator(LSaved);
+    TgSetLanguage(LLanguage);
+  end;
+  Check(TranslatorIs(LSaved), 'переводчик восстановлен');
+  Check(TgGetLanguage = LLanguage, 'язык восстановлен');
+  LSaved := nil;
+  CheckEquals(LLiveBefore, LiveTranslators, 'тестовые переводчики освобождены');
+end;
+
+procedure TestTranslatorFaults;
+var
+  LLanguage, LLang: TTgLanguage;
+  LSaved, LTranslator: ITgTranslator;
+  LLiveBefore: Integer;
+  LTag: string;
+begin
+  LLiveBefore := LiveTranslators;
+  LLanguage := TgGetLanguage;
+  LSaved := TgGetTranslator;
+  try
+    // Исключение в TryTranslate поглощается — встроенный текст.
+    LTranslator := TTestTranslator.Create([LoadResString(@SEnTokenRequired), CTrToken,
+      LoadResString(@SEnChatIdEmpty), CTrChatEmpty], True);
+    TgSetTranslator(LTranslator);
+    for LLang := Low(TTgLanguage) to High(TTgLanguage) do
+    begin
+      TgSetLanguage(LLang);
+      LTag := GetEnumName(TypeInfo(TTgLanguage), Ord(LLang)) + ': ';
+      CheckEquals(BuiltinText(LLang, @SRuTokenRequired, @SEnTokenRequired),
+        TgText(TTgText.TokenRequired), LTag + 'исключение переводчика — встроенный текст');
+      CheckEquals(Format(BuiltinText(LLang, @SRuChatIdNotNumeric, @SEnChatIdNotNumeric), ['@abc']),
+        TgLangTextFmt(@SRuChatIdNotNumeric, @SEnChatIdNotNumeric, ['@abc']),
+        LTag + 'исключение переводчика — встроенный текст с форматированием');
+      CheckEquals(BuiltinText(LLang, @SRuChatIdEmpty, @SEnChatIdEmpty), RaisedText(
+        procedure
+        begin
+          TTgChatId(Default(TTgChatId)).ToJson.Free;
+        end, ETgError), LTag + 'исключение переводчика не подменяет ETgError библиотеки');
+    end;
+
+    // Неверные для аргументов спецификаторы перевода — Format встроенного текста.
+    LTranslator := TTestTranslator.Create([
+      // %d вместо %s (аргумент — строка).
+      LoadResString(@SEnChatIdNotNumeric), 'ПЕРЕВОД: число %d',
+      // Спецификаторов больше, чем аргументов.
+      LoadResString(@SEnApiError), 'ПЕРЕВОД: %s %d %s %s',
+      // Неизвестный спецификатор.
+      LoadResString(@SEnArgOutOfRange), 'ПЕРЕВОД: %z']);
+    TgSetTranslator(LTranslator);
+    for LLang := Low(TTgLanguage) to High(TTgLanguage) do
+    begin
+      TgSetLanguage(LLang);
+      LTag := GetEnumName(TypeInfo(TTgLanguage), Ord(LLang)) + ': ';
+      CheckEquals(Format(BuiltinText(LLang, @SRuChatIdNotNumeric, @SEnChatIdNotNumeric), ['@abc']),
+        TgTextFmt(TTgText.ChatIdNotNumeric, ['@abc']), LTag + '%d вместо %s — TgTextFmt встроенный');
+      CheckEquals(Format(BuiltinText(LLang, @SRuChatIdNotNumeric, @SEnChatIdNotNumeric), ['@abc']),
+        TgLangTextFmt(@SRuChatIdNotNumeric, @SEnChatIdNotNumeric, ['@abc']),
+        LTag + '%d вместо %s — TgLangTextFmt встроенный');
+      CheckEquals(Format(BuiltinText(LLang, @SRuApiError, @SEnApiError), ['getMe', 400, 'Bad']),
+        TgTextFmt(TTgText.ApiError, ['getMe', 400, 'Bad']), LTag + 'лишний спецификатор — встроенный');
+      CheckEquals(Format(BuiltinText(LLang, @SRuArgOutOfRange, @SEnArgOutOfRange), ['limit', 0, 1]),
+        TgLangTextFmt(@SRuArgOutOfRange, @SEnArgOutOfRange, ['limit', 0, 1]),
+        LTag + 'неизвестный спецификатор — встроенный');
+      CheckEquals(Format(BuiltinText(LLang, @SRuChatIdNotNumeric, @SEnChatIdNotNumeric), ['@abc']),
+        RaisedText(
+        procedure
+        begin
+          TTgChatId.FromUsername('abc').Id;
+        end, ETgError), LTag + 'ETgError библиотеки — встроенный текст, без EConvertError');
+      // Без форматирования перевод отдаётся как есть.
+      CheckEquals('ПЕРЕВОД: число %d', TgLangText(@SRuChatIdNotNumeric, @SEnChatIdNotNumeric),
+        LTag + 'TgLangText — перевод без форматирования');
+    end;
+    LTranslator := nil;
+  finally
+    TgSetTranslator(LSaved);
+    TgSetLanguage(LLanguage);
+  end;
+  Check(TranslatorIs(LSaved), 'переводчик восстановлен');
+  Check(TgGetLanguage = LLanguage, 'язык восстановлен');
+  LSaved := nil;
+  CheckEquals(LLiveBefore, LiveTranslators, 'тестовые переводчики освобождены');
+end;
+
+/// <summary>
+///   CReaders потоков по CReads раз берут TgLangText и TgLangTextFmt, пока
+///   отдельный поток CSwaps раз меняет переводчик (новый экземпляр / nil).
+///   Проверки: исключений (AV) нет, каждый результат — перевод или встроенный
+///   текст, все переводчики освобождены.
+/// </summary>
+procedure TestTranslatorThreads;
+const
+  CReaders = 4;
+  CReads = 2000;
+  CSwaps = 500;
+var
+  LLanguage: TTgLanguage;
+  LSaved: ITgTranslator;
+  LThreads: TArray<TThread>;
+  LBuiltinText, LBuiltinFmt, LTrFmt, LFirstError, LFirstBad: string;
+  LTranslated, LBuiltin, LBad, LErrors, LSwaps, LLiveBefore, I: Integer;
+begin
+  LLiveBefore := LiveTranslators;
+  LLanguage := TgGetLanguage;
+  LSaved := TgGetTranslator;
+  // Язык во время гонки не меняется: встроенный текст однозначен.
+  LBuiltinText := BuiltinText(LLanguage, @SRuTokenRequired, @SEnTokenRequired);
+  LBuiltinFmt := Format(BuiltinText(LLanguage, @SRuChatIdNotNumeric, @SEnChatIdNotNumeric),
+    ['@abc']);
+  LTrFmt := Format(CTrChatId, ['@abc']);
+  LTranslated := 0;
+  LBuiltin := 0;
+  LBad := 0;
+  LErrors := 0;
+  LSwaps := 0;
+  LFirstError := '';
+  LFirstBad := '';
+  try
+    SetLength(LThreads, CReaders + 1);
+    try
+      for I := 0 to CReaders - 1 do
+        LThreads[I] := TThread.CreateAnonymousThread(
+          procedure
+          var
+            N: Integer;
+            LText: string;
+          begin
+            try
+              for N := 1 to CReads do
+              begin
+                LText := TgLangText(@SRuTokenRequired, @SEnTokenRequired);
+                if LText = CTrToken then
+                  TInterlocked.Increment(LTranslated)
+                else if LText = LBuiltinText then
+                  TInterlocked.Increment(LBuiltin)
+                else if TInterlocked.Increment(LBad) = 1 then
+                  LFirstBad := LText;
+                LText := TgLangTextFmt(@SRuChatIdNotNumeric, @SEnChatIdNotNumeric, ['@abc']);
+                if LText = LTrFmt then
+                  TInterlocked.Increment(LTranslated)
+                else if LText = LBuiltinFmt then
+                  TInterlocked.Increment(LBuiltin)
+                else if TInterlocked.Increment(LBad) = 1 then
+                  LFirstBad := LText;
+              end;
+            except
+              on E: Exception do
+                if TInterlocked.Increment(LErrors) = 1 then
+                  LFirstError := E.ClassName + ': ' + E.Message;
+            end;
+          end);
+      LThreads[CReaders] := TThread.CreateAnonymousThread(
+        procedure
+        var
+          N: Integer;
+          LNew: ITgTranslator;
+        begin
+          try
+            for N := 1 to CSwaps do
+            begin
+              if Odd(N) then
+                LNew := NewTestTranslator
+              else
+                LNew := nil;
+              TgSetTranslator(LNew);
+              LNew := nil;
+              TInterlocked.Increment(LSwaps);
+            end;
+          except
+            on E: Exception do
+              if TInterlocked.Increment(LErrors) = 1 then
+                LFirstError := E.ClassName + ': ' + E.Message;
+          end;
+        end);
+      for I := 0 to High(LThreads) do
+        LThreads[I].FreeOnTerminate := False;
+      for I := 0 to High(LThreads) do
+        LThreads[I].Start;
+      // Ждать до Free: Free сначала вызывает Terminate, и ещё не начавший
+      // работу поток пропустил бы Execute.
+      for I := 0 to High(LThreads) do
+        LThreads[I].WaitFor;
+    finally
+      for I := 0 to High(LThreads) do
+        LThreads[I].Free;
+    end;
+  finally
+    TgSetTranslator(LSaved);
+    TgSetLanguage(LLanguage);
+  end;
+  CheckEquals(0, LErrors, 'исключений (AV) в потоках нет (' + LFirstError + ')');
+  CheckEquals(0, LBad, 'результат — перевод или встроенный текст ("' + LFirstBad + '")');
+  CheckEquals(CReaders * CReads * 2, LTranslated + LBuiltin,
+    Format('все вызовы учтены (перевод %d, встроенный %d)', [LTranslated, LBuiltin]));
+  CheckEquals(CSwaps, LSwaps, 'переводчик сменён CSwaps раз');
+  Check(TranslatorIs(LSaved), 'переводчик восстановлен');
+  LSaved := nil;
+  CheckEquals(LLiveBefore, LiveTranslators, 'все переводчики освобождены');
+end;
+
 { Владение, фаза 5: ITgJsonHolder, ITgOwnerLink, номер запуска компонента }
 
 type
@@ -13447,6 +13814,12 @@ begin
     TestDtoNotObjectField);
   RunTest('5b-1: тексты TTgText/TTgUpdatesText/TTgRouterText и пары TgBot.Consts — ' +
     'непусты, RU ≠ EN, спецификаторы совпадают', TestTextsComplete);
+  RunTest('Локализация, фаза 1: ITgTranslator — перевод при Ru и En, нет/пустой перевод, ' +
+    'TgSetTranslator(nil), TgGetTranslator', TestTranslatorBasic);
+  RunTest('Локализация, фаза 1: ITgTranslator — исключение переводчика и неверные ' +
+    'спецификаторы перевода → встроенный текст', TestTranslatorFaults);
+  RunTest('Локализация, фаза 1: ITgTranslator — 4 потока x 2000 чтений текстов, ' +
+    'смена переводчика 500 раз', TestTranslatorThreads);
   RunTest('Варианты edit-методов: позиционные, inline → Boolean, chat_id любого вида', TestEditVariants);
   RunTest('Варианты answerCallbackQuery/sendMessage/sendPhoto/sendDocument', TestSendAndAnswerVariants);
   RunTest('Варианты: Async и Try', TestVariantsAsyncAndTry);
