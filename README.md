@@ -24,6 +24,9 @@
 - **Только RTL.** Ядро использует `System.Net.HttpClient`, `System.JSON`, `System.Threading`. Indy нужен лишь
   встроенному webhook-серверу. HTTP-клиент заменяем: свой транспорт — наследник `TTgTransportBase` с двумя
   методами ([подробнее](README.ru.md#15-свой-транспорт)).
+- **Потоки.** Обновления одного чата обрабатываются по порядку, разных чатов — параллельно (`MaxParallel`),
+  очередь ограничена (`QueueCapacity`). Внутри — `TCriticalSection` и `TEvent`, без `TMonitor.Wait`/`Pulse`
+  ([подробнее](README.ru.md#синхронизация-внутри-библиотеки)).
 
 ## Требования
 
