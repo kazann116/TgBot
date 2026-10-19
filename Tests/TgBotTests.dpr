@@ -182,6 +182,8 @@ var
   // Пропуски из-за окружения (Skip): число тестов и причина в текущем тесте.
   GTestsSkipped: Integer;
   GCurrentSkip: string;
+  // Язык библиотеки при запуске программы — до любых тестов (TestDefaultLanguage).
+  GStartLanguage: TTgLanguage;
 
 { TFakeTransport }
 
@@ -1127,6 +1129,15 @@ begin
     end, ETgError), 'Detach исходящего объекта → ETgError');
 end;
 
+procedure TestDefaultLanguage;
+begin
+  Check(GStartLanguage = TTgLanguage.En, 'язык при запуске программы — En');
+  Check(TgGetLanguage = TTgLanguage.En, 'язык не изменён предыдущими тестами — En');
+  Check(TgGetTranslator = nil, 'переводчик не установлен');
+  CheckEquals(LoadResString(@SEnTokenRequired), TgText(TTgText.TokenRequired),
+    'TgText по умолчанию — английский текст');
+end;
+
 procedure TestCoreMisc;
 var
   LApi: TTgApi;
@@ -1161,9 +1172,10 @@ begin
     end, ETgError), 'nil-транспорт → ETgError');
 
   LLanguage := TgGetLanguage;
-  TgSetLanguage(TTgLanguage.En);
+  // Язык, отличный от языка по умолчанию (En), — TgSetLanguage меняет значение.
+  TgSetLanguage(TTgLanguage.Ru);
   try
-    Check(TgGetLanguage = TTgLanguage.En, 'TgGetLanguage');
+    Check(TgGetLanguage = TTgLanguage.Ru, 'TgGetLanguage');
     Check(Raises(
       procedure
       begin
@@ -2752,6 +2764,20 @@ var
   LClass: string;
   LCode: Integer;
   LMessage: string;
+  LLanguage: TTgLanguage;
+
+  // Текст ETgConflictError из GetUpdates (пусто — исключения не было).
+  function ConflictMessage: string;
+  begin
+    Result := '';
+    try
+      LApi.GetUpdates;
+    except
+      on E: ETgConflictError do
+        Result := E.Message;
+    end;
+  end;
+
 begin
   LStub := NewStubTransport(TTgHttpSettings.Create('123456:TEST'));
   LRef := LStub;
@@ -2771,7 +2797,17 @@ begin
     end;
     CheckEquals('ETgConflictError', LClass, '409 → ETgConflictError (наследник ETgApiError)');
     CheckEquals(409, LCode, 'ErrorCode = 409');
-    Check(Contains('другой экземпляр', LMessage), 'текст-подсказка (RU)');
+    CheckEquals(TgLangTextFmt(@SRuConflict, @SEnConflict,
+      ['getUpdates', 409, 'Conflict: terminated by other getUpdates request']), LMessage,
+      'текст-подсказка на текущем языке');
+    Check(Contains('Another bot instance', LMessage), 'текст-подсказка: по умолчанию EN');
+    LLanguage := TgGetLanguage;
+    TgSetLanguage(TTgLanguage.Ru);
+    try
+      Check(Contains('другой экземпляр', ConflictMessage), 'текст-подсказка (RU)');
+    finally
+      TgSetLanguage(LLanguage);
+    end;
     Check(not LApi.TryGetUpdates(LUpdates, LError), 'TryGetUpdates = False');
     Check(LError.Kind = TTgErrorKind.Api, 'TTgErrorInfo.Kind = Api');
     CheckEquals('ETgConflictError', LError.ExceptionClassName, 'TTgErrorInfo.ExceptionClassName');
@@ -14690,6 +14726,8 @@ begin
   RunTest('edit-метод: ответ true → nil', TestEditReturnsTrue);
   RunTest('Локаль с запятой, NaN/Infinity → ETgError', TestLocaleAndNaN);
   RunTest('Clone/Detach', TestCloneDetach);
+  RunTest('0.5.0: язык библиотеки по умолчанию — En (при запуске и до TgSetLanguage)',
+    TestDefaultLanguage);
   RunTest('Ядро: GetMe, CallJson, DownloadFile, язык, версия', TestCoreMisc);
   RunTest('5b-1: DTO над JSON-массивом — DtoNotObject с именем поля (SetStr, AppendRow; RU/EN)',
     TestDtoNotObjectField);
@@ -14939,6 +14977,8 @@ begin
 end;
 
 begin
+  // До любых тестов: язык библиотеки по умолчанию (проверяет TestDefaultLanguage).
+  GStartLanguage := TgGetLanguage;
 {$IFDEF MSWINDOWS}
   // Дочерний процесс теста завершения: висящие потоки намеренно не
   // освобождаются, поэтому отчёт об утечках здесь не включается.

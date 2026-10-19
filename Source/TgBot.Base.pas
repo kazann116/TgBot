@@ -36,7 +36,10 @@ const
   TgBotUserAgent = TgBotLibName + '-Delphi/' + TgBotVersion;
 
 type
-  /// <summary>Язык сообщений библиотеки (текстов исключений).</summary>
+  /// <summary>
+  ///   Язык сообщений библиотеки (текстов исключений); по умолчанию — En
+  ///   (TgSetLanguage).
+  /// </summary>
   TTgLanguage = (Ru, En);
 
   /// <summary>Идентификаторы локализуемых текстов библиотеки.</summary>
@@ -516,8 +519,9 @@ type
   end;
 
 /// <summary>
-///   Устанавливает язык сообщений библиотеки (по умолчанию — русский).
-///   Вызывайте до запуска рабочих потоков.
+///   Устанавливает язык сообщений библиотеки (по умолчанию — английский,
+///   TTgLanguage.En; до 0.5.0 — русский: прежнее поведение —
+///   TgSetLanguage(TTgLanguage.Ru)). Вызывайте до запуска рабочих потоков.
 /// </summary>
 procedure TgSetLanguage(ALanguage: TTgLanguage);
 /// <summary>Текущий язык сообщений библиотеки.</summary>
@@ -621,8 +625,9 @@ const
   CKindUploadBytes = 'bytes';
 
 var
-  // Язык сообщений библиотеки; меняется только через TgSetLanguage.
-  TgBotLanguage: TTgLanguage = TTgLanguage.Ru;
+  // Язык сообщений библиотеки (по умолчанию — английский); меняется только
+  // через TgSetLanguage.
+  TgBotLanguage: TTgLanguage = TTgLanguage.En;
   // Переводчик сообщений (TgSetTranslator); читается и меняется только под
   // GTranslatorLock. Замок создаётся в initialization и освобождается в
   // finalization (после него — nil: тексты без переводчика).

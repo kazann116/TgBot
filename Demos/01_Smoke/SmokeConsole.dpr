@@ -8,7 +8,8 @@
     TGBOT_CHAT_ID          — (необязательно) чат для тестового сообщения: число или @username;
     TGBOT_POLL_ITERATIONS  — (необязательно) число циклов getUpdates (по умолчанию 3);
     TGBOT_API_URL          — (необязательно) адрес Local Bot API server;
-    TGBOT_LANG             — (необязательно) EN — сообщения библиотеки на английском.
+    TGBOT_LANG             — (необязательно) язык сообщений библиотеки: RU — русский,
+                             EN — английский (по умолчанию — английский).
 
   Сценарий: getMe (синхронно и асинхронно) -> тестовое сообщение (если задан чат)
   -> эхо-цикл long polling (timeout 10 с) -> подтверждение обработанных обновлений.
@@ -76,7 +77,24 @@ begin
   Writeln('Переменная окружения TGBOT_TOKEN не задана — тест пропущен.');
   Writeln('Пример (Windows):  set TGBOT_TOKEN=123456:ABC...');
   Writeln('Пример (Linux):    export TGBOT_TOKEN=123456:ABC...');
-  Writeln('Необязательно: TGBOT_CHAT_ID, TGBOT_POLL_ITERATIONS, TGBOT_API_URL, TGBOT_LANG=EN');
+  Writeln('Необязательно: TGBOT_CHAT_ID, TGBOT_POLL_ITERATIONS, TGBOT_API_URL, TGBOT_LANG=RU|EN');
+end;
+
+/// <summary>
+///   Язык сообщений библиотеки из TGBOT_LANG: RU или EN; не задано —
+///   язык библиотеки по умолчанию (английский).
+/// </summary>
+procedure ApplyLanguage;
+var
+  LLang: string;
+begin
+  LLang := Trim(GetEnvironmentVariable('TGBOT_LANG'));
+  if SameText(LLang, 'RU') then
+    TgSetLanguage(TTgLanguage.Ru)
+  else if SameText(LLang, 'EN') then
+    TgSetLanguage(TTgLanguage.En)
+  else if LLang <> '' then
+    Writeln('TGBOT_LANG=', LLang, ': ожидается RU или EN — язык библиотеки по умолчанию (EN).');
 end;
 
 procedure TestGetMe(AApi: TTgApi);
@@ -189,8 +207,7 @@ begin
     PrintHint;
     Exit;
   end;
-  if SameText(GetEnvironmentVariable('TGBOT_LANG'), 'EN') then
-    TgSetLanguage(TTgLanguage.En);
+  ApplyLanguage;
   LChat := Trim(GetEnvironmentVariable('TGBOT_CHAT_ID'));
   LIterations := StrToIntDef(GetEnvironmentVariable('TGBOT_POLL_ITERATIONS'),
     CDefaultIterations);

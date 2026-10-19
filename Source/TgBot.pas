@@ -433,8 +433,9 @@ function TgDefaultTransportFactory: TTgTransportFactory;
 function TgCreateDefaultTransport(const ASettings: TTgHttpSettings): ITgTransport;
 
 /// <summary>
-///   Устанавливает язык сообщений библиотеки (по умолчанию — русский).
-///   Вызывайте до запуска рабочих потоков.
+///   Устанавливает язык сообщений библиотеки (по умолчанию — английский,
+///   TTgLanguage.En; до 0.5.0 — русский: прежнее поведение —
+///   TgSetLanguage(TTgLanguage.Ru)). Вызывайте до запуска рабочих потоков.
 /// </summary>
 procedure TgSetLanguage(ALanguage: TTgLanguage);
 /// <summary>Текущий язык сообщений библиотеки.</summary>
