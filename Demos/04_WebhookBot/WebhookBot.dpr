@@ -165,6 +165,8 @@ var
   LBot: TTelegramBot;
   LCommand: TTgCommandItem;
 begin
+  // Демо с русским интерфейсом: тексты ошибок библиотеки — тоже по-русски (по умолчанию с 0.5.0 — английский).
+  TgSetLanguage(TTgLanguage.Ru);
 {$IFDEF MSWINDOWS}
   SetConsoleOutputCP(CP_UTF8);
   SetTextCodePage(Output, CP_UTF8);
